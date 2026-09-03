@@ -31,7 +31,10 @@ export type NotificationType =
   // Online payment proof: submitted (-> admins), then reviewed (-> submitter).
   | 'FEE_PAYMENT_SUBMITTED'
   | 'FEE_PAYMENT_VERIFIED'
-  | 'FEE_PAYMENT_REJECTED';
+  | 'FEE_PAYMENT_REJECTED'
+  // Timetable publish/update — ride the existing notifyAnnouncements preference.
+  | 'TIMETABLE_PUBLISHED'
+  | 'TIMETABLE_UPDATED';
 
 /** Which UserSettings notify* flag gates the EMAIL side (in-app always writes). */
 export type NotifyPreferenceKey =
