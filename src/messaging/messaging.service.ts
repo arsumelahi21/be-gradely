@@ -919,7 +919,9 @@ export class MessagingService extends BaseSchoolScopedService {
    * (my participant row + the latest message) so no user/body rows are loaded. */
   async getUnreadCount(actor: Actor): Promise<{ unread: number }> {
     const threads = await this.prisma.messageThread.findMany({
-      where: { participants: { some: { userId: actor.userId, hidden: false } } },
+      where: {
+        participants: { some: { userId: actor.userId, hidden: false } },
+      },
       select: {
         participants: {
           where: { userId: actor.userId },
