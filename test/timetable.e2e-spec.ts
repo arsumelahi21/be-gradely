@@ -97,13 +97,23 @@ describe('Timetable V2 (e2e)', () => {
       dayEndMin: 480 + 45 * 4,
     });
     expect(periods.length).toBe(4);
-    expect(periods[0]).toMatchObject({ index: 1, startMin: 480, endMin: 525, kind: 'CLASS' });
+    expect(periods[0]).toMatchObject({
+      index: 1,
+      startMin: 480,
+      endMin: 525,
+      kind: 'CLASS',
+    });
 
     // running setup again on a section that already has periods -> 409
     const again = await request(server())
       .post(`/api/timetable/sections/${cls.section.id}/setup`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ workingDays: ['MONDAY'], dayStartMin: 480, dayEndMin: 660, periodMinutes: 45 });
+      .send({
+        workingDays: ['MONDAY'],
+        dayStartMin: 480,
+        dayEndMin: 660,
+        periodMinutes: 45,
+      });
     expect(again.status).toBe(409);
   });
 
@@ -129,12 +139,22 @@ describe('Timetable V2 (e2e)', () => {
   it('CRITICAL: same teacher, overlapping clock times in two sections -> 409', async () => {
     const cls = await seedClass({ studentCount: 1 }); // section A, teacher Ahmed
     const token = await adminFor(cls.school.id);
-    const other = await addSection(cls.school.id, cls.classGrade.id, cls.teacherProfile.id); // section B, same teacher
+    const other = await addSection(
+      cls.school.id,
+      cls.classGrade.id,
+      cls.teacherProfile.id,
+    ); // section B, same teacher
 
     // A: period 10:00–10:45
-    const aPeriods = await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
+    const aPeriods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
     // B: period 10:30–11:15 (overlaps A)
-    const bPeriods = await setup(other.section.id, token, { dayStartMin: 630, dayEndMin: 720 });
+    const bPeriods = await setup(other.section.id, token, {
+      dayStartMin: 630,
+      dayEndMin: 720,
+    });
 
     const a1 = await assign(cls.section.id, token, {
       dayOfWeek: 'MONDAY',
@@ -157,18 +177,32 @@ describe('Timetable V2 (e2e)', () => {
   it('touching edges (10:00–10:45 & 10:45–11:30) do NOT conflict', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
-    const other = await addSection(cls.school.id, cls.classGrade.id, cls.teacherProfile.id);
+    const other = await addSection(
+      cls.school.id,
+      cls.classGrade.id,
+      cls.teacherProfile.id,
+    );
 
-    const aPeriods = await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 645 }); // 10:00–10:45
-    const bPeriods = await setup(other.section.id, token, { dayStartMin: 645, dayEndMin: 690 }); // 10:45–11:30-ish
+    const aPeriods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 645,
+    }); // 10:00–10:45
+    const bPeriods = await setup(other.section.id, token, {
+      dayStartMin: 645,
+      dayEndMin: 690,
+    }); // 10:45–11:30-ish
 
     await assign(cls.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: aPeriods[0].id,
-      sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: aPeriods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     }).expect(201);
     const b1 = await assign(other.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: bPeriods[0].id,
-      sectionSubjectId: other.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: bPeriods[0].id,
+      sectionSubjectId: other.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     });
     expect(b1.status).toBe(201); // adjacent, not overlapping
   });
@@ -177,19 +211,32 @@ describe('Timetable V2 (e2e)', () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
     // a second subject in the SAME section, same teacher
-    const subject2 = await prisma.subject.create({ data: { schoolId: cls.school.id, name: `S-${uniq()}` } });
-    const ss2 = await prisma.sectionSubject.create({
-      data: { sectionId: cls.section.id, subjectId: subject2.id, teacherId: cls.teacherProfile.id },
+    const subject2 = await prisma.subject.create({
+      data: { schoolId: cls.school.id, name: `S-${uniq()}` },
     });
-    const periods = await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
+    const ss2 = await prisma.sectionSubject.create({
+      data: {
+        sectionId: cls.section.id,
+        subjectId: subject2.id,
+        teacherId: cls.teacherProfile.id,
+      },
+    });
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
 
     await assign(cls.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: periods[0].id,
-      sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     }).expect(201);
     const dup = await assign(cls.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: periods[0].id,
-      sectionSubjectId: ss2.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: ss2.id,
+      teacherId: cls.teacherProfile.id,
     });
     expect(dup.status).toBe(409);
   });
@@ -198,21 +245,36 @@ describe('Timetable V2 (e2e)', () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
     // second section with a DIFFERENT teacher so only the room collides
-    const t2User = await createTestUser({ role: Role.TEACHER, schoolId: cls.school.id });
+    const t2User = await createTestUser({
+      role: Role.TEACHER,
+      schoolId: cls.school.id,
+    });
     const t2 = await prisma.teacherProfile.create({
       data: { userId: t2User.id, schoolId: cls.school.id, fullName: 'Other T' },
     });
     const other = await addSection(cls.school.id, cls.classGrade.id, t2.id);
-    const aPeriods = await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
-    const bPeriods = await setup(other.section.id, token, { dayStartMin: 630, dayEndMin: 720 });
+    const aPeriods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
+    const bPeriods = await setup(other.section.id, token, {
+      dayStartMin: 630,
+      dayEndMin: 720,
+    });
 
     await assign(cls.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: aPeriods[0].id,
-      sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id, room: 'Room 3',
+      dayOfWeek: 'MONDAY',
+      periodId: aPeriods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
+      room: 'Room 3',
     }).expect(201);
     const b = await assign(other.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: bPeriods[0].id,
-      sectionSubjectId: other.sectionSubject.id, teacherId: t2.id, room: 'Room 3',
+      dayOfWeek: 'MONDAY',
+      periodId: bPeriods[0].id,
+      sectionSubjectId: other.sectionSubject.id,
+      teacherId: t2.id,
+      room: 'Room 3',
     });
     expect(b.status).toBe(409);
     expect(JSON.stringify(b.body)).toContain('ROOM');
@@ -222,52 +284,118 @@ describe('Timetable V2 (e2e)', () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
     // a teacher with NO specialty and not the section-subject default
-    const strangerUser = await createTestUser({ role: Role.TEACHER, schoolId: cls.school.id });
-    const stranger = await prisma.teacherProfile.create({
-      data: { userId: strangerUser.id, schoolId: cls.school.id, fullName: 'Stranger' },
+    const strangerUser = await createTestUser({
+      role: Role.TEACHER,
+      schoolId: cls.school.id,
     });
-    const periods = await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
+    const stranger = await prisma.teacherProfile.create({
+      data: {
+        userId: strangerUser.id,
+        schoolId: cls.school.id,
+        fullName: 'Stranger',
+      },
+    });
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
     const res = await assign(cls.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: periods[0].id,
-      sectionSubjectId: cls.sectionSubject.id, teacherId: stranger.id,
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: stranger.id,
     });
     expect(res.status).toBe(400);
   });
 
   // ---- teacher-options --------------------------------------------------
 
-  it('teacher-options lists qualified teachers, flagging the busy one disabled', async () => {
-    const cls = await seedClass({ studentCount: 1 }); // teacher Ahmed is default for the subject
+  it('teacher-options reports the ALLOCATED teacher for the subject and their availability', async () => {
+    // The class setup already allocates a teacher to the subject, so the
+    // timetable never asks again — it reports who that is and whether they are
+    // free at this slot.
+    const cls = await seedClass({ studentCount: 1 }); // Ahmed is allocated to the subject
     const token = await adminFor(cls.school.id);
-    // Usman: qualified via a specialty on the same subject
-    const usmanUser = await createTestUser({ role: Role.TEACHER, schoolId: cls.school.id });
-    const usman = await prisma.teacherProfile.create({
-      data: { userId: usmanUser.id, schoolId: cls.school.id, fullName: 'Usman' },
+
+    const aPeriods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
     });
-    await prisma.teacherSubjectSpecialty.create({
-      data: { teacherId: usman.id, subjectId: cls.subject.id },
+    const free = await request(server())
+      .get(`/api/timetable/sections/${cls.section.id}/teacher-options`)
+      .query({
+        sectionSubjectId: cls.sectionSubject.id,
+        dayOfWeek: 'MONDAY',
+        periodId: aPeriods[0].id,
+      })
+      .set('Authorization', `Bearer ${token}`);
+    expect(free.status).toBe(200);
+    expect(free.body.allocatedTeacher).toBeTruthy();
+    expect(free.body.allocatedTeacher.teacherId).toBe(cls.teacherProfile.id);
+    expect(free.body.allocatedTeacher.available).toBe(true);
+
+    // Book that same teacher over an overlapping slot in ANOTHER section.
+    const other = await addSection(
+      cls.school.id,
+      cls.classGrade.id,
+      cls.teacherProfile.id,
+    );
+    const oPeriods = await setup(other.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
     });
-    // Usman is busy in another section at 10:00–10:45
-    const other = await addSection(cls.school.id, cls.classGrade.id, usman.id);
-    const oPeriods = await setup(other.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
     await assign(other.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: oPeriods[0].id,
-      sectionSubjectId: other.sectionSubject.id, teacherId: usman.id,
+      dayOfWeek: 'MONDAY',
+      periodId: oPeriods[0].id,
+      sectionSubjectId: other.sectionSubject.id,
     }).expect(201);
 
-    // section A also at 10:00–10:45
-    const aPeriods = await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
-    const opts = await request(server())
+    const busy = await request(server())
       .get(`/api/timetable/sections/${cls.section.id}/teacher-options`)
-      .query({ sectionSubjectId: cls.sectionSubject.id, dayOfWeek: 'MONDAY', periodId: aPeriods[0].id })
+      .query({
+        sectionSubjectId: cls.sectionSubject.id,
+        dayOfWeek: 'MONDAY',
+        periodId: aPeriods[0].id,
+      })
       .set('Authorization', `Bearer ${token}`);
-    expect(opts.status).toBe(200);
-    const byId = new Map(opts.body.options.map((o: any) => [o.fullName, o]));
-    expect((byId.get('Usman') as any).available).toBe(false);
-    expect((byId.get('Usman') as any).conflict).toBeTruthy();
-    // Ahmed (the default teacher) is free
-    const ahmed = opts.body.options.find((o: any) => o.available);
-    expect(ahmed).toBeTruthy();
+    expect(busy.body.allocatedTeacher.available).toBe(false);
+    expect(busy.body.allocatedTeacher.conflict).toBeTruthy();
+  });
+
+  it('an entry created WITHOUT a teacherId uses the allocated teacher for the subject', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const token = await adminFor(cls.school.id);
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
+
+    const res = await assign(cls.section.id, token, {
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+    }).expect(201);
+    expect(res.body.teacherId).toBe(cls.teacherProfile.id);
+  });
+
+  it('refuses an entry when the subject has no allocated teacher', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const token = await adminFor(cls.school.id);
+    await prisma.sectionSubject.update({
+      where: { id: cls.sectionSubject.id },
+      data: { teacherId: null },
+    });
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
+
+    const res = await assign(cls.section.id, token, {
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+    }).expect(400);
+    expect(String(res.body.message)).toMatch(/No teacher is allocated/i);
   });
 
   // ---- validation + publish gating --------------------------------------
@@ -275,12 +403,17 @@ describe('Timetable V2 (e2e)', () => {
   it('publish is blocked while a blocking conflict exists, allowed once resolved', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
-    const periods = await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
 
     // assign one class so it's not empty
     await assign(cls.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: periods[0].id,
-      sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     }).expect(201);
 
     // completion reflects 1/2 CLASS cells (2 periods × 1 day)
@@ -310,15 +443,24 @@ describe('Timetable V2 (e2e)', () => {
   it('period retime that creates a teacher conflict is rejected (reconciliation)', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
-    const other = await addSection(cls.school.id, cls.classGrade.id, cls.teacherProfile.id);
+    const other = await addSection(
+      cls.school.id,
+      cls.classGrade.id,
+      cls.teacherProfile.id,
+    );
 
-    const aPeriods = await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 690 }); // A P1 600-645
+    const aPeriods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    }); // A P1 600-645
     // B: wide day, then replaced with a SINGLE period at 700-745 (no overlap yet)
     await setup(other.section.id, token, { dayStartMin: 600, dayEndMin: 780 });
     await request(server())
       .put(`/api/timetable/sections/${other.section.id}/periods`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ periods: [{ index: 1, startMin: 700, endMin: 745, kind: 'CLASS' }] })
+      .send({
+        periods: [{ index: 1, startMin: 700, endMin: 745, kind: 'CLASS' }],
+      })
       .expect(200);
     const bGot = await request(server())
       .get(`/api/timetable/sections/${other.section.id}`)
@@ -326,12 +468,16 @@ describe('Timetable V2 (e2e)', () => {
     const bPeriod = bGot.body.periods[0];
 
     await assign(cls.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: aPeriods[0].id,
-      sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: aPeriods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     }).expect(201);
     await assign(other.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: bPeriod.id,
-      sectionSubjectId: other.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: bPeriod.id,
+      sectionSubjectId: other.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     }).expect(201);
 
     // retime B's only period to 620-665 -> now overlaps A's 600-645 (same teacher) -> reject
@@ -342,7 +488,9 @@ describe('Timetable V2 (e2e)', () => {
     expect(res.status).toBe(409);
 
     // B's period time is unchanged (transaction rolled back)
-    const bAfter = await prisma.timetablePeriod.findUnique({ where: { id: bPeriod.id } });
+    const bAfter = await prisma.timetablePeriod.findUnique({
+      where: { id: bPeriod.id },
+    });
     expect(bAfter?.startMin).toBe(700);
   });
 
@@ -352,16 +500,27 @@ describe('Timetable V2 (e2e)', () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
     // a second subject in the same section (same teacher) so we place 2 periods
-    const subject2 = await prisma.subject.create({ data: { schoolId: cls.school.id, name: `S-${uniq()}` } });
+    const subject2 = await prisma.subject.create({
+      data: { schoolId: cls.school.id, name: `S-${uniq()}` },
+    });
     const ss2 = await prisma.sectionSubject.create({
-      data: { sectionId: cls.section.id, subjectId: subject2.id, teacherId: cls.teacherProfile.id },
+      data: {
+        sectionId: cls.section.id,
+        subjectId: subject2.id,
+        teacherId: cls.teacherProfile.id,
+      },
     });
 
     // Mon–Fri, two 45-min CLASS periods
     await request(server())
       .post(`/api/timetable/sections/${cls.section.id}/setup`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ workingDays: ['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY'], dayStartMin: 600, dayEndMin: 690, periodMinutes: 45 })
+      .send({
+        workingDays: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'],
+        dayStartMin: 600,
+        dayEndMin: 690,
+        periodMinutes: 45,
+      })
       .expect(201);
     const got = await request(server())
       .get(`/api/timetable/sections/${cls.section.id}`)
@@ -375,8 +534,16 @@ describe('Timetable V2 (e2e)', () => {
       .send({
         templateDay: 'MONDAY',
         assignments: [
-          { periodId: periods[0].id, sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id },
-          { periodId: periods[1].id, sectionSubjectId: ss2.id, teacherId: cls.teacherProfile.id },
+          {
+            periodId: periods[0].id,
+            sectionSubjectId: cls.sectionSubject.id,
+            teacherId: cls.teacherProfile.id,
+          },
+          {
+            periodId: periods[1].id,
+            sectionSubjectId: ss2.id,
+            teacherId: cls.teacherProfile.id,
+          },
         ],
       });
     expect(res.status).toBe(201);
@@ -386,41 +553,73 @@ describe('Timetable V2 (e2e)', () => {
       .get(`/api/timetable/sections/${cls.section.id}`)
       .set('Authorization', `Bearer ${token}`);
     expect(after.body.entries).toHaveLength(10);
-    const mondays = after.body.entries.filter((e: any) => e.dayOfWeek === 'MONDAY');
+    const mondays = after.body.entries.filter(
+      (e: any) => e.dayOfWeek === 'MONDAY',
+    );
     expect(mondays).toHaveLength(2);
   });
 
   it('apply-template fails atomically when a teacher clashes on some day', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
-    const other = await addSection(cls.school.id, cls.classGrade.id, cls.teacherProfile.id);
+    const other = await addSection(
+      cls.school.id,
+      cls.classGrade.id,
+      cls.teacherProfile.id,
+    );
 
     // section B (Tue only) already has the teacher at 600–645
     await request(server())
       .post(`/api/timetable/sections/${other.section.id}/setup`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ workingDays: ['TUESDAY'], dayStartMin: 600, dayEndMin: 645, periodMinutes: 45 })
+      .send({
+        workingDays: ['TUESDAY'],
+        dayStartMin: 600,
+        dayEndMin: 645,
+        periodMinutes: 45,
+      })
       .expect(201);
-    const bGot = await request(server()).get(`/api/timetable/sections/${other.section.id}`).set('Authorization', `Bearer ${token}`);
+    const bGot = await request(server())
+      .get(`/api/timetable/sections/${other.section.id}`)
+      .set('Authorization', `Bearer ${token}`);
     await assign(other.section.id, token, {
-      dayOfWeek: 'TUESDAY', periodId: bGot.body.periods[0].id,
-      sectionSubjectId: other.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'TUESDAY',
+      periodId: bGot.body.periods[0].id,
+      sectionSubjectId: other.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     }).expect(201);
 
     // section A Mon–Fri at 600–645; applying the template replicates onto TUESDAY -> clash
     await request(server())
       .post(`/api/timetable/sections/${cls.section.id}/setup`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ workingDays: ['MONDAY','TUESDAY'], dayStartMin: 600, dayEndMin: 645, periodMinutes: 45 })
+      .send({
+        workingDays: ['MONDAY', 'TUESDAY'],
+        dayStartMin: 600,
+        dayEndMin: 645,
+        periodMinutes: 45,
+      })
       .expect(201);
-    const aGot = await request(server()).get(`/api/timetable/sections/${cls.section.id}`).set('Authorization', `Bearer ${token}`);
+    const aGot = await request(server())
+      .get(`/api/timetable/sections/${cls.section.id}`)
+      .set('Authorization', `Bearer ${token}`);
     const res = await request(server())
       .post(`/api/timetable/sections/${cls.section.id}/apply-template`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ assignments: [{ periodId: aGot.body.periods[0].id, sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id }] });
+      .send({
+        assignments: [
+          {
+            periodId: aGot.body.periods[0].id,
+            sectionSubjectId: cls.sectionSubject.id,
+            teacherId: cls.teacherProfile.id,
+          },
+        ],
+      });
     expect(res.status).toBe(409);
     // nothing persisted (atomic) — A still has no entries
-    const after = await request(server()).get(`/api/timetable/sections/${cls.section.id}`).set('Authorization', `Bearer ${token}`);
+    const after = await request(server())
+      .get(`/api/timetable/sections/${cls.section.id}`)
+      .set('Authorization', `Bearer ${token}`);
     expect(after.body.entries).toHaveLength(0);
   });
 
@@ -429,29 +628,38 @@ describe('Timetable V2 (e2e)', () => {
   it('cross-school write denied; teacher cannot author; other-school student cannot read', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
-    const periods = await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
 
     // admin of another school
     const otherSchool = await createTestSchool();
     const adminBToken = await adminFor(otherSchool.id);
     const cross = await assign(cls.section.id, adminBToken, {
-      dayOfWeek: 'MONDAY', periodId: periods[0].id,
-      sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     });
     expect(cross.status).toBe(403);
 
     // a teacher cannot author
     const teacherToken = await tokenFor(app, cls.teacherUser);
     const asTeacher = await assign(cls.section.id, teacherToken, {
-      dayOfWeek: 'MONDAY', periodId: periods[0].id,
-      sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     });
     expect(asTeacher.status).toBe(403);
 
     // publish, then a student of a DIFFERENT school is denied on /class/:id
     await assign(cls.section.id, token, {
-      dayOfWeek: 'MONDAY', periodId: periods[0].id,
-      sectionSubjectId: cls.sectionSubject.id, teacherId: cls.teacherProfile.id,
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
     }).expect(201);
     await request(server())
       .post(`/api/timetable/sections/${cls.section.id}/publish`)
