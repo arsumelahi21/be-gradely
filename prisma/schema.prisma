@@ -1470,6 +1470,10 @@ model Timetable {
   dayStartMin    Int             @default(480)
   dayEndMin      Int             @default(840)
   periodMinutes  Int             @default(45) // remembered so "recalculate" can re-divide
+  // The window this timetable actually applies to. Nullable = the whole academic
+  // year; both are DATE (no clock), compared against a wall-clock day.
+  effectiveFrom  DateTime?       @db.Date
+  effectiveTo    DateTime?       @db.Date
   publishedAt    DateTime?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
