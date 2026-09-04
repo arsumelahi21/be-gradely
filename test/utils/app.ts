@@ -69,6 +69,9 @@ export async function createTestApp(): Promise<INestApplication> {
       transform: true,
     }),
   );
-  await app.init();
+  // listen(0), not init(): an already-listening server keeps supertest from
+  // doing its own listen(0)/close() per request, which resets sockets when a
+  // test fires several requests at once (dashboard-overview).
+  await app.listen(0);
   return app;
 }
