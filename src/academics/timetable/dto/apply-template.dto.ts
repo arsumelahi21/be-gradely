@@ -17,8 +17,10 @@ export class TemplateAssignmentDto {
   @IsUUID()
   sectionSubjectId: string;
 
+  /** Optional: defaults to the teacher allocated to this subject for the class. */
+  @IsOptional()
   @IsUUID()
-  teacherId: string;
+  teacherId?: string;
 
   @IsOptional()
   @IsString()
