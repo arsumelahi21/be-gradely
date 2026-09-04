@@ -596,12 +596,45 @@ export class AttendanceService extends BaseSchoolScopedService {
       (g) => g.date.getTime() === today.getTime(),
     );
 
+    // Per-day series for the dashboard's 7-day chart. `grouped` is already
+    // keyed by (date, status), so this is a regroup — no extra query. Days with
+    // no register are emitted with total 0 so the week never has a gap.
+    const byDate = new Map<number, typeof grouped>();
+    for (const g of grouped) {
+      const key = g.date.getTime();
+      const list = byDate.get(key) ?? [];
+      list.push(g);
+      byDate.set(key, list);
+    }
+    const daily: Array<{
+      date: string;
+      total: number;
+      present: number;
+      presentRate: number;
+    }> = [];
+    // Every day of the requested window, capped at 31 points so a long range
+    // can't push a hundred marks into a dashboard-sized chart.
+    const spanDays =
+      Math.round((rangeEnd.getTime() - rangeStart.getTime()) / DAY_MS) + 1;
+    const points = Math.min(Math.max(spanDays, 1), 31);
+    for (let i = points - 1; i >= 0; i--) {
+      const day = new Date(rangeEnd.getTime() - i * DAY_MS);
+      const t = tallyGrouped(byDate.get(day.getTime()) ?? []);
+      daily.push({
+        date: day.toISOString().slice(0, 10),
+        total: t.total,
+        present: t.present,
+        presentRate: t.presentRate,
+      });
+    }
+
     return {
       schoolId,
       from: rangeStart.toISOString().slice(0, 10),
       to: rangeEnd.toISOString().slice(0, 10),
       range: tallyGrouped(grouped),
       today: tallyGrouped(todayGrouped),
+      daily,
     };
   }
 
