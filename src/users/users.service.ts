@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EnrollmentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -623,7 +624,13 @@ export class UsersService {
   async findAll(
     actor: Actor,
     roleFilter?: Role,
-    opts?: { page?: number; pageSize?: number; search?: string },
+    opts?: {
+      page?: number;
+      pageSize?: number;
+      search?: string;
+      classGradeId?: string;
+      sectionId?: string;
+    },
   ) {
     // Cache only the tenant-scoped (SCHOOL_ADMIN) view — SUPER_ADMIN's cross-school
     // list must not live under a school key. Variant keys on role/page/search.
@@ -635,6 +642,8 @@ export class UsersService {
         page: opts?.page ?? null,
         pageSize: opts?.pageSize ?? null,
         search: opts?.search?.trim() || null,
+        classGradeId: opts?.classGradeId ?? null,
+        sectionId: opts?.sectionId ?? null,
       };
       return this.cache.wrap(
         schoolCacheKey(schoolId, 'users', variant),
@@ -648,7 +657,13 @@ export class UsersService {
   private async computeFindAll(
     actor: Actor,
     roleFilter?: Role,
-    opts?: { page?: number; pageSize?: number; search?: string },
+    opts?: {
+      page?: number;
+      pageSize?: number;
+      search?: string;
+      classGradeId?: string;
+      sectionId?: string;
+    },
   ) {
     const where: any = {};
 
@@ -666,6 +681,25 @@ export class UsersService {
       }
     } else {
       throw new ForbiddenException('Not allowed');
+    }
+
+    // Class/section filter (students only — nothing else carries an enrollment).
+    // Both narrow via the SAME ACTIVE enrollment, so a stale past-year row in
+    // the requested class can't pull a student who has since moved on.
+    if (opts?.classGradeId || opts?.sectionId) {
+      where.studentProfile = {
+        is: {
+          enrollments: {
+            some: {
+              status: EnrollmentStatus.ACTIVE,
+              ...(opts.sectionId ? { sectionId: opts.sectionId } : {}),
+              ...(opts.classGradeId
+                ? { section: { classGradeId: opts.classGradeId } }
+                : {}),
+            },
+          },
+        },
+      };
     }
 
     // Optional cross-field search (email + any profile fullName + rollNo).
@@ -1553,6 +1587,76 @@ export class UsersService {
     throw new NotFoundException('No photo');
   }
 
+  // ---- Generic self-service avatar (any role), stored as bytes in UserPhoto ----
+
+  async uploadMyPhoto(
+    file: { buffer: Buffer; mimetype: string } | undefined,
+    actor: Actor,
+  ) {
+    if (!file || !file.buffer?.length) {
+      throw new BadRequestException('No photo file provided');
+    }
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!allowed.includes(file.mimetype)) {
+      throw new BadRequestException('Unsupported image type');
+    }
+    const { buffer, mimeType } = await compressImage(
+      file.buffer,
+      file.mimetype,
+      512, // avatars don't need to be large
+    );
+    const mt = mimeType ?? file.mimetype;
+    // Prisma Bytes wants Uint8Array<ArrayBuffer>; normalize the Node Buffer.
+    const bytes = Uint8Array.from(buffer);
+    await this.prisma.$transaction([
+      this.prisma.userPhoto.upsert({
+        where: { userId: actor.userId },
+        create: { userId: actor.userId, data: bytes, mimeType: mt },
+        update: { data: bytes, mimeType: mt },
+      }),
+      this.prisma.user.update({
+        where: { id: actor.userId },
+        data: { photoMimeType: mt },
+      }),
+    ]);
+    return { success: true, mimeType: mt };
+  }
+
+  async deleteMyPhoto(actor: Actor) {
+    await this.prisma.$transaction([
+      this.prisma.userPhoto.deleteMany({ where: { userId: actor.userId } }),
+      this.prisma.user.update({
+        where: { id: actor.userId },
+        data: { photoMimeType: null },
+      }),
+    ]);
+    return { success: true };
+  }
+
+  async getUserPhoto(userId: string, actor: Actor) {
+    const target = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, schoolId: true, photoMimeType: true },
+    });
+    if (!target) throw new NotFoundException('User not found');
+    // Avatars are visible to the owner, super-admins, and same-school members.
+    const sameSchool = !!actor.schoolId && actor.schoolId === target.schoolId;
+    if (
+      actor.userId !== target.id &&
+      actor.role !== Role.SUPER_ADMIN &&
+      !sameSchool
+    ) {
+      throw new ForbiddenException('Cross-school access denied');
+    }
+    if (!target.photoMimeType) throw new NotFoundException('No photo');
+    const row = await this.prisma.userPhoto.findUnique({
+      where: { userId: target.id },
+      select: { data: true, mimeType: true },
+    });
+    if (!row) throw new NotFoundException('No photo');
+    return { data: row.data as Buffer, mimeType: row.mimeType };
+  }
+
   async remove(id: string, actor: Actor) {
     const user = await this.prisma.user.findUnique({
       where: { id },
@@ -1646,6 +1750,14 @@ export class UsersService {
       studentProfile: {
         include: {
           socialLinks: true,
+          // Current placements for the list's Class/Section column. NOT capped to
+          // one: ~20% of students hold several ACTIVE enrollments, and taking
+          // just the newest would show a class that contradicts the filter.
+          enrollments: {
+            where: { status: EnrollmentStatus.ACTIVE },
+            orderBy: { createdAt: 'desc' },
+            include: { section: { include: { classGrade: true } } },
+          },
           parents: {
             include: {
               parent: {

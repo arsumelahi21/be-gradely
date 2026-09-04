@@ -13,6 +13,8 @@ import { EnrollmentsController } from './enrollments/enrollments.controller';
 import { EnrollmentsService } from './enrollments/enrollments.service';
 import { SectionSubjectsController } from './section-subjects/section-subjects.controller';
 import { SectionSubjectsService } from './section-subjects/section-subjects.service';
+import { TimetableController } from './timetable/timetable.controller';
+import { TimetableService } from './timetable/timetable.service';
 
 @Module({
   controllers: [
@@ -23,6 +25,7 @@ import { SectionSubjectsService } from './section-subjects/section-subjects.serv
     StudentsController,
     EnrollmentsController,
     SectionSubjectsController,
+    TimetableController,
   ],
   providers: [
     AcademicYearsService,
@@ -32,6 +35,7 @@ import { SectionSubjectsService } from './section-subjects/section-subjects.serv
     StudentsService,
     EnrollmentsService,
     SectionSubjectsService,
+    TimetableService,
   ],
   exports: [
     AcademicYearsService,
@@ -41,6 +45,7 @@ import { SectionSubjectsService } from './section-subjects/section-subjects.serv
     StudentsService,
     EnrollmentsService,
     SectionSubjectsService,
+    TimetableService,
   ],
 })
 export class AcademicsModule {}

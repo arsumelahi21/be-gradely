@@ -738,10 +738,7 @@ describe('Messaging (e2e)', () => {
       // Baseline: nobody has unread.
       expect((await unread(studentToken)).body).toEqual({ unread: 0 });
 
-      const thread = await startDirect(
-        teacherToken,
-        cls.students[0].user.id,
-      );
+      const thread = await startDirect(teacherToken, cls.students[0].user.id);
       expect(thread.status).toBe(201);
       const send = await request(app.getHttpServer())
         .post(`/api/messaging/threads/${thread.body.id}/messages`)

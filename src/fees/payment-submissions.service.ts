@@ -12,6 +12,7 @@ import { CacheService } from '../common/services/cache.service';
 import { AuditLogService } from '../audit/audit.service';
 import { S3PresignService } from '../common/services/s3-presign.service';
 import { assertAttachmentAllowed } from '../common/upload/attachment-rules';
+import { compressImage } from '../common/upload/image-compress';
 import {
   NOTIFICATION_CREATE,
   type NotificationCreateEvent,
@@ -132,10 +133,15 @@ export class PaymentSubmissionsService extends BaseSchoolScopedService {
       actor.userId,
       file.originalname || 'receipt',
     );
+    // Recompress an image receipt to KBs before storing (a PDF passes through).
+    const { buffer: receiptBody, mimeType: receiptMime } = await compressImage(
+      file.buffer,
+      file.mimetype,
+    );
     await this.s3.putObject({
       key,
-      body: file.buffer,
-      contentType: file.mimetype,
+      body: receiptBody,
+      contentType: receiptMime ?? file.mimetype,
     });
 
     const submission = await this.prisma.paymentSubmission.create({
@@ -150,8 +156,8 @@ export class PaymentSubmissionsService extends BaseSchoolScopedService {
         paidAt: utcMidnight(dto.paidAt),
         note: dto.note?.trim() || null,
         receiptS3Key: key,
-        receiptMimeType: file.mimetype,
-        receiptSizeBytes: file.buffer.length,
+        receiptMimeType: receiptMime ?? file.mimetype,
+        receiptSizeBytes: receiptBody.length,
         submittedByUserId: actor.userId,
         status: PaymentSubmissionStatus.PENDING_VERIFICATION,
       },

@@ -8,6 +8,7 @@ import { CacheService } from '../common/services/cache.service';
 import { CreateSchoolDto } from './dto/create-school.dto';
 import { UpdateSchoolDto } from './dto/update-school.dto';
 import { resolvePagination } from '../common/dto/pagination-query.dto';
+import { compressImage } from '../common/upload/image-compress';
 
 type ListOpts = { page?: number; pageSize?: number; search?: string };
 
@@ -152,5 +153,68 @@ export class SchoolsService {
     });
     await this.invalidateSchoolsCaches();
     return deleted;
+  }
+
+  // ---- School branding logo (bytes isolated in SchoolLogo, like UserPhoto) ----
+
+  async uploadLogo(
+    schoolId: string | undefined,
+    file: { buffer: Buffer; mimetype: string } | undefined,
+  ) {
+    if (!schoolId) throw new BadRequestException('No school for this account');
+    if (!file || !file.buffer?.length) {
+      throw new BadRequestException('No logo file provided');
+    }
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!allowed.includes(file.mimetype)) {
+      throw new BadRequestException('Unsupported image type');
+    }
+    const { buffer, mimeType } = await compressImage(
+      file.buffer,
+      file.mimetype,
+      512, // a logo doesn't need to be large
+    );
+    const mt = mimeType ?? file.mimetype;
+    // Prisma Bytes wants Uint8Array; normalize the Node Buffer.
+    const bytes = Uint8Array.from(buffer);
+    const prisma = this.prisma as any;
+    await prisma.$transaction([
+      prisma.schoolLogo.upsert({
+        where: { schoolId },
+        create: { schoolId, data: bytes, mimeType: mt },
+        update: { data: bytes, mimeType: mt },
+      }),
+      prisma.school.update({
+        where: { id: schoolId },
+        data: { logoMimeType: mt },
+      }),
+    ]);
+    await this.invalidateSchoolsCaches();
+    return { success: true, mimeType: mt };
+  }
+
+  async getLogo(
+    schoolId: string | undefined,
+  ): Promise<{ data: Buffer; mimeType: string }> {
+    if (!schoolId) throw new NotFoundException('No logo');
+    const logo = await (this.prisma as any).schoolLogo.findUnique({
+      where: { schoolId },
+    });
+    if (!logo) throw new NotFoundException('No logo');
+    return { data: Buffer.from(logo.data), mimeType: logo.mimeType };
+  }
+
+  async deleteLogo(schoolId: string | undefined) {
+    if (!schoolId) throw new BadRequestException('No school for this account');
+    const prisma = this.prisma as any;
+    await prisma.$transaction([
+      prisma.schoolLogo.deleteMany({ where: { schoolId } }),
+      prisma.school.update({
+        where: { id: schoolId },
+        data: { logoMimeType: null },
+      }),
+    ]);
+    await this.invalidateSchoolsCaches();
+    return { success: true };
   }
 }
