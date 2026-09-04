@@ -1505,7 +1505,11 @@ describe('Fees — challan generation (e2e)', () => {
   describe('arrears carried onto the next challan', () => {
     /** Bill `periodMonth`, returning the one challan produced. */
     const billMonth = async (
-      cls: { adminToken: string; academicYear: { id: string }; section: { id: string } },
+      cls: {
+        adminToken: string;
+        academicYear: { id: string };
+        section: { id: string };
+      },
       periodMonth: number,
     ) => {
       const res = await http()
@@ -1927,9 +1931,9 @@ describe('Fees — challan generation (e2e)', () => {
 
       expect(res.body.total).toBe(2);
       expect(res.body.skippedPaid).toBe(1);
-      expect(
-        res.body.items.map((i: { id: string }) => i.id),
-      ).not.toContain(paid.id);
+      expect(res.body.items.map((i: { id: string }) => i.id)).not.toContain(
+        paid.id,
+      );
     });
 
     // An explicit status=PAID filter must not smuggle settled challans back in.
@@ -3226,7 +3230,15 @@ describe('Fees — challan generation (e2e)', () => {
       expect(res.body.plan).not.toHaveProperty('intervalCount');
       // Each stored row carries exactly what the schedule is made of.
       expect(Object.keys(res.body.plan.installments[0]).sort()).toEqual(
-        ['amount', 'dueDate', 'id', 'paidAmount', 'remainingAmount', 'seq', 'status'].sort(),
+        [
+          'amount',
+          'dueDate',
+          'id',
+          'paidAmount',
+          'remainingAmount',
+          'seq',
+          'status',
+        ].sort(),
       );
     });
 
@@ -3293,7 +3305,11 @@ describe('Fees — challan generation (e2e)', () => {
       }
 
       const genInstallment = (
-        cls: { adminToken: string; academicYear: { id: string }; section: { id: string } },
+        cls: {
+          adminToken: string;
+          academicYear: { id: string };
+          section: { id: string };
+        },
         installmentSeq: number,
       ) =>
         http()
@@ -3347,7 +3363,9 @@ describe('Fees — challan generation (e2e)', () => {
         const again = await genInstallment(cls, 1).expect(201);
         expect(again.body.generated).toBe(0);
         expect(again.body.skippedDetail[0].reason).toBe('ALREADY_GENERATED');
-        expect(await prisma.challan.count({ where: { schoolId: cls.school.id } })).toBe(1);
+        expect(
+          await prisma.challan.count({ where: { schoolId: cls.school.id } }),
+        ).toBe(1);
       });
 
       it('holds the rule at the database level, not just the pre-flight check', async () => {
@@ -3449,8 +3467,11 @@ describe('Fees — challan generation (e2e)', () => {
           .expect(200);
 
         expect(res.body.plans).toHaveLength(1);
-        expect(res.body.plans[0].installments.map((i: { status: string }) => i.status))
-          .toEqual(['ALREADY_GENERATED', 'AVAILABLE', 'AVAILABLE']);
+        expect(
+          res.body.plans[0].installments.map(
+            (i: { status: string }) => i.status,
+          ),
+        ).toEqual(['ALREADY_GENERATED', 'AVAILABLE', 'AVAILABLE']);
         expect(res.body.plans[0].installments[0].challanNo).toBeTruthy();
         expect(res.body.student.className).toBeTruthy();
         // The balance rides along, so a billed row can offer to take payment
@@ -3526,7 +3547,9 @@ describe('Fees — challan generation (e2e)', () => {
           .set('Authorization', `Bearer ${cls.adminToken}`)
           .send(body)
           .expect(400);
-        expect(JSON.stringify(res.body.message)).toMatch(/already been generated/i);
+        expect(JSON.stringify(res.body.message)).toMatch(
+          /already been generated/i,
+        );
       });
 
       it('refuses INSTALLMENT with no installment chosen', async () => {
@@ -3555,7 +3578,9 @@ describe('Fees — challan generation (e2e)', () => {
             { amount: 150000, dueDate: '2026-11-10' },
           ],
         }).expect(400);
-        expect(JSON.stringify(res.body.message)).toMatch(/already been billed/i);
+        expect(JSON.stringify(res.body.message)).toMatch(
+          /already been billed/i,
+        );
       });
 
       // THE separation rule: monthly generation must never bill a plan student,
@@ -4291,7 +4316,9 @@ describe('Fees — challan generation (e2e)', () => {
         const res = await submit(f.parentToken, f.challan.id, {
           amount: '125000',
         }).expect(400);
-        expect(JSON.stringify(res.body.message)).toMatch(/choose the installment/i);
+        expect(JSON.stringify(res.body.message)).toMatch(
+          /choose the installment/i,
+        );
       });
 
       // THE test: within the challan balance, over the installment's.
@@ -4398,7 +4425,9 @@ describe('Fees — challan generation (e2e)', () => {
         expect(JSON.stringify(res.body.message)).toMatch(/installment 1/i);
 
         // Exactly one payment, and the plan is not double-credited.
-        expect(await prisma.payment.count({ where: { voidedAt: null } })).toBe(1);
+        expect(await prisma.payment.count({ where: { voidedAt: null } })).toBe(
+          1,
+        );
         const after = await readPlan(f.studentToken, f.studentId);
         expect(after.body.plan.paidAmount).toBe(125000);
       });
@@ -4431,7 +4460,10 @@ describe('Fees — challan generation (e2e)', () => {
 
         /** One class, `students` students, each on a plan with one receipt filed. */
         async function countFor(students: number) {
-          const cls = await seedBillableClass({ studentCount: students, fee: 500000 });
+          const cls = await seedBillableClass({
+            studentCount: students,
+            fee: 500000,
+          });
           await http()
             .post('/api/fees/challans/generate')
             .set('Authorization', `Bearer ${cls.adminToken}`)
@@ -4511,7 +4543,9 @@ describe('Fees — challan generation (e2e)', () => {
           amount: '100000',
           installmentId: body.plan.payable.installment.id,
         }).expect(400);
-        expect(JSON.stringify(res.body.message)).toMatch(/not on an installment plan/i);
+        expect(JSON.stringify(res.body.message)).toMatch(
+          /not on an installment plan/i,
+        );
       });
     });
 

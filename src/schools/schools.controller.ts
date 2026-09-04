@@ -7,8 +7,15 @@ import {
   Patch,
   Post,
   Query,
+  Req,
+  Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import type { Response } from 'express';
 import { SchoolsService } from './schools.service';
 import { CreateSchoolDto } from './dto/create-school.dto';
 import { UpdateSchoolDto } from './dto/update-school.dto';
@@ -21,6 +28,40 @@ import { Role } from '../common/types/role.type';
 @Controller('schools')
 export class SchoolsController {
   constructor(private schools: SchoolsService) {}
+
+  // ---- School branding logo (principal self-service; bytes in SchoolLogo) ----
+  // `me/logo` resolves the caller's own school, so a principal can only touch theirs.
+
+  @Roles(Role.SCHOOL_ADMIN)
+  @Post('me/logo')
+  @UseInterceptors(
+    FileInterceptor('logo', {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+    }),
+  )
+  uploadMyLogo(
+    @UploadedFile() file: { buffer: Buffer; mimetype: string } | undefined,
+    @Req() req: any,
+  ) {
+    return this.schools.uploadLogo(req.user?.schoolId, file);
+  }
+
+  // No @Roles: any authenticated user may display their own school's logo.
+  @Get('me/logo')
+  async getMyLogo(@Req() req: any, @Res() res: Response) {
+    const { data, mimeType } = await this.schools.getLogo(req.user?.schoolId);
+    res.setHeader('Content-Type', mimeType);
+    // Never cache: a re-uploaded logo must show everywhere on the next fetch.
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(data);
+  }
+
+  @Roles(Role.SCHOOL_ADMIN)
+  @Delete('me/logo')
+  deleteMyLogo(@Req() req: any) {
+    return this.schools.deleteLogo(req.user?.schoolId);
+  }
 
   @Roles(Role.SUPER_ADMIN)
   @Post()

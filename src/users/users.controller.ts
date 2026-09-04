@@ -47,6 +47,8 @@ export class UsersController {
       page: query.page,
       pageSize: query.pageSize,
       search: query.search,
+      classGradeId: query.classGradeId,
+      sectionId: query.sectionId,
     });
   }
 
@@ -189,6 +191,79 @@ export class UsersController {
     res.setHeader('Content-Type', mimeType);
     // Never cache: a re-uploaded photo must show everywhere on the next fetch
     // (photos are compressed to KBs, so refetching per view is cheap).
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(data);
+  }
+
+  // ---- User avatar (self-service, ANY role; bytes in the isolated UserPhoto table) ----
+  // `me/photo` routes are declared before `:id/photo` so "me" isn't caught by the param.
+
+  @Roles(
+    Role.SUPER_ADMIN,
+    Role.SCHOOL_ADMIN,
+    Role.TEACHER,
+    Role.STUDENT,
+    Role.PARENT,
+  )
+  @Post('me/photo')
+  @UseInterceptors(
+    FileInterceptor('photo', {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+    }),
+  )
+  uploadMyPhoto(
+    @UploadedFile() file: { buffer: Buffer; mimetype: string } | undefined,
+    @Req() req: any,
+  ) {
+    return this.users.uploadMyPhoto(file, req.user);
+  }
+
+  @Roles(
+    Role.SUPER_ADMIN,
+    Role.SCHOOL_ADMIN,
+    Role.TEACHER,
+    Role.STUDENT,
+    Role.PARENT,
+  )
+  @Delete('me/photo')
+  deleteMyPhoto(@Req() req: any) {
+    return this.users.deleteMyPhoto(req.user);
+  }
+
+  @Roles(
+    Role.SUPER_ADMIN,
+    Role.SCHOOL_ADMIN,
+    Role.TEACHER,
+    Role.STUDENT,
+    Role.PARENT,
+  )
+  @Get('me/photo')
+  async getMyPhoto(@Req() req: any, @Res() res: Response) {
+    const { data, mimeType } = await this.users.getUserPhoto(
+      req.user.userId,
+      req.user,
+    );
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(data);
+  }
+
+  @Roles(
+    Role.SUPER_ADMIN,
+    Role.SCHOOL_ADMIN,
+    Role.TEACHER,
+    Role.STUDENT,
+    Role.PARENT,
+  )
+  @Get(':id/photo')
+  async getUserPhoto(
+    @Param('id') id: string,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    const { data, mimeType } = await this.users.getUserPhoto(id, req.user);
+    res.setHeader('Content-Type', mimeType);
     res.setHeader('Cache-Control', 'no-store');
     res.send(data);
   }

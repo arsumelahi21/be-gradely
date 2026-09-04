@@ -24,6 +24,7 @@ model School {
   phone                         String?
   email                         String?
   website                       String?
+  logoMimeType                  String? // set when a SchoolLogo exists (branding shown in portals/print)
   isActive                      Boolean              @default(true)
   // --- Fee configuration (the per-school singleton; no separate FeeSettings model) ---
   currency                      String               @default("PKR") // ISO 4217
@@ -55,6 +56,21 @@ model School {
   payments                      Payment[]
   installmentPlans              FeeInstallmentPlan[]
   paymentSubmissions            PaymentSubmission[]
+  timetableConfig               TimetableConfig?
+  timetablePeriods              TimetablePeriod[]
+  timetables                    Timetable[]
+  timetableEntries              TimetableEntry[]
+  logo                          SchoolLogo?
+}
+
+// School branding logo — bytes isolated in their own table (like UserPhoto), so
+// normal School reads never pull the binary. School.logoMimeType flags existence.
+model SchoolLogo {
+  schoolId  String   @id
+  data      Bytes
+  mimeType  String
+  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt
 }
 
 model User {
@@ -71,8 +87,10 @@ model User {
   phone                 String?
   phoneDialCode         String?
   userCode              String? // per-school searchable id for staff/parents/admins (role-prefixed, e.g. TCH-0001); students use rollNo
+  photoMimeType         String? // set when a self-uploaded avatar exists (bytes live in the isolated UserPhoto table)
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
+  photo                 UserPhoto?
   parentProfile         ParentProfile?
   studentProfile        StudentProfile?
   teacherProfile        TeacherProfile?
@@ -152,6 +170,7 @@ model TeacherProfile {
   assignmentsCreated            Assignment[]
   assignmentAttachmentsUploaded AssignmentAttachment[]
   examsCreated                  Exam[]
+  timetableEntries              TimetableEntry[]
 
   @@unique([schoolId, employeeCode])
   @@index([schoolId])
@@ -258,6 +277,16 @@ model StudentPhoto {
   updatedAt DateTime       @updatedAt
 }
 
+// Self-uploaded avatar for ANY user (all roles). Isolated 1:1 table so normal
+// user reads never pull the binary; User.photoMimeType flags existence.
+model UserPhoto {
+  userId    String   @id
+  data      Bytes
+  mimeType  String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt
+}
+
 model ParentStudent {
   parentId     String
   studentId    String
@@ -287,6 +316,7 @@ model AcademicYear {
   exams            Exam[]
   challans         Challan[]
   installmentPlans FeeInstallmentPlan[]
+  timetables       Timetable[]
 
   @@index([schoolId])
 }
@@ -309,23 +339,25 @@ model ClassGrade {
 }
 
 model Section {
-  id             String           @id @default(uuid())
-  schoolId       String
-  classGradeId   String
-  name           String
-  room           String?
-  isActive       Boolean          @default(true)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  school         School           @relation(fields: [schoolId], references: [id])
-  classGrade     ClassGrade       @relation(fields: [classGradeId], references: [id])
-  enrollments    Enrollment[]
-  subjects       SectionSubject[]
-  teachers       SectionTeacher[]
-  quizzes        Quiz[]
-  messageThreads MessageThread[]
-  announcements  Announcement[]
-  challans       Challan[]
+  id               String           @id @default(uuid())
+  schoolId         String
+  classGradeId     String
+  name             String
+  room             String?
+  isActive         Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  school           School           @relation(fields: [schoolId], references: [id])
+  classGrade       ClassGrade       @relation(fields: [classGradeId], references: [id])
+  enrollments      Enrollment[]
+  subjects         SectionSubject[]
+  teachers         SectionTeacher[]
+  quizzes          Quiz[]
+  messageThreads   MessageThread[]
+  announcements    Announcement[]
+  challans         Challan[]
+  timetables       Timetable[]
+  timetableEntries TimetableEntry[]
 
   @@unique([classGradeId, name])
   @@index([schoolId])
@@ -369,20 +401,21 @@ model Enrollment {
 }
 
 model SectionSubject {
-  id          String          @id @default(uuid())
-  sectionId   String
-  subjectId   String
-  teacherId   String?
-  schedule    String?
-  isPrimary   Boolean         @default(false)
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
-  section     Section         @relation(fields: [sectionId], references: [id])
-  subject     Subject         @relation(fields: [subjectId], references: [id])
-  teacher     TeacherProfile? @relation(fields: [teacherId], references: [id], onDelete: SetNull)
-  assignments Assignment[]
-  exams       Exam[]
-  attendances Attendance[]
+  id               String           @id @default(uuid())
+  sectionId        String
+  subjectId        String
+  teacherId        String?
+  schedule         String?
+  isPrimary        Boolean          @default(false)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  section          Section          @relation(fields: [sectionId], references: [id])
+  subject          Subject          @relation(fields: [subjectId], references: [id])
+  teacher          TeacherProfile?  @relation(fields: [teacherId], references: [id], onDelete: SetNull)
+  assignments      Assignment[]
+  exams            Exam[]
+  attendances      Attendance[]
+  timetableEntries TimetableEntry[]
 
   @@unique([sectionId, subjectId])
   @@index([teacherId])
@@ -1348,4 +1381,144 @@ model PaymentSubmission {
   @@index([schoolId, status, createdAt]) // the verification queue
   @@index([challanId])
   @@index([studentId])
+}
+
+// ===========================================================================
+// Timetable / Class Scheduling
+//
+// A timetable is not a new relationship graph: it PLACES an existing
+// SectionSubject (section + subject + teacher) into a (dayOfWeek, periodSlot)
+// cell. PeriodSlot gives those period integers real start/end times (the same
+// integers Attendance.period already uses). Times are Int minutes-from-midnight
+// (wall-clock in TimetableConfig.timezone) — the schema's all-Int convention.
+// ===========================================================================
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+/// CLASS cells carry a SectionSubject; BREAK/LUNCH/ASSEMBLY/FREE are labels only.
+enum PeriodKind {
+  CLASS
+  BREAK
+  LUNCH
+  ASSEMBLY
+  FREE
+}
+
+enum TimetableStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+/// School-level DEFAULTS only (timezone is authoritative; the rest seed the
+/// per-section setup screen). The authoritative schedule lives on each Timetable.
+model TimetableConfig {
+  id            String      @id @default(uuid())
+  schoolId      String      @unique
+  timezone      String      @default("Asia/Karachi") // IANA; period times are wall-clock in this tz
+  workingDays   DayOfWeek[] // default working days for a new section setup
+  dayStartMin   Int         @default(480) // 08:00, minutes-from-midnight
+  dayEndMin     Int         @default(840) // 14:00
+  periodMinutes Int         @default(45) // default period duration
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  school School @relation(fields: [schoolId], references: [id])
+}
+
+/// The bell schedule of ONE section's timetable. `index` (1-based) aligns with
+/// Attendance.period; times are minutes-from-midnight, wall-clock in the school tz.
+model TimetablePeriod {
+  id          String     @id @default(uuid())
+  timetableId String // per-section (was schoolId in V1)
+  schoolId    String // denormalized for tenant scoping only
+  index       Int // 1-based order within the day
+  label       String? // "Period 1", "Assembly", "Lunch"
+  startMin    Int // minutes-from-midnight, wall-clock
+  endMin      Int
+  kind        PeriodKind @default(CLASS) // CLASS rows are assignable; others are bands
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  timetable Timetable        @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+  school    School           @relation(fields: [schoolId], references: [id])
+  entries   TimetableEntry[]
+
+  @@unique([timetableId, index]) // no duplicate period numbers within a section
+  @@index([timetableId])
+  @@index([schoolId])
+}
+
+/// Per-section, per-year container with a lifecycle AND its own schedule params
+/// (seeded from TimetableConfig defaults, then editable). One per section per year.
+model Timetable {
+  id             String          @id @default(uuid())
+  schoolId       String
+  academicYearId String
+  sectionId      String
+  status         TimetableStatus @default(DRAFT)
+  // The section's own schedule params (the period builder is the source of truth for times).
+  workingDays    DayOfWeek[]
+  dayStartMin    Int             @default(480)
+  dayEndMin      Int             @default(840)
+  periodMinutes  Int             @default(45) // remembered so "recalculate" can re-divide
+  publishedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  school       School            @relation(fields: [schoolId], references: [id])
+  academicYear AcademicYear      @relation(fields: [academicYearId], references: [id])
+  section      Section           @relation(fields: [sectionId], references: [id])
+  periods      TimetablePeriod[]
+  entries      TimetableEntry[]
+
+  @@unique([sectionId, academicYearId]) // one live timetable per section per year
+  @@index([schoolId, status])
+  @@index([academicYearId])
+}
+
+/// One CLASS-cell assignment. `sectionSubjectId` is the subject + Attendance
+/// anchor; `teacherId` is the ACTUAL scheduled teacher (qualified for the subject,
+/// need not equal SectionSubject.teacherId). `startMin`/`endMin` are a denormalized
+/// copy of the period's time — WRITTEN ONLY BY THE SERVICE — so cross-section
+/// teacher/room TIME-OVERLAP conflicts are single indexed scans.
+model TimetableEntry {
+  id               String    @id @default(uuid())
+  timetableId      String
+  schoolId         String // denormalized: tenant scoping + conflict scans
+  sectionId        String // = timetable.sectionId
+  academicYearId   String // denormalized: cross-section teacher/room scans
+  dayOfWeek        DayOfWeek
+  periodId         String // -> TimetablePeriod (a CLASS-kind period)
+  startMin         Int // denormalized from the period (service-written)
+  endMin           Int
+  sectionSubjectId String // subject of the section + Attendance anchor
+  teacherId        String // the scheduled teacher (qualified for the subject)
+  room             String? // override; falls back to Section.room on read
+  note             String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  timetable      Timetable       @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+  school         School          @relation(fields: [schoolId], references: [id])
+  section        Section         @relation(fields: [sectionId], references: [id])
+  period         TimetablePeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  // Cascade mirrors Assignment/Exam: removing a subject-class or a teacher clears their placements.
+  sectionSubject SectionSubject  @relation(fields: [sectionSubjectId], references: [id], onDelete: Cascade)
+  teacher        TeacherProfile  @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@unique([timetableId, dayOfWeek, periodId]) // SECTION CONFLICT — one assignment per (section, day, period)
+  @@index([academicYearId, teacherId, dayOfWeek]) // TEACHER time-overlap scan (then filter start/end)
+  @@index([academicYearId, dayOfWeek]) // ROOM time-overlap scan
+  @@index([sectionSubjectId])
+  @@index([timetableId])
+  @@index([schoolId])
 }

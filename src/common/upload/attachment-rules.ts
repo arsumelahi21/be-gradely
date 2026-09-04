@@ -23,6 +23,31 @@ export const ALLOWED_ATTACHMENT_MIME_TYPES = new Set<string>([
 
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MB
 
+/**
+ * PDF-only gate for the assignment module (attachments + student submissions).
+ * Checks the declared MIME / .pdf extension and, when the bytes are on hand
+ * (server-proxied uploads), the real `%PDF-` header — so a renamed non-PDF is
+ * rejected too. On the presign path (no bytes) the declared type is trusted and
+ * the signed Content-Type keeps S3 honest.
+ */
+export function assertPdfOnly(input: {
+  mimeType?: string | null;
+  fileName?: string | null;
+  buffer?: Buffer;
+}): void {
+  const mt = (input.mimeType ?? '').toLowerCase();
+  const name = (input.fileName ?? '').toLowerCase();
+  const declaredPdf =
+    mt === 'application/pdf' ||
+    ((mt === 'application/octet-stream' || mt === '') && name.endsWith('.pdf'));
+  const bytesOk = input.buffer
+    ? input.buffer.subarray(0, 5).toString('latin1') === '%PDF-'
+    : true;
+  if (!declaredPdf || !bytesOk) {
+    throw new BadRequestException('Only PDF files are accepted');
+  }
+}
+
 /** Throws BadRequestException if MIME is off the allow-list or size exceeds cap. */
 export function assertAttachmentAllowed(input: {
   mimeType?: string | null;

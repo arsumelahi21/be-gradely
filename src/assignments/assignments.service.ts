@@ -9,6 +9,7 @@ import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
 import { resolvePagination } from '../common/dto/pagination-query.dto';
 import { compressImage } from '../common/upload/image-compress';
+import { assertPdfOnly } from '../common/upload/attachment-rules';
 import { CreateAssignmentDto } from './dto/create-assignment.dto';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto';
 import { RequestUploadDto } from './dto/request-upload.dto';
@@ -105,6 +106,15 @@ export class AssignmentsService {
       ? attachments.filter((f) => f && f.buffer)
       : [];
     if (!files.length) return created;
+
+    // Assignments accept PDF only — reject the whole batch before storing any.
+    for (const file of files) {
+      assertPdfOnly({
+        mimeType: file.mimetype,
+        fileName: file.originalname,
+        buffer: file.buffer as Buffer,
+      });
+    }
 
     for (const file of files) {
       const safeName = (file.originalname ?? 'attachment').replace(
@@ -504,6 +514,7 @@ export class AssignmentsService {
     actor: Actor,
   ) {
     this.ensureRole(actor, [Role.STUDENT]);
+    assertPdfOnly({ mimeType: dto.mimeType, fileName: dto.fileName });
 
     const assignment = await (this.prisma as any).assignment.findUnique({
       where: { id: assignmentId },
@@ -614,6 +625,7 @@ export class AssignmentsService {
     actor: Actor,
   ) {
     this.ensureRole(actor, [Role.TEACHER]);
+    assertPdfOnly({ mimeType: dto.mimeType, fileName: dto.fileName });
 
     const assignment = await (this.prisma as any).assignment.findUnique({
       where: { id: assignmentId },
@@ -908,6 +920,11 @@ export class AssignmentsService {
     if (uploadedFiles.length > 0) {
       // Use the first file (for now, supporting single file submission)
       const file = uploadedFiles[0];
+      assertPdfOnly({
+        mimeType: file.mimetype,
+        fileName: file.originalname,
+        buffer: file.buffer as Buffer,
+      });
       const safeName = (file.originalname ?? 'submission').replace(
         /[^a-zA-Z0-9._-]/g,
         '_',
