@@ -247,6 +247,18 @@ describe('Timetable V2 (e2e)', () => {
     await prisma.teacherSubjectSpecialty.create({
       data: { teacherId: usman.id, subjectId: cls.subject.id },
     });
+    // Options are limited to teachers allocated to THIS class, so give Usman a
+    // subject of his own in section A.
+    const usmanSubject = await prisma.subject.create({
+      data: { schoolId: cls.school.id, name: `Subject-${uniq()}` },
+    });
+    await prisma.sectionSubject.create({
+      data: {
+        sectionId: cls.section.id,
+        subjectId: usmanSubject.id,
+        teacherId: usman.id,
+      },
+    });
     // Usman is busy in another section at 10:00–10:45
     const other = await addSection(cls.school.id, cls.classGrade.id, usman.id);
     const oPeriods = await setup(other.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
