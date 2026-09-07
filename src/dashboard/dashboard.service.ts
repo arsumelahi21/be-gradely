@@ -55,9 +55,17 @@ export class DashboardService extends BaseSchoolScopedService {
         take: 5,
         select: { id: true, fullName: true, email: true, createdAt: true },
       });
+    // Start of the current calendar month, for the "+N this month" deltas the
+    // dashboard tiles show. Same clock as `createdAt`, so no timezone maths.
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
     const [
       roleCounts,
       classesCount,
+      newRoleCounts,
+      newClassesCount,
       teachers,
       students,
       parents,
@@ -73,6 +81,14 @@ export class DashboardService extends BaseSchoolScopedService {
         _count: { _all: true },
       }),
       this.prisma.classGrade.count({ where: { schoolId } }),
+      this.prisma.user.groupBy({
+        by: ['role'],
+        where: { schoolId, createdAt: { gte: monthStart } },
+        _count: { _all: true },
+      }),
+      this.prisma.classGrade.count({
+        where: { schoolId, createdAt: { gte: monthStart } },
+      }),
       recentUsers(Role.TEACHER),
       recentUsers(Role.STUDENT),
       recentUsers(Role.PARENT),
@@ -89,12 +105,22 @@ export class DashboardService extends BaseSchoolScopedService {
     ]);
     const countFor = (role: Role) =>
       roleCounts.find((r) => r.role === role)?._count._all ?? 0;
+    const newCountFor = (role: Role) =>
+      newRoleCounts.find((r) => r.role === role)?._count._all ?? 0;
     return {
       counts: {
         teachers: countFor(Role.TEACHER),
         students: countFor(Role.STUDENT),
         parents: countFor(Role.PARENT),
         classes: classesCount,
+      },
+      // Added since the 1st of this month — a REAL delta, so the tiles never
+      // have to invent one. Zero is a legitimate answer and renders as "+0".
+      addedThisMonth: {
+        teachers: newCountFor(Role.TEACHER),
+        students: newCountFor(Role.STUDENT),
+        parents: newCountFor(Role.PARENT),
+        classes: newClassesCount,
       },
       recent: { teachers, students, parents, classes: recentClasses },
       attendance,
