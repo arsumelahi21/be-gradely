@@ -11,7 +11,7 @@ describe('Auth rate limiting (e2e)', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
-    app = await createTestApp({ throttle: true });
+    app = await createTestApp();
   });
 
   afterAll(async () => {

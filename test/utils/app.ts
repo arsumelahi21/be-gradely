@@ -1,6 +1,5 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { ThrottlerGuard } from '@nestjs/throttler';
 import { AppModule } from '../../src/app.module';
 import { S3PresignService } from '../../src/common/services/s3-presign.service';
 
@@ -50,16 +49,12 @@ class InMemoryS3 {
 
 /**
  * Boots the real Nest app for e2e tests (mirrors main.ts's `/api` prefix + ValidationPipe).
- * ThrottlerGuard is disabled by default to avoid flaky tests; pass `{ throttle: true }` to keep it on.
+ * The ThrottlerGuard is always live — it is registered via APP_GUARD, which the testing
+ * module cannot override. setup-env.ts lifts the global cap instead; route-level
+ * @Throttle limits (login 5/min) stay real, which throttle.e2e-spec.ts relies on.
  */
-export async function createTestApp({
-  throttle = false,
-}: { throttle?: boolean } = {}): Promise<INestApplication> {
+export async function createTestApp(): Promise<INestApplication> {
   const builder = Test.createTestingModule({ imports: [AppModule] });
-
-  if (!throttle) {
-    builder.overrideGuard(ThrottlerGuard).useValue({ canActivate: () => true });
-  }
 
   // No real S3 in e2e — round-trip uploads/downloads through an in-memory fake.
   builder.overrideProvider(S3PresignService).useValue(new InMemoryS3());
@@ -74,6 +69,9 @@ export async function createTestApp({
       transform: true,
     }),
   );
-  await app.init();
+  // listen(0), not init(): an already-listening server keeps supertest from
+  // doing its own listen(0)/close() per request, which resets sockets when a
+  // test fires several requests at once (dashboard-overview).
+  await app.listen(0);
   return app;
 }

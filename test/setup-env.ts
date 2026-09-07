@@ -13,6 +13,11 @@ process.env.JWT_ACCESS_EXPIRES_IN = process.env.JWT_ACCESS_EXPIRES_IN || '15m';
 process.env.JWT_REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '7d';
 process.env.CORS_ORIGINS = process.env.CORS_ORIGINS || 'http://localhost:3000';
 
+// The global 100/min/IP cap would 429 the bigger suites (fees fires far more
+// than that in a minute). Route-level @Throttle limits (login 5/min) are
+// untouched, so throttle.e2e-spec.ts still exercises the real guard.
+process.env.THROTTLE_LIMIT = process.env.THROTTLE_LIMIT || '1000000';
+
 // Email is flagged OFF for beta in prod, but the e2e suite must exercise the
 // notification email fan-out (per-preference suppression), so enable it here.
 process.env.EMAIL_NOTIFICATIONS_ENABLED =
