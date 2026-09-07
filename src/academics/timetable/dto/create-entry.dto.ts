@@ -1,4 +1,10 @@
-import { IsEnum, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import {
+  IsEnum,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+} from 'class-validator';
 import { DayOfWeek } from '../../../common/types/timetable.type';
 
 /**
@@ -16,8 +22,10 @@ export class CreateEntryDto {
   @IsUUID()
   sectionSubjectId: string;
 
+  /** Optional: defaults to the teacher allocated to this subject for the class. */
+  @IsOptional()
   @IsUUID()
-  teacherId: string;
+  teacherId?: string;
 
   @IsOptional()
   @IsString()

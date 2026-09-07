@@ -26,6 +26,7 @@ import { UpdateEntryDto } from './dto/update-entry.dto';
 import { PublishTimetableDto } from './dto/publish-timetable.dto';
 import { ApplyTemplateDto } from './dto/apply-template.dto';
 import { TeacherOptionsQueryDto } from './dto/teacher-options-query.dto';
+import { UpdateTimetableWindowDto } from './dto/update-timetable-window.dto';
 import {
   FindTimetableQueryDto,
   MyTimetableQueryDto,
@@ -155,6 +156,17 @@ export class TimetableController {
     Role.STUDENT,
     Role.PARENT,
   )
+  /** The date window this timetable applies to. */
+  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
+  @Patch('sections/:sectionId/window')
+  updateWindow(
+    @Param('sectionId') sectionId: string,
+    @Body() dto: UpdateTimetableWindowDto,
+    @Req() req: any,
+  ) {
+    return this.timetable.updateWindow(sectionId, dto, req.user);
+  }
+
   @Get('sections/:sectionId/periods')
   listPeriods(
     @Param('sectionId') sectionId: string,
@@ -265,8 +277,13 @@ export class TimetableController {
   deleteTimetable(
     @Param('sectionId') sectionId: string,
     @Query() query: FindTimetableQueryDto,
+    // Deleting a PUBLISHED grid needs this — it is live for students.
+    @Query('force') force: string | undefined,
     @Req() req: any,
   ) {
-    return this.timetable.deleteTimetable(sectionId, req.user, query);
+    return this.timetable.deleteTimetable(sectionId, req.user, {
+      ...query,
+      force: force === 'true',
+    });
   }
 }

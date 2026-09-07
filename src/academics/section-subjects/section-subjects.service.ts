@@ -4,11 +4,16 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BaseSchoolScopedService } from '../../common/services/base-school.service';
 import { CreateSectionSubjectDto } from './dto/create-section-subject.dto';
 import { UpdateSectionSubjectDto } from './dto/update-section-subject.dto';
 import { Actor } from '../../common/types/actor.type';
+
+/** Role stamped on roster rows created automatically alongside a subject
+ *  allocation. Only these are pruned — a human-set role is left alone. */
+const SUBJECT_TEACHER_ROLE = 'Subject Teacher';
 import { Role } from '../../common/types/role.type';
 import { FindSectionSubjectsQueryDto } from './dto/find-section-subjects-query.dto';
 
@@ -238,22 +243,72 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       teacherId ?? undefined,
       actor,
     );
-    return this.prisma.sectionSubject.update({
-      where: { id },
-      data: {
-        sectionId: section.id,
-        subjectId: subject.id,
-        teacherId: teacherId ? (teacher?.id ?? null) : null,
-        ...(dto.isPrimary !== undefined && { isPrimary: dto.isPrimary }),
-        ...(dto.schedule !== undefined && { schedule: dto.schedule }),
-      },
-      include: this.defaultInclude(),
+    const nextTeacherId = teacherId ? (teacher?.id ?? null) : null;
+    const previousTeacherId = current.teacherId;
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.sectionSubject.update({
+        where: { id },
+        data: {
+          sectionId: section.id,
+          subjectId: subject.id,
+          teacherId: nextTeacherId,
+          ...(dto.isPrimary !== undefined && { isPrimary: dto.isPrimary }),
+          ...(dto.schedule !== undefined && { schedule: dto.schedule }),
+        },
+        include: this.defaultInclude(),
+      });
+      // Replacing a subject's teacher used to leave the old one on the section
+      // roster forever, inflating the class card's teacher count and keeping the
+      // class on a dashboard for someone who teaches nothing in it.
+      if (previousTeacherId && previousTeacherId !== nextTeacherId) {
+        await this.pruneRosterIfUnused(
+          tx,
+          current.sectionId,
+          previousTeacherId,
+        );
+      }
+      return updated;
     });
   }
 
   async remove(id: string, actor: Actor) {
-    await this.getOrThrow(id, actor);
-    return this.prisma.sectionSubject.delete({ where: { id } });
+    const current = await this.getOrThrow(id, actor);
+    return this.prisma.$transaction(async (tx) => {
+      const removed = await tx.sectionSubject.delete({ where: { id } });
+      if (current.teacherId) {
+        await this.pruneRosterIfUnused(
+          tx,
+          current.sectionId,
+          current.teacherId,
+        );
+      }
+      return removed;
+    });
+  }
+
+  /**
+   * Drop a teacher's auto-created SectionTeacher row once they teach no subject
+   * in the section. A CLASS TEACHER (isPrimary) is a deliberate assignment and is
+   * always kept, as is any row a human gave a different role.
+   */
+  private async pruneRosterIfUnused(
+    tx: Prisma.TransactionClient,
+    sectionId: string,
+    teacherId: string,
+  ) {
+    const stillTeaches = await tx.sectionSubject.count({
+      where: { sectionId, teacherId },
+    });
+    if (stillTeaches > 0) return;
+    await tx.sectionTeacher.deleteMany({
+      where: {
+        sectionId,
+        teacherId,
+        isPrimary: false,
+        assignmentRole: SUBJECT_TEACHER_ROLE,
+      },
+    });
   }
 
   private async getOrThrow(id: string, actor: Actor) {

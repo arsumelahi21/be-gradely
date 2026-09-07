@@ -34,6 +34,7 @@ import { CreateEntryDto } from './dto/create-entry.dto';
 import { UpdateEntryDto } from './dto/update-entry.dto';
 import { ApplyTemplateDto } from './dto/apply-template.dto';
 import { TeacherOptionsQueryDto } from './dto/teacher-options-query.dto';
+import { UpdateTimetableWindowDto } from './dto/update-timetable-window.dto';
 import {
   FindTimetableQueryDto,
   MyTimetableQueryDto,
@@ -231,7 +232,11 @@ export class TimetableService extends BaseSchoolScopedService {
   // ---- setup + periods ---------------------------------------------------
 
   /** Create the section's timetable and generate its bell schedule (per-section). */
-  async setupTimetable(sectionId: string, dto: SetupTimetableDto, actor: Actor) {
+  async setupTimetable(
+    sectionId: string,
+    dto: SetupTimetableDto,
+    actor: Actor,
+  ) {
     this.ensureAdmin(actor);
     const section = await this.loadSection(sectionId);
     this.enforceScope(actor, section.schoolId);
@@ -355,7 +360,12 @@ export class TimetableService extends BaseSchoolScopedService {
 
     if (!timetable) {
       return {
-        section: { id: section.id, name: section.name, room: section.room, classGrade: section.classGrade },
+        section: {
+          id: section.id,
+          name: section.name,
+          room: section.room,
+          classGrade: section.classGrade,
+        },
         academicYearId,
         timetable: null,
         timezone,
@@ -389,7 +399,11 @@ export class TimetableService extends BaseSchoolScopedService {
         include: this.entryInclude(),
       }),
     ]);
-    const validation = await this.computeValidation(timetable, periods, entries);
+    const validation = await this.computeValidation(
+      timetable,
+      periods,
+      entries,
+    );
 
     // Everything the draft editor needs to run fully client-side: which teachers
     // may be assigned to each subject, and where each of those teachers is
@@ -402,6 +416,7 @@ export class TimetableService extends BaseSchoolScopedService {
         subjectId: true,
         teacherId: true,
         subject: { select: { name: true, code: true } },
+        teacher: { select: { id: true, fullName: true, isActive: true } },
       },
     });
     // Teachers ALLOCATED to this class = whoever is assigned to teach one of its
@@ -422,11 +437,22 @@ export class TimetableService extends BaseSchoolScopedService {
         );
         const teachers = qualified.filter((t) => allocatedTeacherIds.has(t.id));
         for (const t of teachers) candidateTeacherIds.add(t.id);
+        // The teacher allocated to this subject when the class was set up. The
+        // editor shows this as a label instead of asking again; `teachers`
+        // remains for the deliberate-override path.
+        if (ss.teacher) candidateTeacherIds.add(ss.teacher.id);
         return {
           sectionSubjectId: ss.id,
           subjectId: ss.subjectId,
           subjectName: ss.subject.name,
           subjectCode: ss.subject.code,
+          allocatedTeacher: ss.teacher
+            ? {
+                id: ss.teacher.id,
+                fullName: ss.teacher.fullName,
+                isActive: ss.teacher.isActive,
+              }
+            : null,
           teachers,
         };
       }),
@@ -471,7 +497,12 @@ export class TimetableService extends BaseSchoolScopedService {
     }
 
     return {
-      section: { id: section.id, name: section.name, room: section.room, classGrade: section.classGrade },
+      section: {
+        id: section.id,
+        name: section.name,
+        room: section.room,
+        classGrade: section.classGrade,
+      },
       academicYearId,
       timetable: {
         id: timetable.id,
@@ -481,6 +512,12 @@ export class TimetableService extends BaseSchoolScopedService {
         dayStartMin: timetable.dayStartMin,
         dayEndMin: timetable.dayEndMin,
         periodMinutes: timetable.periodMinutes,
+        effectiveFrom: timetable.effectiveFrom
+          ? timetable.effectiveFrom.toISOString().slice(0, 10)
+          : null,
+        effectiveTo: timetable.effectiveTo
+          ? timetable.effectiveTo.toISOString().slice(0, 10)
+          : null,
       },
       timezone,
       periods,
@@ -555,6 +592,50 @@ export class TimetableService extends BaseSchoolScopedService {
     }
   }
 
+  /**
+   * Set (or clear) the dates this timetable applies between. Allowed on a
+   * PUBLISHED grid — narrowing a live timetable's window is exactly how a school
+   * ends one schedule and starts the next, and it reshapes no period or entry.
+   * Only an archived timetable is frozen.
+   */
+  async updateWindow(
+    sectionId: string,
+    dto: UpdateTimetableWindowDto,
+    actor: Actor,
+  ) {
+    this.ensureAdmin(actor);
+    const { timetable } = await this.requireDraftTimetable(sectionId, actor);
+    this.assertNotArchived(timetable.status);
+
+    const toDate = (v: string | null | undefined) =>
+      v === undefined
+        ? undefined
+        : v === null
+          ? null
+          : new Date(`${v.slice(0, 10)}T00:00:00.000Z`);
+    const from = toDate(dto.effectiveFrom);
+    const to = toDate(dto.effectiveTo);
+
+    // Compare against whatever is NOT being changed in this call, so a partial
+    // update can't quietly produce an inverted window.
+    const nextFrom = from === undefined ? timetable.effectiveFrom : from;
+    const nextTo = to === undefined ? timetable.effectiveTo : to;
+    if (nextFrom && nextTo && nextFrom.getTime() > nextTo.getTime()) {
+      throw new BadRequestException(
+        'The start date must be on or before the end date',
+      );
+    }
+
+    return this.prisma.timetable.update({
+      where: { id: timetable.id },
+      data: {
+        ...(from !== undefined && { effectiveFrom: from }),
+        ...(to !== undefined && { effectiveTo: to }),
+      },
+      select: { id: true, effectiveFrom: true, effectiveTo: true },
+    });
+  }
+
   async replacePeriods(
     sectionId: string,
     dto: ReplacePeriodsDto,
@@ -612,7 +693,11 @@ export class TimetableService extends BaseSchoolScopedService {
       where: { timetableId: timetable.id },
     });
     const candidate = [
-      ...existing.map((p) => ({ index: p.index, startMin: p.startMin, endMin: p.endMin })),
+      ...existing.map((p) => ({
+        index: p.index,
+        startMin: p.startMin,
+        endMin: p.endMin,
+      })),
       { index: dto.index, startMin: dto.startMin, endMin: dto.endMin },
     ];
     const errors = validatePeriodSet(candidate, {
@@ -657,7 +742,11 @@ export class TimetableService extends BaseSchoolScopedService {
       where: { timetableId: period.timetableId, id: { not: id } },
     });
     const candidate = [
-      ...others.map((p) => ({ index: p.index, startMin: p.startMin, endMin: p.endMin })),
+      ...others.map((p) => ({
+        index: p.index,
+        startMin: p.startMin,
+        endMin: p.endMin,
+      })),
       { index: period.index, startMin, endMin },
     ];
     const errors = validatePeriodSet(candidate, {
@@ -771,7 +860,9 @@ export class TimetableService extends BaseSchoolScopedService {
 
     const ss = await this.loadSectionSubject(query.sectionSubjectId);
     if (ss.section.schoolId !== schoolId || ss.sectionId !== sectionId) {
-      throw new BadRequestException('Subject-class does not belong to this section');
+      throw new BadRequestException(
+        'Subject-class does not belong to this section',
+      );
     }
     const period = await this.loadPeriod(query.periodId, schoolId);
     if (period.kind !== PeriodKind.CLASS) {
@@ -821,7 +912,71 @@ export class TimetableService extends BaseSchoolScopedService {
         Number(b.available) - Number(a.available) ||
         a.fullName.localeCompare(b.fullName),
     );
-    return { sectionSubjectId: ss.id, periodId: period.id, options };
+
+    // The teacher already allocated to this subject for this class. The UI shows
+    // this as a label instead of asking again — `options` stays for the override
+    // case and is what this is picked out of.
+    const allocatedTeacher = ss.teacherId
+      ? (options.find((o) => o.teacherId === ss.teacherId) ??
+        (await this.allocatedTeacherStatus(ss.teacherId, {
+          academicYearId,
+          dayOfWeek: query.dayOfWeek,
+          startMin: period.startMin,
+          endMin: period.endMin,
+          excludeEntryId: query.excludeEntryId,
+        })))
+      : null;
+
+    return {
+      sectionSubjectId: ss.id,
+      periodId: period.id,
+      allocatedTeacher,
+      options,
+    };
+  }
+
+  /**
+   * Availability of the subject's allocated teacher, for the label the timetable
+   * shows in place of a picker. Used only when that teacher is missing from
+   * `options` — e.g. they are inactive, or hold no specialty for the subject.
+   */
+  private async allocatedTeacherStatus(
+    teacherId: string,
+    slot: {
+      academicYearId: string;
+      dayOfWeek: DayOfWeek;
+      startMin: number;
+      endMin: number;
+      excludeEntryId?: string;
+    },
+  ) {
+    const teacher = await this.prisma.teacherProfile.findUnique({
+      where: { id: teacherId },
+      select: { id: true, fullName: true, isActive: true },
+    });
+    if (!teacher) return null;
+    const clash = await this.teacherClashAt(this.prisma, {
+      academicYearId: slot.academicYearId,
+      teacherId,
+      dayOfWeek: slot.dayOfWeek,
+      startMin: slot.startMin,
+      endMin: slot.endMin,
+      excludeEntryId: slot.excludeEntryId,
+    });
+    return {
+      teacherId: teacher.id,
+      fullName: teacher.fullName,
+      available: teacher.isActive && !clash,
+      inactive: !teacher.isActive,
+      conflict: clash
+        ? {
+            className: this.classLabel(clash.section),
+            dayOfWeek: clash.dayOfWeek,
+            startMin: clash.startMin,
+            endMin: clash.endMin,
+          }
+        : undefined,
+    };
   }
 
   /** Teachers who CAN teach the subject: specialty holders ∪ the section-subject's default. */
@@ -915,7 +1070,10 @@ export class TimetableService extends BaseSchoolScopedService {
     this.ensureAdmin(actor);
     const current = await this.prisma.timetableEntry.findUnique({
       where: { id },
-      include: { timetable: true, section: { select: { room: true, schoolId: true } } },
+      include: {
+        timetable: true,
+        section: { select: { room: true, schoolId: true } },
+      },
     });
     if (!current) throw new NotFoundException('Assignment not found');
     this.enforceScope(actor, current.schoolId);
@@ -952,8 +1110,7 @@ export class TimetableService extends BaseSchoolScopedService {
     );
 
     const nextRoom = dto.room === undefined ? current.room : dto.room || null;
-    const effectiveRoom =
-      (nextRoom ?? current.section.room)?.trim() || null;
+    const effectiveRoom = (nextRoom ?? current.section.room)?.trim() || null;
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -1003,12 +1160,19 @@ export class TimetableService extends BaseSchoolScopedService {
   }
 
   /** Live pre-check for the editor — same engine, returns instead of throwing. */
-  async checkConflicts(sectionId: string, dto: CreateEntryDto & { excludeEntryId?: string }, actor: Actor) {
+  async checkConflicts(
+    sectionId: string,
+    dto: CreateEntryDto & { excludeEntryId?: string },
+    actor: Actor,
+  ) {
     this.ensureAdmin(actor);
     const section = await this.loadSection(sectionId);
     this.enforceScope(actor, section.schoolId);
     const academicYearId = await this.resolveAcademicYearId(section.schoolId);
-    const timetable = await this.loadTimetableForSection(sectionId, academicYearId);
+    const timetable = await this.loadTimetableForSection(
+      sectionId,
+      academicYearId,
+    );
     if (!timetable) return { conflicts: [] as EntryConflict[] };
     const period = await this.loadPeriod(dto.periodId, section.schoolId);
     const resolved = await this.resolveAssignment(
@@ -1039,15 +1203,16 @@ export class TimetableService extends BaseSchoolScopedService {
    * checks run for each replicated cell so a teacher busy in another section on
    * some day fails the whole apply with a clear message.
    */
-  async applyTemplate(
-    sectionId: string,
-    dto: ApplyTemplateDto,
-    actor: Actor,
-  ) {
+  async applyTemplate(sectionId: string, dto: ApplyTemplateDto, actor: Actor) {
     this.ensureAdmin(actor);
-    const { section, timetable } = await this.requireDraftTimetable(sectionId, actor);
+    const { section, timetable } = await this.requireDraftTimetable(
+      sectionId,
+      actor,
+    );
     if (timetable.status !== 'DRAFT') {
-      throw new ConflictException('Only a draft timetable can be (re)generated from a template');
+      throw new ConflictException(
+        'Only a draft timetable can be (re)generated from a template',
+      );
     }
     const workingDays = (timetable.workingDays as DayOfWeek[]) ?? [];
     if (workingDays.length === 0) {
@@ -1070,13 +1235,20 @@ export class TimetableService extends BaseSchoolScopedService {
           sectionId,
           section.schoolId,
         );
-        return { period, sectionSubjectId: r.sectionSubjectId, teacherId: r.teacherId, room: a.room?.trim() || null };
+        return {
+          period,
+          sectionSubjectId: r.sectionSubjectId,
+          teacherId: r.teacherId,
+          room: a.room?.trim() || null,
+        };
       }),
     );
 
     try {
       return await this.prisma.$transaction(async (tx) => {
-        await tx.timetableEntry.deleteMany({ where: { timetableId: timetable.id } });
+        await tx.timetableEntry.deleteMany({
+          where: { timetableId: timetable.id },
+        });
         let count = 0;
         for (const day of workingDays) {
           for (const r of resolved) {
@@ -1194,7 +1366,11 @@ export class TimetableService extends BaseSchoolScopedService {
           id: true,
           room: true,
           section: {
-            select: { name: true, room: true, classGrade: { select: { name: true } } },
+            select: {
+              name: true,
+              room: true,
+              classGrade: { select: { name: true } },
+            },
           },
         },
       });
@@ -1265,8 +1441,13 @@ export class TimetableService extends BaseSchoolScopedService {
   }
 
   private translateWriteError(e: unknown) {
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-      return new ConflictException('This class already has a period in that slot');
+    if (
+      e instanceof Prisma.PrismaClientKnownRequestError &&
+      e.code === 'P2002'
+    ) {
+      return new ConflictException(
+        'This class already has a period in that slot',
+      );
     }
     return e as Error;
   }
@@ -1285,7 +1466,11 @@ export class TimetableService extends BaseSchoolScopedService {
 
   // ---- validation / completion ------------------------------------------
 
-  async getValidation(sectionId: string, actor: Actor, query: FindTimetableQueryDto) {
+  async getValidation(
+    sectionId: string,
+    actor: Actor,
+    query: FindTimetableQueryDto,
+  ) {
     this.ensureAdmin(actor);
     const section = await this.loadSection(sectionId);
     this.enforceScope(actor, section.schoolId);
@@ -1293,17 +1478,32 @@ export class TimetableService extends BaseSchoolScopedService {
       section.schoolId,
       query.academicYearId,
     );
-    const timetable = await this.loadTimetableForSection(sectionId, academicYearId);
+    const timetable = await this.loadTimetableForSection(
+      sectionId,
+      academicYearId,
+    );
     if (!timetable) {
       return {
         blocking: [],
         warnings: [],
-        completion: { classCells: 0, assigned: 0, emptyCells: 0, unassignedSubjects: [], percent: 0 },
+        completion: {
+          classCells: 0,
+          assigned: 0,
+          emptyCells: 0,
+          unassignedSubjects: [],
+          percent: 0,
+        },
       };
     }
     const [periods, entries] = await Promise.all([
-      this.prisma.timetablePeriod.findMany({ where: { timetableId: timetable.id }, orderBy: { index: 'asc' } }),
-      this.prisma.timetableEntry.findMany({ where: { timetableId: timetable.id }, include: this.entryInclude() }),
+      this.prisma.timetablePeriod.findMany({
+        where: { timetableId: timetable.id },
+        orderBy: { index: 'asc' },
+      }),
+      this.prisma.timetableEntry.findMany({
+        where: { timetableId: timetable.id },
+        include: this.entryInclude(),
+      }),
     ]);
     return this.computeValidation(timetable, periods, entries);
   }
@@ -1318,7 +1518,12 @@ export class TimetableService extends BaseSchoolScopedService {
       dayStartMin: number;
       dayEndMin: number;
     },
-    periods: Array<{ index: number; startMin: number; endMin: number; kind: string }>,
+    periods: Array<{
+      index: number;
+      startMin: number;
+      endMin: number;
+      kind: string;
+    }>,
     entries: Array<any>,
   ) {
     const blocking: { type: string; message: string }[] = [];
@@ -1326,7 +1531,12 @@ export class TimetableService extends BaseSchoolScopedService {
 
     // Invalid period structure.
     const periodErrors = validatePeriodSet(
-      periods.map((p) => ({ index: p.index, startMin: p.startMin, endMin: p.endMin, kind: p.kind })),
+      periods.map((p) => ({
+        index: p.index,
+        startMin: p.startMin,
+        endMin: p.endMin,
+        kind: p.kind,
+      })),
       { dayStartMin: timetable.dayStartMin, dayEndMin: timetable.dayEndMin },
     );
     for (const e of periodErrors) {
@@ -1365,15 +1575,31 @@ export class TimetableService extends BaseSchoolScopedService {
             endMin: { gt: e.startMin },
             id: { not: e.id },
           },
-          select: { room: true, section: { select: { room: true, name: true, classGrade: { select: { name: true } } } } },
+          select: {
+            room: true,
+            section: {
+              select: {
+                room: true,
+                name: true,
+                classGrade: { select: { name: true } },
+              },
+            },
+          },
         });
         if (roomClash) {
-          const otherEff = (roomClash.room ?? roomClash.section.room ?? '').trim();
+          const otherEff = (
+            roomClash.room ??
+            roomClash.section.room ??
+            ''
+          ).trim();
           if (otherEff && otherEff.toLowerCase() === effRoom.toLowerCase()) {
             const key = `${effRoom.toLowerCase()}|${e.dayOfWeek}|${e.startMin}`;
             if (!seenRoom.has(key)) {
               seenRoom.add(key);
-              blocking.push({ type: 'ROOM_CONFLICT', message: `Room "${effRoom}" is double-booked` });
+              blocking.push({
+                type: 'ROOM_CONFLICT',
+                message: `Room "${effRoom}" is double-booked`,
+              });
             }
           }
         }
@@ -1381,38 +1607,65 @@ export class TimetableService extends BaseSchoolScopedService {
     }
 
     // Completion + unassigned subjects.
-    const classPeriods = periods.filter((p) => p.kind === PeriodKind.CLASS).length;
+    const classPeriods = periods.filter(
+      (p) => p.kind === PeriodKind.CLASS,
+    ).length;
     const classCells = classPeriods * (timetable.workingDays?.length ?? 0);
     const assigned = entries.length;
     const emptyCells = Math.max(0, classCells - assigned);
-    const percent = classCells === 0 ? 0 : Math.round((assigned / classCells) * 100);
+    const percent =
+      classCells === 0 ? 0 : Math.round((assigned / classCells) * 100);
 
     const sectionSubjects = await this.prisma.sectionSubject.findMany({
       where: { sectionId: timetable.sectionId },
-      select: { id: true, subjectId: true, teacherId: true, subject: { select: { name: true } } },
+      select: {
+        id: true,
+        subjectId: true,
+        teacherId: true,
+        subject: { select: { name: true } },
+      },
     });
     const placed = new Set(entries.map((e) => e.sectionSubjectId));
     const unassignedSubjects = sectionSubjects
       .filter((ss) => !placed.has(ss.id))
       .map((ss) => ({ id: ss.id, name: ss.subject.name }));
     for (const u of unassignedSubjects) {
-      warnings.push({ type: 'UNASSIGNED_SUBJECT', message: `${u.name} is not placed in the timetable yet` });
+      warnings.push({
+        type: 'UNASSIGNED_SUBJECT',
+        message: `${u.name} is not placed in the timetable yet`,
+      });
     }
     // Subjects with no qualified teacher at all.
     for (const ss of sectionSubjects) {
-      const qualified = await this.qualifiedTeachers(timetable.schoolId, ss.subjectId, ss.teacherId);
+      const qualified = await this.qualifiedTeachers(
+        timetable.schoolId,
+        ss.subjectId,
+        ss.teacherId,
+      );
       if (qualified.length === 0) {
-        warnings.push({ type: 'NO_QUALIFIED_TEACHER', message: `${ss.subject.name} has no qualified teacher` });
+        warnings.push({
+          type: 'NO_QUALIFIED_TEACHER',
+          message: `${ss.subject.name} has no qualified teacher`,
+        });
       }
     }
     if (emptyCells > 0) {
-      warnings.push({ type: 'EMPTY_CELLS', message: `${emptyCells} class slot(s) are still empty` });
+      warnings.push({
+        type: 'EMPTY_CELLS',
+        message: `${emptyCells} class slot(s) are still empty`,
+      });
     }
 
     return {
       blocking,
       warnings,
-      completion: { classCells, assigned, emptyCells, unassignedSubjects, percent },
+      completion: {
+        classCells,
+        assigned,
+        emptyCells,
+        unassignedSubjects,
+        percent,
+      },
     };
   }
 
@@ -1427,8 +1680,14 @@ export class TimetableService extends BaseSchoolScopedService {
     this.ensureAdmin(actor);
     const section = await this.loadSection(sectionId);
     this.enforceScope(actor, section.schoolId);
-    const academicYearId = await this.resolveAcademicYearId(section.schoolId, query.academicYearId);
-    const timetable = await this.loadTimetableForSection(sectionId, academicYearId);
+    const academicYearId = await this.resolveAcademicYearId(
+      section.schoolId,
+      query.academicYearId,
+    );
+    const timetable = await this.loadTimetableForSection(
+      sectionId,
+      academicYearId,
+    );
     if (!timetable) throw new NotFoundException('No timetable to publish');
 
     // Batch mode: the draft editor sends the FULL desired grid, which we
@@ -1439,13 +1698,23 @@ export class TimetableService extends BaseSchoolScopedService {
     }
 
     const [periods, entries] = await Promise.all([
-      this.prisma.timetablePeriod.findMany({ where: { timetableId: timetable.id }, orderBy: { index: 'asc' } }),
-      this.prisma.timetableEntry.findMany({ where: { timetableId: timetable.id }, include: this.entryInclude() }),
+      this.prisma.timetablePeriod.findMany({
+        where: { timetableId: timetable.id },
+        orderBy: { index: 'asc' },
+      }),
+      this.prisma.timetableEntry.findMany({
+        where: { timetableId: timetable.id },
+        include: this.entryInclude(),
+      }),
     ]);
     if (entries.length === 0) {
       throw new BadRequestException('Cannot publish an empty timetable');
     }
-    const validation = await this.computeValidation(timetable, periods, entries);
+    const validation = await this.computeValidation(
+      timetable,
+      periods,
+      entries,
+    );
     if (validation.blocking.length > 0) {
       throw new ConflictException({
         message: 'Resolve blocking issues before publishing',
@@ -1469,13 +1738,26 @@ export class TimetableService extends BaseSchoolScopedService {
    * other data — Attendance keys on SectionSubject + period index, not entry id).
    */
   private async publishBatch(
-    section: { id: string; name: string; schoolId: string; classGrade: { id: string; name: string } | null },
-    timetable: { id: string; workingDays: string[]; dayStartMin: number; dayEndMin: number; status: string },
+    section: {
+      id: string;
+      name: string;
+      schoolId: string;
+      classGrade: { id: string; name: string } | null;
+    },
+    timetable: {
+      id: string;
+      workingDays: string[];
+      dayStartMin: number;
+      dayEndMin: number;
+      status: string;
+    },
     academicYearId: string,
     body: PublishTimetableDto,
   ) {
     if (timetable.status === 'ARCHIVED') {
-      throw new ConflictException('An archived timetable cannot be republished');
+      throw new ConflictException(
+        'An archived timetable cannot be republished',
+      );
     }
     const entriesIn = body.entries ?? [];
     if (entriesIn.length === 0) {
@@ -1487,23 +1769,45 @@ export class TimetableService extends BaseSchoolScopedService {
       where: { timetableId: timetable.id },
       orderBy: { index: 'asc' },
     });
-    const retimes = new Map<string, { startMin: number; endMin: number; label?: string }>();
+    const retimes = new Map<
+      string,
+      { startMin: number; endMin: number; label?: string }
+    >();
     for (const p of body.periods ?? []) {
       if (!dbPeriods.some((d) => d.id === p.id)) {
         throw new BadRequestException('Payload references an unknown period');
       }
-      retimes.set(p.id, { startMin: p.startMin, endMin: p.endMin, label: p.label });
+      retimes.set(p.id, {
+        startMin: p.startMin,
+        endMin: p.endMin,
+        label: p.label,
+      });
     }
     const effPeriods = dbPeriods.map((p) => {
       const r = retimes.get(p.id);
-      return r ? { ...p, startMin: r.startMin, endMin: r.endMin, label: r.label ?? p.label } : p;
+      return r
+        ? {
+            ...p,
+            startMin: r.startMin,
+            endMin: r.endMin,
+            label: r.label ?? p.label,
+          }
+        : p;
     });
     const periodErrs = validatePeriodSet(
-      effPeriods.map((p) => ({ index: p.index, startMin: p.startMin, endMin: p.endMin, kind: p.kind })),
+      effPeriods.map((p) => ({
+        index: p.index,
+        startMin: p.startMin,
+        endMin: p.endMin,
+        kind: p.kind,
+      })),
       { dayStartMin: timetable.dayStartMin, dayEndMin: timetable.dayEndMin },
     );
     if (periodErrs.length) {
-      throw new ConflictException({ message: 'Invalid period times', blocking: periodErrs });
+      throw new ConflictException({
+        message: 'Invalid period times',
+        blocking: periodErrs,
+      });
     }
     const periodById = new Map(effPeriods.map((p) => [p.id, p]));
 
@@ -1520,33 +1824,56 @@ export class TimetableService extends BaseSchoolScopedService {
     const teacherIds = [...new Set(entriesIn.map((e) => e.teacherId))];
     const teachers = await this.prisma.teacherProfile.findMany({
       where: { id: { in: teacherIds } },
-      select: { id: true, schoolId: true, isActive: true, specialties: { select: { subjectId: true } } },
+      select: {
+        id: true,
+        schoolId: true,
+        isActive: true,
+        specialties: { select: { subjectId: true } },
+      },
     });
     const teacherMap = new Map(
-      teachers.map((t) => [t.id, { ...t, specialtySet: new Set(t.specialties.map((s) => s.subjectId)) }]),
+      teachers.map((t) => [
+        t.id,
+        { ...t, specialtySet: new Set(t.specialties.map((s) => s.subjectId)) },
+      ]),
     );
     const workingDays = new Set(timetable.workingDays);
 
     const built = entriesIn.map((e, i) => {
       const at = `Lecture ${i + 1}`;
       const ss = ssMap.get(e.sectionSubjectId);
-      if (!ss) throw new BadRequestException(`${at}: that subject is not in this class`);
-      if (!workingDays.has(e.dayOfWeek)) throw new BadRequestException(`${at}: ${e.dayOfWeek} is not a working day`);
+      if (!ss)
+        throw new BadRequestException(
+          `${at}: that subject is not in this class`,
+        );
+      if (!workingDays.has(e.dayOfWeek))
+        throw new BadRequestException(
+          `${at}: ${e.dayOfWeek} is not a working day`,
+        );
       const period = periodById.get(e.periodId);
       if (!period) throw new BadRequestException(`${at}: unknown period`);
-      if (period.kind !== PeriodKind.CLASS) throw new BadRequestException(`${at}: not a class period`);
+      if (period.kind !== PeriodKind.CLASS)
+        throw new BadRequestException(`${at}: not a class period`);
       const t = teacherMap.get(e.teacherId);
       if (!t) throw new BadRequestException(`${at}: teacher not found`);
-      if (t.schoolId !== section.schoolId) throw new ForbiddenException('Cross-school access denied');
-      if (!t.isActive) throw new BadRequestException(`${at}: that teacher is inactive`);
+      if (t.schoolId !== section.schoolId)
+        throw new ForbiddenException('Cross-school access denied');
+      if (!t.isActive)
+        throw new BadRequestException(`${at}: that teacher is inactive`);
       // The teacher must be ALLOCATED to this class (assigned to one of its
       // subjects) AND qualified for this subject (specialty, or this
       // section-subject's own teacher). Never trust the client's dropdown.
-      const qualified = t.specialtySet.has(ss.subjectId) || ss.teacherId === e.teacherId;
+      const qualified =
+        t.specialtySet.has(ss.subjectId) || ss.teacherId === e.teacherId;
       if (!allocatedTeacherIds.has(e.teacherId)) {
-        throw new BadRequestException(`${at}: that teacher is not allocated to this class`);
+        throw new BadRequestException(
+          `${at}: that teacher is not allocated to this class`,
+        );
       }
-      if (!qualified) throw new BadRequestException(`${at}: teacher is not qualified for that subject`);
+      if (!qualified)
+        throw new BadRequestException(
+          `${at}: teacher is not qualified for that subject`,
+        );
       return {
         dayOfWeek: e.dayOfWeek,
         periodId: e.periodId,
@@ -1563,7 +1890,10 @@ export class TimetableService extends BaseSchoolScopedService {
     const slot = new Set<string>();
     for (const e of built) {
       const key = `${e.dayOfWeek}|${e.periodId}`;
-      if (slot.has(key)) throw new ConflictException({ message: 'This class has two lectures in the same slot' });
+      if (slot.has(key))
+        throw new ConflictException({
+          message: 'This class has two lectures in the same slot',
+        });
       slot.add(key);
     }
     // Teacher: no overlap inside the payload.
@@ -1571,22 +1901,40 @@ export class TimetableService extends BaseSchoolScopedService {
       for (let j = i + 1; j < built.length; j++) {
         const a = built[i];
         const b = built[j];
-        if (a.teacherId === b.teacherId && a.dayOfWeek === b.dayOfWeek && overlaps(a.startMin, a.endMin, b.startMin, b.endMin)) {
-          throw new ConflictException({ message: 'A teacher is double-booked within this timetable' });
+        if (
+          a.teacherId === b.teacherId &&
+          a.dayOfWeek === b.dayOfWeek &&
+          overlaps(a.startMin, a.endMin, b.startMin, b.endMin)
+        ) {
+          throw new ConflictException({
+            message: 'A teacher is double-booked within this timetable',
+          });
         }
       }
     }
     // Teacher: no overlap with OTHER sections this year.
     const otherBusy = await this.prisma.timetableEntry.findMany({
-      where: { academicYearId, teacherId: { in: teacherIds }, timetableId: { not: timetable.id } },
+      where: {
+        academicYearId,
+        teacherId: { in: teacherIds },
+        timetableId: { not: timetable.id },
+      },
       select: {
-        teacherId: true, dayOfWeek: true, startMin: true, endMin: true,
-        section: { select: { name: true, classGrade: { select: { name: true } } } },
+        teacherId: true,
+        dayOfWeek: true,
+        startMin: true,
+        endMin: true,
+        section: {
+          select: { name: true, classGrade: { select: { name: true } } },
+        },
       },
     });
     for (const e of built) {
       const clash = otherBusy.find(
-        (b) => b.teacherId === e.teacherId && b.dayOfWeek === e.dayOfWeek && overlaps(e.startMin, e.endMin, b.startMin, b.endMin),
+        (b) =>
+          b.teacherId === e.teacherId &&
+          b.dayOfWeek === e.dayOfWeek &&
+          overlaps(e.startMin, e.endMin, b.startMin, b.endMin),
       );
       if (clash) {
         throw new ConflictException({
@@ -1600,10 +1948,16 @@ export class TimetableService extends BaseSchoolScopedService {
       for (const [id, r] of retimes) {
         await tx.timetablePeriod.update({
           where: { id },
-          data: { startMin: r.startMin, endMin: r.endMin, ...(r.label !== undefined ? { label: r.label } : {}) },
+          data: {
+            startMin: r.startMin,
+            endMin: r.endMin,
+            ...(r.label !== undefined ? { label: r.label } : {}),
+          },
         });
       }
-      await tx.timetableEntry.deleteMany({ where: { timetableId: timetable.id } });
+      await tx.timetableEntry.deleteMany({
+        where: { timetableId: timetable.id },
+      });
       await tx.timetableEntry.createMany({
         data: built.map((e) => ({
           timetableId: timetable.id,
@@ -1632,8 +1986,14 @@ export class TimetableService extends BaseSchoolScopedService {
     this.ensureAdmin(actor);
     const section = await this.loadSection(sectionId);
     this.enforceScope(actor, section.schoolId);
-    const academicYearId = await this.resolveAcademicYearId(section.schoolId, query.academicYearId);
-    const timetable = await this.loadTimetableForSection(sectionId, academicYearId);
+    const academicYearId = await this.resolveAcademicYearId(
+      section.schoolId,
+      query.academicYearId,
+    );
+    const timetable = await this.loadTimetableForSection(
+      sectionId,
+      academicYearId,
+    );
     if (!timetable) throw new NotFoundException('No timetable to archive');
     return this.prisma.timetable.update({
       where: { id: timetable.id },
@@ -1645,10 +2005,17 @@ export class TimetableService extends BaseSchoolScopedService {
    * Delete a section's timetable (before it's published). Cascades its periods
    * and assignments. A PUBLISHED (submitted) grid must be archived first.
    */
+  /**
+   * Delete a section's timetable and everything under it (periods and
+   * assignments cascade). A PUBLISHED grid is live for students, parents and
+   * teachers, so deleting one needs an explicit `force` — the UI asks a second
+   * time before sending it. Recorded Attendance is untouched: it keys on
+   * SectionSubject + period number, not on a timetable row.
+   */
   async deleteTimetable(
     sectionId: string,
     actor: Actor,
-    query: FindTimetableQueryDto,
+    query: FindTimetableQueryDto & { force?: boolean },
   ) {
     this.ensureAdmin(actor);
     const section = await this.loadSection(sectionId);
@@ -1662,9 +2029,9 @@ export class TimetableService extends BaseSchoolScopedService {
       academicYearId,
     );
     if (!timetable) throw new NotFoundException('No timetable to delete');
-    if (timetable.status === 'PUBLISHED') {
+    if (timetable.status === 'PUBLISHED' && !query.force) {
       throw new ConflictException(
-        'Archive the published timetable before deleting it',
+        'This timetable is published and visible to students. Confirm to delete it, or archive it first.',
       );
     }
     // Timetable -> periods/entries cascade on delete.
@@ -1675,12 +2042,20 @@ export class TimetableService extends BaseSchoolScopedService {
   async getOverview(actor: Actor, query: FindTimetableQueryDto) {
     this.ensureAdmin(actor);
     const schoolId = this.resolveSchoolId(actor, query.schoolId);
-    const academicYearId = await this.resolveAcademicYearId(schoolId, query.academicYearId);
+    const academicYearId = await this.resolveAcademicYearId(
+      schoolId,
+      query.academicYearId,
+    );
 
     const [sections, timetables] = await Promise.all([
       this.prisma.section.findMany({
         where: { schoolId, isActive: true },
-        select: { id: true, name: true, room: true, classGrade: { select: { id: true, name: true } } },
+        select: {
+          id: true,
+          name: true,
+          room: true,
+          classGrade: { select: { id: true, name: true } },
+        },
         orderBy: [{ classGrade: { name: 'asc' } }, { name: 'asc' }],
       }),
       this.prisma.timetable.findMany({
@@ -1697,10 +2072,13 @@ export class TimetableService extends BaseSchoolScopedService {
     const bySection = new Map(timetables.map((t) => [t.sectionId, t]));
     const rows = sections.map((s) => {
       const tt = bySection.get(s.id);
-      const classPeriods = tt ? tt.periods.filter((p) => p.kind === 'CLASS').length : 0;
+      const classPeriods = tt
+        ? tt.periods.filter((p) => p.kind === 'CLASS').length
+        : 0;
       const classCells = classPeriods * (tt?.workingDays.length ?? 0);
       const assigned = tt?._count.entries ?? 0;
-      const percent = classCells === 0 ? 0 : Math.round((assigned / classCells) * 100);
+      const percent =
+        classCells === 0 ? 0 : Math.round((assigned / classCells) * 100);
       return {
         sectionId: s.id,
         sectionName: s.name,
@@ -1738,7 +2116,11 @@ export class TimetableService extends BaseSchoolScopedService {
         select: { id: true, schoolId: true },
       });
       if (!student) throw new ForbiddenException('Student profile not found');
-      const sectionId = await this.activeSectionFor(student.id, query.academicYearId, student.schoolId);
+      const sectionId = await this.activeSectionFor(
+        student.id,
+        query.academicYearId,
+        student.schoolId,
+      );
       if (!sectionId) return this.emptyTimetable(student.schoolId);
       return this.getClassTimetable(sectionId, actor, query);
     }
@@ -1749,14 +2131,22 @@ export class TimetableService extends BaseSchoolScopedService {
         select: { id: true, schoolId: true },
       });
       if (!student) throw new NotFoundException('Student not found');
-      const sectionId = await this.activeSectionFor(student.id, query.academicYearId, student.schoolId);
+      const sectionId = await this.activeSectionFor(
+        student.id,
+        query.academicYearId,
+        student.schoolId,
+      );
       if (!sectionId) return this.emptyTimetable(student.schoolId);
       return this.getClassTimetable(sectionId, actor, query);
     }
     throw new ForbiddenException('Not allowed');
   }
 
-  async getTeacherTimetable(teacherId: string, actor: Actor, query: FindTimetableQueryDto) {
+  async getTeacherTimetable(
+    teacherId: string,
+    actor: Actor,
+    query: FindTimetableQueryDto,
+  ) {
     const teacher = await this.prisma.teacherProfile.findUnique({
       where: { id: teacherId },
       select: { id: true, userId: true, schoolId: true },
@@ -1766,7 +2156,10 @@ export class TimetableService extends BaseSchoolScopedService {
     if (actor.role === Role.TEACHER && teacher.userId !== actor.userId) {
       throw new ForbiddenException('You can only view your own timetable');
     }
-    const academicYearId = await this.resolveAcademicYearId(teacher.schoolId, query.academicYearId);
+    const academicYearId = await this.resolveAcademicYearId(
+      teacher.schoolId,
+      query.academicYearId,
+    );
     const timezone = await this.schoolTimezone(teacher.schoolId);
 
     const entries = await this.prisma.timetableEntry.findMany({
@@ -1776,29 +2169,58 @@ export class TimetableService extends BaseSchoolScopedService {
     // Days + periods vary per section; expose the union of periods the teacher appears in.
     const periods = this.periodsFromEntries(entries);
     const workingDays = this.workingDaysFromEntries(entries);
-    return { scope: 'TEACHER' as const, teacherId, timezone, workingDays, periods, entries };
+    return {
+      scope: 'TEACHER' as const,
+      teacherId,
+      timezone,
+      workingDays,
+      periods,
+      entries,
+    };
   }
 
-  async getClassTimetable(sectionId: string, actor: Actor, query: FindTimetableQueryDto) {
+  async getClassTimetable(
+    sectionId: string,
+    actor: Actor,
+    query: FindTimetableQueryDto,
+  ) {
     const section = await this.loadSection(sectionId);
     await this.assertSectionReadAccess(actor, section);
-    const academicYearId = await this.resolveAcademicYearId(section.schoolId, query.academicYearId);
+    const academicYearId = await this.resolveAcademicYearId(
+      section.schoolId,
+      query.academicYearId,
+    );
     const timezone = await this.schoolTimezone(section.schoolId);
-    const timetable = await this.loadTimetableForSection(sectionId, academicYearId);
-    const isAdmin = actor.role === Role.SUPER_ADMIN || actor.role === Role.SCHOOL_ADMIN;
+    const timetable = await this.loadTimetableForSection(
+      sectionId,
+      academicYearId,
+    );
+    const isAdmin =
+      actor.role === Role.SUPER_ADMIN || actor.role === Role.SCHOOL_ADMIN;
     const visible = timetable && (isAdmin || timetable.status === 'PUBLISHED');
 
     const [entries, periods] = await Promise.all([
       visible
-        ? this.prisma.timetableEntry.findMany({ where: { timetableId: timetable!.id }, include: this.entryInclude() })
+        ? this.prisma.timetableEntry.findMany({
+            where: { timetableId: timetable!.id },
+            include: this.entryInclude(),
+          })
         : Promise.resolve([]),
       visible
-        ? this.prisma.timetablePeriod.findMany({ where: { timetableId: timetable!.id }, orderBy: { index: 'asc' } })
+        ? this.prisma.timetablePeriod.findMany({
+            where: { timetableId: timetable!.id },
+            orderBy: { index: 'asc' },
+          })
         : Promise.resolve([]),
     ]);
     return {
       scope: 'CLASS' as const,
-      section: { id: section.id, name: section.name, room: section.room, classGrade: section.classGrade },
+      section: {
+        id: section.id,
+        name: section.name,
+        room: section.room,
+        classGrade: section.classGrade,
+      },
       academicYearId,
       status: visible ? timetable!.status : null,
       timezone,
@@ -1812,15 +2234,21 @@ export class TimetableService extends BaseSchoolScopedService {
   private periodsFromEntries(entries: Array<any>) {
     const map = new Map<string, any>();
     for (const e of entries) {
-      if (e.period) map.set(`${e.period.startMin}-${e.period.endMin}`, e.period);
+      if (e.period)
+        map.set(`${e.period.startMin}-${e.period.endMin}`, e.period);
     }
     return [...map.values()].sort((a, b) => a.startMin - b.startMin);
   }
 
   private workingDaysFromEntries(entries: Array<any>): DayOfWeek[] {
     const order: DayOfWeek[] = [
-      DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY,
-      DayOfWeek.FRIDAY, DayOfWeek.SATURDAY, DayOfWeek.SUNDAY,
+      DayOfWeek.MONDAY,
+      DayOfWeek.TUESDAY,
+      DayOfWeek.WEDNESDAY,
+      DayOfWeek.THURSDAY,
+      DayOfWeek.FRIDAY,
+      DayOfWeek.SATURDAY,
+      DayOfWeek.SUNDAY,
     ];
     const present = new Set(entries.map((e) => e.dayOfWeek));
     const days = order.filter((d) => present.has(d));
@@ -1853,7 +2281,9 @@ export class TimetableService extends BaseSchoolScopedService {
   }
 
   private async loadPeriod(periodId: string, schoolId: string) {
-    const period = await this.prisma.timetablePeriod.findUnique({ where: { id: periodId } });
+    const period = await this.prisma.timetablePeriod.findUnique({
+      where: { id: periodId },
+    });
     if (!period) throw new NotFoundException('Period not found');
     if (period.schoolId !== schoolId) {
       throw new BadRequestException('Period belongs to another school');
@@ -1863,7 +2293,9 @@ export class TimetableService extends BaseSchoolScopedService {
 
   private assertWorkingDay(workingDays: string[], day: DayOfWeek) {
     if (workingDays.length > 0 && !workingDays.includes(day)) {
-      throw new BadRequestException(`${day} is not a working day for this section`);
+      throw new BadRequestException(
+        `${day} is not a working day for this section`,
+      );
     }
   }
 
@@ -1872,12 +2304,23 @@ export class TimetableService extends BaseSchoolScopedService {
    * school), and the chosen teacher is qualified for its subject (specialty or the
    * SectionSubject's own default) + same school + active.
    */
+  /**
+   * Resolve the teacher for a slot. The subject already carries the teacher
+   * allocated to it for this class (SectionSubject.teacherId), so callers
+   * normally omit teacherId and it is derived here — the timetable does not ask
+   * again. An explicit teacherId is still honoured (and re-validated) so an
+   * override remains possible.
+   */
   private async resolveAssignment(
     sectionSubjectId: string,
-    teacherId: string,
+    teacherId: string | undefined,
     sectionId: string,
     schoolId: string,
-  ): Promise<{ sectionSubjectId: string; subjectId: string; teacherId: string }> {
+  ): Promise<{
+    sectionSubjectId: string;
+    subjectId: string;
+    teacherId: string;
+  }> {
     const ss = await this.prisma.sectionSubject.findUnique({
       where: { id: sectionSubjectId },
       include: { section: { select: { id: true, schoolId: true } } },
@@ -1887,16 +2330,29 @@ export class TimetableService extends BaseSchoolScopedService {
       throw new ForbiddenException('Cross-school access denied');
     }
     if (ss.sectionId !== sectionId) {
-      throw new BadRequestException('That subject-class belongs to a different section');
+      throw new BadRequestException(
+        'That subject-class belongs to a different section',
+      );
+    }
+
+    // Fall back to the teacher already allocated to this subject for this class.
+    const effectiveTeacherId = teacherId?.trim() || ss.teacherId;
+    if (!effectiveTeacherId) {
+      throw new BadRequestException(
+        'No teacher is allocated to this subject for this class. Assign one in the class setup first.',
+      );
     }
 
     const teacher = await this.prisma.teacherProfile.findUnique({
-      where: { id: teacherId },
+      where: { id: effectiveTeacherId },
       select: {
         id: true,
         schoolId: true,
         isActive: true,
-        specialties: { where: { subjectId: ss.subjectId }, select: { id: true } },
+        specialties: {
+          where: { subjectId: ss.subjectId },
+          select: { id: true },
+        },
       },
     });
     if (!teacher) throw new NotFoundException('Teacher not found');
@@ -1906,11 +2362,18 @@ export class TimetableService extends BaseSchoolScopedService {
     if (!teacher.isActive) {
       throw new BadRequestException('That teacher is inactive');
     }
-    const qualified = teacher.specialties.length > 0 || ss.teacherId === teacherId;
+    const qualified =
+      teacher.specialties.length > 0 || ss.teacherId === effectiveTeacherId;
     if (!qualified) {
-      throw new BadRequestException('That teacher is not qualified for this subject');
+      throw new BadRequestException(
+        'That teacher is not qualified for this subject',
+      );
     }
-    return { sectionSubjectId: ss.id, subjectId: ss.subjectId, teacherId };
+    return {
+      sectionSubjectId: ss.id,
+      subjectId: ss.subjectId,
+      teacherId: effectiveTeacherId,
+    };
   }
 
   private async activeSectionFor(
@@ -1927,7 +2390,10 @@ export class TimetableService extends BaseSchoolScopedService {
     return enrollment?.sectionId ?? null;
   }
 
-  private async resolveParentChild(actor: Actor, studentId?: string): Promise<string> {
+  private async resolveParentChild(
+    actor: Actor,
+    studentId?: string,
+  ): Promise<string> {
     const parent = await this.prisma.parentProfile.findUnique({
       where: { userId: actor.userId },
       select: { id: true },
@@ -1938,7 +2404,8 @@ export class TimetableService extends BaseSchoolScopedService {
         where: { parentId: parent.id, studentId },
         select: { studentId: true },
       });
-      if (!link) throw new ForbiddenException('That student is not linked to you');
+      if (!link)
+        throw new ForbiddenException('That student is not linked to you');
       return studentId;
     }
     const first = await this.prisma.parentStudent.findFirst({
@@ -1954,7 +2421,8 @@ export class TimetableService extends BaseSchoolScopedService {
     section: { id: string; schoolId: string },
   ) {
     this.enforceScope(actor, section.schoolId);
-    if (actor.role === Role.SUPER_ADMIN || actor.role === Role.SCHOOL_ADMIN) return;
+    if (actor.role === Role.SUPER_ADMIN || actor.role === Role.SCHOOL_ADMIN)
+      return;
     if (actor.role === Role.TEACHER) {
       const teacher = await this.prisma.teacherProfile.findUnique({
         where: { userId: actor.userId },
@@ -1988,7 +2456,8 @@ export class TimetableService extends BaseSchoolScopedService {
         where: { sectionId: section.id, studentId: student.id },
         select: { id: true },
       });
-      if (!enrolled) throw new ForbiddenException('You are not enrolled in this section');
+      if (!enrolled)
+        throw new ForbiddenException('You are not enrolled in this section');
       return;
     }
     if (actor.role === Role.PARENT) {
@@ -1999,7 +2468,10 @@ export class TimetableService extends BaseSchoolScopedService {
         },
         select: { id: true },
       });
-      if (!link) throw new ForbiddenException('You have no child enrolled in this section');
+      if (!link)
+        throw new ForbiddenException(
+          'You have no child enrolled in this section',
+        );
       return;
     }
     throw new ForbiddenException('Not allowed');
@@ -2023,7 +2495,9 @@ export class TimetableService extends BaseSchoolScopedService {
       select: { teacherId: true },
       distinct: ['teacherId'],
     });
-    const teacherIds = teacherEntries.map((e) => e.teacherId).filter((id): id is string => !!id);
+    const teacherIds = teacherEntries
+      .map((e) => e.teacherId)
+      .filter((id): id is string => !!id);
     const teacherUserIds = teacherIds.length
       ? (
           await this.prisma.teacherProfile.findMany({
