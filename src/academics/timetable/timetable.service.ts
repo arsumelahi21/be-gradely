@@ -147,6 +147,7 @@ export class TimetableService extends BaseSchoolScopedService {
         room: true,
         schoolId: true,
         classGrade: { select: { id: true, name: true } },
+        school: { select: { name: true, logoMimeType: true } },
       },
     });
     if (!section) throw new NotFoundException('Section not found');
@@ -496,6 +497,12 @@ export class TimetableService extends BaseSchoolScopedService {
       });
     }
 
+    // Name (not just the id) so the printable sheet can title itself.
+    const year = await this.prisma.academicYear.findUnique({
+      where: { id: academicYearId },
+      select: { id: true, name: true },
+    });
+
     return {
       section: {
         id: section.id,
@@ -503,7 +510,13 @@ export class TimetableService extends BaseSchoolScopedService {
         room: section.room,
         classGrade: section.classGrade,
       },
+      school: {
+        id: section.schoolId,
+        name: section.school?.name ?? '',
+        logoMimeType: section.school?.logoMimeType ?? null,
+      },
       academicYearId,
+      academicYear: year,
       timetable: {
         id: timetable.id,
         status: timetable.status,
