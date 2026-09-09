@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -14,6 +15,11 @@ import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { FindSectionsQueryDto } from './dto/find-sections-query.dto';
 import { CacheService } from '../../common/services/cache.service';
+import {
+  describeBlockers,
+  isRestrictedDelete,
+  uniqueConflict,
+} from '../../common/utils/prisma-errors';
 
 type UpdateSectionInput = UpdateSectionDto & Partial<CreateSectionDto>;
 
@@ -37,14 +43,22 @@ export class SectionsService extends BaseSchoolScopedService {
       throw new NotFoundException('Class grade not found');
     }
     this.enforceScope(actor, grade.schoolId);
-    const created = await this.prisma.section.create({
-      data: {
-        classGradeId: dto.classGradeId,
-        schoolId: grade.schoolId,
-        name: dto.name,
-        room: dto.room ?? null,
-      },
-    });
+    const created = await this.prisma.section
+      .create({
+        data: {
+          classGradeId: dto.classGradeId,
+          schoolId: grade.schoolId,
+          name: dto.name,
+          room: dto.room ?? null,
+        },
+      })
+      // @@unique([classGradeId, name]) — without this the form just says
+      // "Internal server error" and the admin has no idea the name is taken.
+      .catch(
+        uniqueConflict(
+          `${grade.name} already has a section named "${dto.name}". Section names must be unique within a class.`,
+        ),
+      );
     // Classes list embeds its sections, so invalidate both.
     await this.invalidateSchoolCache(grade.schoolId, 'sections', 'classes');
     return created;
@@ -138,16 +152,23 @@ export class SectionsService extends BaseSchoolScopedService {
       classGradeId = grade.id;
       schoolId = grade.schoolId;
     }
-    const updated = await this.prisma.section.update({
-      where: { id },
-      data: {
-        classGradeId,
-        schoolId,
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.room !== undefined && { room: dto.room }),
-        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-      },
-    });
+    const updated = await this.prisma.section
+      .update({
+        where: { id },
+        data: {
+          classGradeId,
+          schoolId,
+          ...(dto.name !== undefined && { name: dto.name }),
+          ...(dto.room !== undefined && { room: dto.room }),
+          ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+        },
+      })
+      // Renaming, or moving into a class that already has this name.
+      .catch(
+        uniqueConflict(
+          `That class already has a section named "${dto.name ?? section.name}".`,
+        ),
+      );
     // Invalidate the original and (if moved) the destination school.
     await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
     if (schoolId !== section.schoolId) {
@@ -158,9 +179,44 @@ export class SectionsService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     const section = await this.getOrThrow(id, actor);
-    const removed = await this.prisma.section.delete({ where: { id } });
+    let removed;
+    try {
+      removed = await this.prisma.section.delete({ where: { id } });
+    } catch (e) {
+      throw await this.explainBlockedDelete(id, e);
+    }
     await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
     return removed;
+  }
+
+  /**
+   * Enrollments, subjects, quizzes and timetables all point at a Section with
+   * no cascade, so one in use simply can't be deleted. Name what is holding it:
+   * the raw P2003 reaches the admin as "Internal server error", which tells
+   * them nothing about the 23 children still on the roster.
+   *
+   * The counts run only after the delete has already failed, so a normal
+   * delete pays nothing for them.
+   */
+  private async explainBlockedDelete(id: string, e: unknown) {
+    if (!isRestrictedDelete(e)) return e as Error;
+    const [enrollments, subjects, quizzes, timetables] = await Promise.all([
+      this.prisma.enrollment.count({ where: { sectionId: id } }),
+      this.prisma.sectionSubject.count({ where: { sectionId: id } }),
+      this.prisma.quiz.count({ where: { sectionId: id } }),
+      this.prisma.timetable.count({ where: { sectionId: id } }),
+    ]);
+    const held = describeBlockers([
+      [enrollments, 'enrolled student', 'enrolled students'],
+      [subjects, 'subject', 'subjects'],
+      [quizzes, 'quiz', 'quizzes'],
+      [timetables, 'timetable', 'timetables'],
+    ]);
+    return new ConflictException(
+      held
+        ? `This section still has ${held}. Remove them before deleting it.`
+        : 'This section is still in use and cannot be deleted.',
+    );
   }
 
   async listTeachers(sectionId: string, actor: Actor) {
@@ -208,7 +264,7 @@ export class SectionsService extends BaseSchoolScopedService {
     }
     // Idempotent on (sectionId, teacherId): re-assigning updates rather than
     // 409s, and never silently demotes an existing class teacher (isPrimary only set, never cleared).
-    return this.sectionTeachers.upsert({
+    const assigned = await this.sectionTeachers.upsert({
       where: {
         sectionId_teacherId: {
           sectionId: section.id,
@@ -235,6 +291,8 @@ export class SectionsService extends BaseSchoolScopedService {
       },
       include: this.assignmentInclude(),
     });
+    await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
+    return assigned;
   }
 
   async updateTeacherAssignment(
@@ -265,7 +323,7 @@ export class SectionsService extends BaseSchoolScopedService {
     if (dto.isPrimary) {
       await this.clearPrimary(section.id, assignment.id);
     }
-    return this.sectionTeachers.update({
+    const updated = await this.sectionTeachers.update({
       where: { id: assignment.id },
       data: {
         teacherId,
@@ -280,6 +338,8 @@ export class SectionsService extends BaseSchoolScopedService {
       },
       include: this.assignmentInclude(),
     });
+    await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
+    return updated;
   }
 
   async removeTeacherAssignment(
@@ -294,6 +354,7 @@ export class SectionsService extends BaseSchoolScopedService {
       section.id,
     );
     await this.sectionTeachers.delete({ where: { id: assignment.id } });
+    await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
     return { success: true };
   }
 

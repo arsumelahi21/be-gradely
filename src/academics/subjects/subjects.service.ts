@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BaseSchoolScopedService } from '../../common/services/base-school.service';
 import { CreateSubjectDto } from './dto/create-subject.dto';
@@ -7,6 +11,10 @@ import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { resolvePagination } from '../../common/dto/pagination-query.dto';
 import { CacheService } from '../../common/services/cache.service';
+import {
+  describeBlockers,
+  isRestrictedDelete,
+} from '../../common/utils/prisma-errors';
 
 type UpdateSubjectInput = UpdateSubjectDto & Partial<CreateSubjectDto>;
 type ListOpts = { page?: number; pageSize?: number; search?: string };
@@ -95,7 +103,30 @@ export class SubjectsService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     const subject = await this.getOrThrow(id, actor);
-    const removed = await this.prisma.subject.delete({ where: { id } });
+    let removed;
+    try {
+      removed = await this.prisma.subject.delete({ where: { id } });
+    } catch (e) {
+      // Allocations, teacher specialties and quizzes all Restrict the delete.
+      if (!isRestrictedDelete(e)) throw e;
+      const [allocations, specialties, quizzes] = await Promise.all([
+        this.prisma.sectionSubject.count({ where: { subjectId: id } }),
+        this.prisma.teacherSubjectSpecialty.count({
+          where: { subjectId: id },
+        }),
+        this.prisma.quiz.count({ where: { subjectId: id } }),
+      ]);
+      const held = describeBlockers([
+        [allocations, 'class allocation', 'class allocations'],
+        [specialties, 'teacher specialty', 'teacher specialties'],
+        [quizzes, 'quiz', 'quizzes'],
+      ]);
+      throw new ConflictException(
+        held
+          ? `This subject still has ${held}. Remove them before deleting it.`
+          : 'This subject is still in use and cannot be deleted.',
+      );
+    }
     await this.invalidateSchoolCache(subject.schoolId, 'subjects');
     return removed;
   }
