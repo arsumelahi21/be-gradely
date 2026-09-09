@@ -15,6 +15,7 @@ import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 import { BatchCreateEnrollmentDto } from './dto/batch-create-enrollment.dto';
 import { UpdateEnrollmentDto } from './dto/update-enrollment.dto';
 import { FindEnrollmentsQueryDto } from './dto/find-enrollments-query.dto';
+import { FindPlacementsQueryDto } from './dto/find-placements-query.dto';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -47,6 +48,14 @@ export class EnrollmentsController {
   @Get()
   findAll(@Query() query: FindEnrollmentsQueryDto, @Req() req: any) {
     return this.enrollments.findAll(req.user, query);
+  }
+
+  /** MUST stay above @Get(':id') — Nest matches in declaration order and
+   *  would otherwise read "placements" as an enrollment id. */
+  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
+  @Get('placements')
+  listPlacements(@Query() query: FindPlacementsQueryDto, @Req() req: any) {
+    return this.enrollments.listPlacements(query, req.user);
   }
 
   @Roles(

@@ -1,10 +1,13 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EnrollmentStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CacheService } from '../../common/services/cache.service';
 import { BaseSchoolScopedService } from '../../common/services/base-school.service';
 import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 import { BatchCreateEnrollmentDto } from './dto/batch-create-enrollment.dto';
@@ -12,13 +15,165 @@ import { UpdateEnrollmentDto } from './dto/update-enrollment.dto';
 import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { FindEnrollmentsQueryDto } from './dto/find-enrollments-query.dto';
+import { FindPlacementsQueryDto } from './dto/find-placements-query.dto';
 
 type UpdateEnrollmentInput = UpdateEnrollmentDto & Partial<CreateEnrollmentDto>;
 
+/**
+ * A defensive ceiling, not a page size.
+ *
+ * Paginating this would be wrong: the caller uses it as a SET — "is this
+ * student already placed?" — so a student on page 2 would simply not be
+ * excluded from the picker. It is bounded by the domain instead (one row per
+ * enrolled student per year), and this is the guard for a school that is
+ * somehow past that.
+ */
+const PLACEMENT_LIMIT = 20000;
+
+/** Where one student sits this year. The shape the enrol picker types against. */
+export interface StudentPlacement {
+  studentId: string;
+  sectionId: string;
+  sectionName: string;
+  classGradeId: string | null;
+  className: string | null;
+  /** "Grade 6 A", ready to print. */
+  label: string;
+}
+
+/** "Grade 6 A" — what an admin calls the placement, from its two rows. */
+function sectionLabel(section: {
+  name: string;
+  classGrade?: { name: string } | null;
+}) {
+  return `${section.classGrade?.name ?? ''} ${section.name}`.trim();
+}
+
 @Injectable()
 export class EnrollmentsService extends BaseSchoolScopedService {
-  constructor(prisma: PrismaService) {
-    super(prisma);
+  constructor(prisma: PrismaService, cache: CacheService) {
+    super(prisma, cache);
+  }
+
+  /** Section cards show a student count from the cached sections list. */
+  private invalidate(schoolId: string) {
+    return this.invalidateSchoolCache(schoolId, 'sections', 'classes');
+  }
+
+  /**
+   * A student sits in ONE class per academic year.
+   *
+   * The DB can't hold this line: its unique key is
+   * [studentId, sectionId, academicYearId], which only stops the SAME section
+   * twice — nothing there prevents Grade 6 A and Grade 10 B in the same year,
+   * and 20 students had drifted into exactly that. A partial unique index
+   * (ACTIVE rows only) is what this wants and Prisma cannot express one, so the
+   * rule lives here. Note the consequence: two SIMULTANEOUS enrols of the same
+   * student can both pass this read under READ COMMITTED. Admins enrol
+   * interactively, so that window is theoretical — but this is a check, not a
+   * constraint.
+   *
+   * Only ACTIVE rows count: a COMPLETED or INACTIVE placement is history and
+   * must not block the student's next class.
+   */
+  private async findActivePlacements(
+    studentIds: string[],
+    academicYearId: string,
+    excludeEnrollmentId?: string,
+  ) {
+    const placements = new Map<string, { sectionId: string; label: string }>();
+    if (!studentIds.length) return placements;
+
+    const rows = await this.prisma.enrollment.findMany({
+      where: {
+        studentId: { in: studentIds },
+        academicYearId,
+        status: EnrollmentStatus.ACTIVE,
+        ...(excludeEnrollmentId && { id: { not: excludeEnrollmentId } }),
+      },
+      // Newest placement wins for a student who already holds several — the
+      // same rule the fee roster uses, so both name the same class. `id` breaks
+      // the tie: rows written in one transaction share a `createdAt` (Postgres
+      // now() is transaction-start), and without it "newest" falls back to
+      // whatever order the DB happens to return.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: {
+        studentId: true,
+        sectionId: true,
+        section: {
+          select: { name: true, classGrade: { select: { name: true } } },
+        },
+      },
+    });
+
+    for (const row of rows) {
+      if (placements.has(row.studentId)) continue;
+      placements.set(row.studentId, {
+        sectionId: row.sectionId,
+        label: sectionLabel(row.section),
+      });
+    }
+    return placements;
+  }
+
+  /**
+   * Who already holds a class this year — the minimum the enrol picker needs in
+   * order to leave a student out of the "available" pool.
+   *
+   * Deliberately not findAll(): that is unbounded and carries the full nested
+   * include per row, where the picker wants two ids and a label.
+   */
+  async listPlacements(
+    query: FindPlacementsQueryDto,
+    actor: Actor,
+  ): Promise<StudentPlacement[]> {
+    this.ensureAdmin(actor);
+    const schoolId = this.resolveSchoolId(actor, query.schoolId);
+
+    const rows = await this.prisma.enrollment.findMany({
+      where: {
+        academicYearId: query.academicYearId,
+        status: EnrollmentStatus.ACTIVE,
+        student: { schoolId },
+      },
+      // Same tiebreak as findActivePlacements: both have to name the same class
+      // for a student who holds several, or the picker and the write path
+      // disagree about where they already are.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: PLACEMENT_LIMIT + 1,
+      select: {
+        studentId: true,
+        sectionId: true,
+        section: {
+          select: {
+            name: true,
+            classGrade: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
+
+    if (rows.length > PLACEMENT_LIMIT) {
+      throw new BadRequestException(
+        `This academic year has over ${PLACEMENT_LIMIT} active enrollments, which is more than the enrolment picker can check at once.`,
+      );
+    }
+
+    // ONE row per student. A legacy double placement would otherwise send the
+    // same student down twice and the caller's lookup would keep DB order.
+    const seen = new Map<string, StudentPlacement>();
+    for (const row of rows) {
+      if (seen.has(row.studentId)) continue;
+      seen.set(row.studentId, {
+        studentId: row.studentId,
+        sectionId: row.sectionId,
+        sectionName: row.section.name,
+        classGradeId: row.section.classGrade?.id ?? null,
+        className: row.section.classGrade?.name ?? null,
+        label: sectionLabel(row.section),
+      });
+    }
+    return [...seen.values()];
   }
 
   async create(dto: CreateEnrollmentDto, actor: Actor) {
@@ -28,7 +183,18 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       dto.academicYearId,
       actor,
     );
-    return this.prisma.enrollment.create({
+    if ((dto.status ?? EnrollmentStatus.ACTIVE) === EnrollmentStatus.ACTIVE) {
+      const placed = (
+        await this.findActivePlacements([student.id], academicYear.id)
+      ).get(student.id);
+      if (placed) {
+        throw new ConflictException(
+          `${student.fullName} is already enrolled in ${placed.label} for this academic year. A student can only be in one class at a time — move them instead of adding a second placement.`,
+        );
+      }
+    }
+
+    const created = await this.prisma.enrollment.create({
       data: {
         studentId: student.id,
         sectionId: section.id,
@@ -39,6 +205,8 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       },
       include: this.defaultInclude(),
     });
+    await this.invalidate(section.schoolId);
+    return created;
   }
 
   async createMany(dto: BatchCreateEnrollmentDto, actor: Actor) {
@@ -69,7 +237,7 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     // or missing id rejects the whole batch (tenant safety).
     const students = await this.prisma.studentProfile.findMany({
       where: { id: { in: studentIds }, schoolId: section.schoolId },
-      select: { id: true },
+      select: { id: true, fullName: true },
     });
     if (students.length !== studentIds.length) {
       throw new BadRequestException(
@@ -77,19 +245,56 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       );
     }
 
-    // `skipDuplicates` tolerates already-enrolled students (unique
-    // [studentId, sectionId, academicYearId]) instead of failing the batch.
-    const { count } = await this.prisma.enrollment.createMany({
-      data: studentIds.map((studentId) => ({
-        studentId,
-        sectionId: section.id,
-        academicYearId: academicYear.id,
-        status: dto.status ?? 'ACTIVE',
-      })),
-      skipDuplicates: true,
-    });
+    // One class per student per year. A student already sitting in ANOTHER
+    // class is dropped from the batch rather than failing it: the picker
+    // filters them out, so anything arriving here is a stale tab or a direct
+    // API call, and one of those must not cost the operator the other 29.
+    // Already in THIS section stays the benign case skipDuplicates covered.
+    const status = dto.status ?? EnrollmentStatus.ACTIVE;
+    const placements =
+      status === EnrollmentStatus.ACTIVE
+        ? await this.findActivePlacements(studentIds, academicYear.id)
+        : new Map<string, { sectionId: string; label: string }>();
 
-    return { created: count, skipped: studentIds.length - count };
+    const nameById = new Map(students.map((s) => [s.id, s.fullName]));
+    const blocked: {
+      studentId: string;
+      fullName: string;
+      className: string;
+    }[] = [];
+    const eligible: string[] = [];
+    for (const studentId of studentIds) {
+      const placed = placements.get(studentId);
+      if (placed && placed.sectionId !== section.id) {
+        blocked.push({
+          studentId,
+          fullName: nameById.get(studentId) ?? 'Student',
+          className: placed.label,
+        });
+        continue;
+      }
+      eligible.push(studentId);
+    }
+
+    // `skipDuplicates` still covers the same-section re-add (unique
+    // [studentId, sectionId, academicYearId]) instead of failing the batch.
+    const { count } = eligible.length
+      ? await this.prisma.enrollment.createMany({
+          data: eligible.map((studentId) => ({
+            studentId,
+            sectionId: section.id,
+            academicYearId: academicYear.id,
+            status,
+          })),
+          skipDuplicates: true,
+        })
+      : { count: 0 };
+
+    await this.invalidate(section.schoolId);
+    // The three are disjoint and sum to studentIds.length: `skipped` counts
+    // only the ones the DB itself skipped (already in THIS section), so it no
+    // longer double-reports the students `blocked` already names.
+    return { created: count, skipped: eligible.length - count, blocked };
   }
 
   async findAll(actor: Actor, query: FindEnrollmentsQueryDto) {
@@ -324,7 +529,20 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       academicYearId,
       actor,
     );
-    return this.prisma.enrollment.update({
+    // Re-activating or re-pointing a row is the other way into two classes.
+    const nextStatus = dto.status ?? enrollment.status;
+    if (nextStatus === EnrollmentStatus.ACTIVE) {
+      const placed = (
+        await this.findActivePlacements([student.id], academicYear.id, id)
+      ).get(student.id);
+      if (placed) {
+        throw new ConflictException(
+          `${student.fullName} is already enrolled in ${placed.label} for this academic year. A student can only be in one class at a time.`,
+        );
+      }
+    }
+
+    const updated = await this.prisma.enrollment.update({
       where: { id },
       data: {
         studentId: student.id,
@@ -338,11 +556,15 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       },
       include: this.defaultInclude(),
     });
+    await this.invalidate(section.schoolId);
+    return updated;
   }
 
   async remove(id: string, actor: Actor) {
-    await this.getOrThrow(id, actor);
-    return this.prisma.enrollment.delete({ where: { id } });
+    const existing = await this.getOrThrow(id, actor);
+    const removed = await this.prisma.enrollment.delete({ where: { id } });
+    await this.invalidate(existing.section.schoolId);
+    return removed;
   }
 
   private async getOrThrow(id: string, actor: Actor) {
