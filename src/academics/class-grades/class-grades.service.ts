@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BaseSchoolScopedService } from '../../common/services/base-school.service';
 import { CreateClassGradeDto } from './dto/create-class-grade.dto';
@@ -7,6 +11,11 @@ import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { resolvePagination } from '../../common/dto/pagination-query.dto';
 import { CacheService } from '../../common/services/cache.service';
+import {
+  describeBlockers,
+  isRestrictedDelete,
+  uniqueConflict,
+} from '../../common/utils/prisma-errors';
 
 type UpdateClassGradeInput = UpdateClassGradeDto & Partial<CreateClassGradeDto>;
 type ListOpts = { page?: number; pageSize?: number; search?: string };
@@ -20,17 +29,20 @@ export class ClassGradesService extends BaseSchoolScopedService {
   async create(dto: CreateClassGradeDto, actor: Actor) {
     const schoolId = this.resolveSchoolId(actor, dto.schoolId);
     await this.ensureSchoolExists(schoolId);
-    const created = await this.prisma.classGrade.create({
-      data: {
-        schoolId,
-        name: dto.name,
-        code: dto.code ?? null,
-        description: dto.description ?? null,
-      },
-      include: {
-        sections: true,
-      },
-    });
+    const created = await this.prisma.classGrade
+      .create({
+        data: {
+          schoolId,
+          name: dto.name,
+          code: dto.code ?? null,
+          description: dto.description ?? null,
+        },
+        include: {
+          sections: true,
+        },
+      })
+      // @@unique([schoolId, name])
+      .catch(uniqueConflict(`A class named "${dto.name}" already exists.`));
     await this.invalidateSchoolCache(schoolId, 'classes');
     return created;
   }
@@ -101,28 +113,51 @@ export class ClassGradesService extends BaseSchoolScopedService {
 
   async update(id: string, dto: UpdateClassGradeInput, actor: Actor) {
     const grade = await this.getOrThrow(id, actor);
-    const updated = await this.prisma.classGrade.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.code !== undefined && { code: dto.code }),
-        ...(dto.description !== undefined && { description: dto.description }),
-        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-      },
-      include: {
-        sections: {
-          orderBy: { name: 'asc' },
+    const updated = await this.prisma.classGrade
+      .update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined && { name: dto.name }),
+          ...(dto.code !== undefined && { code: dto.code }),
+          ...(dto.description !== undefined && {
+            description: dto.description,
+          }),
+          ...(dto.isActive !== undefined && { isActive: dto.isActive }),
         },
-      },
-    });
+        include: {
+          sections: {
+            orderBy: { name: 'asc' },
+          },
+        },
+      })
+      .catch(
+        uniqueConflict(
+          `A class named "${dto.name ?? grade.name}" already exists.`,
+        ),
+      );
     await this.invalidateSchoolCache(grade.schoolId, 'classes');
     return updated;
   }
 
   async remove(id: string, actor: Actor) {
     const grade = await this.getOrThrow(id, actor);
-    const removed = await this.prisma.classGrade.delete({ where: { id } });
-    // A grade's sections cascade-delete, so the sections list is stale too.
+    let removed;
+    try {
+      removed = await this.prisma.classGrade.delete({ where: { id } });
+    } catch (e) {
+      // Section.classGrade has NO cascade despite what this comment used to
+      // claim — a class with sections cannot be deleted, and said so with a 500.
+      if (!isRestrictedDelete(e)) throw e;
+      const sections = await this.prisma.section.count({
+        where: { classGradeId: id },
+      });
+      throw new ConflictException(
+        sections
+          ? `This class still has ${describeBlockers([[sections, 'section', 'sections']])}. Delete them first.`
+          : 'This class is still in use and cannot be deleted.',
+      );
+    }
+    // Sections are gone with it, so the sections list is stale too.
     await this.invalidateSchoolCache(grade.schoolId, 'classes', 'sections');
     return removed;
   }
