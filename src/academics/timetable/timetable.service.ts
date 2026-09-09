@@ -1784,7 +1784,12 @@ export class TimetableService extends BaseSchoolScopedService {
     });
     const retimes = new Map<
       string,
-      { startMin: number; endMin: number; label?: string }
+      {
+        startMin: number;
+        endMin: number;
+        label?: string;
+        kind?: PeriodKind;
+      }
     >();
     for (const p of body.periods ?? []) {
       if (!dbPeriods.some((d) => d.id === p.id)) {
@@ -1794,8 +1799,12 @@ export class TimetableService extends BaseSchoolScopedService {
         startMin: p.startMin,
         endMin: p.endMin,
         label: p.label,
+        kind: p.kind,
       });
     }
+    // The effective schedule = what is stored, with the draft's edits applied.
+    // Everything downstream validates against THIS, so the "not a class period"
+    // check below sees a period the draft just turned into a break.
     const effPeriods = dbPeriods.map((p) => {
       const r = retimes.get(p.id);
       return r
@@ -1804,6 +1813,7 @@ export class TimetableService extends BaseSchoolScopedService {
             startMin: r.startMin,
             endMin: r.endMin,
             label: r.label ?? p.label,
+            kind: r.kind ?? p.kind,
           }
         : p;
     });
@@ -1965,6 +1975,7 @@ export class TimetableService extends BaseSchoolScopedService {
             startMin: r.startMin,
             endMin: r.endMin,
             ...(r.label !== undefined ? { label: r.label } : {}),
+            ...(r.kind !== undefined ? { kind: r.kind } : {}),
           },
         });
       }

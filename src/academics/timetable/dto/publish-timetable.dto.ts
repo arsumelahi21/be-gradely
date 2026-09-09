@@ -9,6 +9,8 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { DayOfWeek } from '@prisma/client';
+// The period DTOs use the module's own enum, matching create/update-period-slot.
+import { PeriodKind } from '../../../common/types/timetable.type';
 
 /** One retimed period in the draft (existing period, referenced by id). */
 export class PublishPeriodDto {
@@ -26,6 +28,17 @@ export class PublishPeriodDto {
   @IsOptional()
   @IsString()
   label?: string;
+
+  /**
+   * The period's type, when the draft changed it. Carried here because the grid
+   * edits period type locally and only flushes on publish — without this the
+   * change would be silently dropped. Turning a period into a break while a
+   * lecture still sits on it is caught by the existing "not a class period"
+   * check, which reads the POST-retime kind.
+   */
+  @IsOptional()
+  @IsEnum(PeriodKind)
+  kind?: PeriodKind;
 }
 
 /** One lecture in the draft grid. */
