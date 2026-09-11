@@ -630,6 +630,7 @@ export class UsersService {
       search?: string;
       classGradeId?: string;
       sectionId?: string;
+      unassignedAcademicYearId?: string;
     },
   ) {
     // Cache only the tenant-scoped (SCHOOL_ADMIN) view — SUPER_ADMIN's cross-school
@@ -644,6 +645,7 @@ export class UsersService {
         search: opts?.search?.trim() || null,
         classGradeId: opts?.classGradeId ?? null,
         sectionId: opts?.sectionId ?? null,
+        unassignedAcademicYearId: opts?.unassignedAcademicYearId ?? null,
       };
       return this.cache.wrap(
         schoolCacheKey(schoolId, 'users', variant),
@@ -663,6 +665,7 @@ export class UsersService {
       search?: string;
       classGradeId?: string;
       sectionId?: string;
+      unassignedAcademicYearId?: string;
     },
   ) {
     const where: any = {};
@@ -696,6 +699,24 @@ export class UsersService {
               ...(opts.classGradeId
                 ? { section: { classGradeId: opts.classGradeId } }
                 : {}),
+            },
+          },
+        },
+      };
+    }
+
+    // The inverse: students not placed in ANY class for this session — what an
+    // "Available students" picker means. `none` rather than excluding one
+    // section, which is why the picker previously listed students who were
+    // simply enrolled somewhere else.
+    if (opts?.unassignedAcademicYearId) {
+      where.studentProfile = {
+        is: {
+          ...(where.studentProfile?.is ?? {}),
+          enrollments: {
+            none: {
+              status: EnrollmentStatus.ACTIVE,
+              academicYearId: opts.unassignedAcademicYearId,
             },
           },
         },

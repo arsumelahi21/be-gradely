@@ -1,11 +1,4 @@
-import {
-  IsEnum,
-  IsInt,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-} from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import { PeriodKind } from '../../../common/types/timetable.type';
 import { MINUTES_IN_DAY } from '../timetable-time';
 

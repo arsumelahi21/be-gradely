@@ -298,6 +298,8 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
     return result;
   }
 
+  /** Attendance, assignments, exams and timetable entries are anchored to this
+   *  row and go with it via ON DELETE CASCADE; AuditLog holds no FK and stays. */
   async remove(id: string, actor: Actor) {
     const current = await this.getOrThrow(id, actor);
     const result = await this.prisma.$transaction(async (tx) => {

@@ -218,12 +218,22 @@ describe('timetable-time', () => {
     it('divides the day (minus breaks) by the count', () => {
       // 08:00–11:30 = 210 min, minus a 15-min break = 195, / 5 = 39
       expect(
-        periodMinutesForCount(480, 690, [{ startMin: 570, durationMin: 15 }], 5),
+        periodMinutesForCount(
+          480,
+          690,
+          [{ startMin: 570, durationMin: 15 }],
+          5,
+        ),
       ).toBe(39);
     });
     it('throws when no time remains', () => {
       expect(() =>
-        periodMinutesForCount(480, 500, [{ startMin: 480, durationMin: 30 }], 4),
+        periodMinutesForCount(
+          480,
+          500,
+          [{ startMin: 480, durationMin: 30 }],
+          4,
+        ),
       ).toThrow();
     });
   });

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 
@@ -39,6 +40,8 @@ async function bootstrap() {
       transform: true,
     }),
   );
+  // A database error must never reach the browser as a raw driver dump.
+  app.useGlobalFilters(new PrismaExceptionFilter());
 
   await app.listen(process.env.PORT || 3002);
 }

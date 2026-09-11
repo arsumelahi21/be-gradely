@@ -49,6 +49,7 @@ export class UsersController {
       search: query.search,
       classGradeId: query.classGradeId,
       sectionId: query.sectionId,
+      unassignedAcademicYearId: query.unassignedAcademicYearId,
     });
   }
 
