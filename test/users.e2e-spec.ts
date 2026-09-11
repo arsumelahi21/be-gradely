@@ -665,3 +665,237 @@ describe('Users / student creation (e2e)', () => {
     expect(forbidden.status).toBe(403);
   });
 });
+
+/**
+ * The "Available Students" picker.
+ *
+ * It means students not placed in ANY class for the session being filled. The
+ * page used to fetch every student and subtract only the CURRENT section's
+ * roster, so anyone already sitting in another class still showed as available.
+ * `unassignedAcademicYearId` moves that decision to the database.
+ */
+describe('Unassigned student filter (e2e)', () => {
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    app = await createTestApp();
+  });
+  afterAll(async () => {
+    await app.close();
+    await prisma.$disconnect();
+  });
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  async function seedPlacement() {
+    const school = await createTestSchool();
+    const admin = await createTestUser({
+      role: Role.SCHOOL_ADMIN,
+      schoolId: school.id,
+    });
+    const mk = (name: string, offset: number) =>
+      prisma.academicYear.create({
+        data: {
+          schoolId: school.id,
+          name: `${name}-${Date.now()}${offset}`,
+          code: `C${Date.now()}${offset}`,
+          startDate: new Date(Date.UTC(2026 + offset, 0, 1)),
+          endDate: new Date(Date.UTC(2026 + offset, 11, 31)),
+          isActive: true,
+        },
+      });
+    const thisYear = await mk('Cur', 0);
+    const nextYear = await mk('Nxt', 1);
+
+    const grade = await prisma.classGrade.create({
+      data: { schoolId: school.id, name: `Grade-${Date.now()}` },
+    });
+    const sectionA = await prisma.section.create({
+      data: { schoolId: school.id, classGradeId: grade.id, name: 'A' },
+    });
+    const sectionB = await prisma.section.create({
+      data: { schoolId: school.id, classGradeId: grade.id, name: 'B' },
+    });
+
+    async function student(fullName: string) {
+      const user = await createTestUser({
+        role: Role.STUDENT,
+        schoolId: school.id,
+      });
+      const profile = await prisma.studentProfile.create({
+        data: {
+          userId: user.id,
+          schoolId: school.id,
+          fullName,
+          monthlyFeeAmount: 0,
+        },
+      });
+      return profile;
+    }
+
+    return {
+      school,
+      token: await tokenFor(app, admin),
+      thisYear,
+      nextYear,
+      sectionA,
+      sectionB,
+      student,
+    };
+  }
+
+  const names = (body: any) =>
+    (Array.isArray(body) ? body : (body.items ?? [])).map(
+      (u: any) => u.fullName ?? u.studentProfile?.fullName,
+    );
+
+  async function list(token: string, query: Record<string, string>) {
+    const res = await request(app.getHttpServer())
+      .get('/api/users')
+      .query({ role: 'STUDENT', ...query })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    return names(res.body);
+  }
+
+  it('hides a student enrolled in ANOTHER section — the actual bug', async () => {
+    const f = await seedPlacement();
+    const placed = await f.student('Placed Elsewhere');
+    await f.student('Not Placed');
+
+    // Sitting in section B; the picker being filled is section A.
+    await prisma.enrollment.create({
+      data: {
+        studentId: placed.id,
+        sectionId: f.sectionB.id,
+        academicYearId: f.thisYear.id,
+        status: 'ACTIVE',
+      },
+    });
+
+    const all = await list(f.token, {});
+    expect(all).toEqual(
+      expect.arrayContaining(['Placed Elsewhere', 'Not Placed']),
+    );
+
+    const available = await list(f.token, {
+      unassignedAcademicYearId: f.thisYear.id,
+    });
+    expect(available).toContain('Not Placed');
+    expect(available).not.toContain('Placed Elsewhere');
+  });
+
+  it('is scoped to the session — last year does not hide them forever', async () => {
+    const f = await seedPlacement();
+    const student = await f.student('Moving Up');
+    await prisma.enrollment.create({
+      data: {
+        studentId: student.id,
+        sectionId: f.sectionA.id,
+        academicYearId: f.thisYear.id,
+        status: 'ACTIVE',
+      },
+    });
+
+    // Filling NEXT session: they hold no place there yet, so they are available.
+    expect(
+      await list(f.token, { unassignedAcademicYearId: f.nextYear.id }),
+    ).toContain('Moving Up');
+    // But not for the session they are already placed in.
+    expect(
+      await list(f.token, { unassignedAcademicYearId: f.thisYear.id }),
+    ).not.toContain('Moving Up');
+  });
+
+  it('only an ACTIVE placement counts as allocated', async () => {
+    const f = await seedPlacement();
+    const active = await f.student('Still Enrolled');
+    const finished = await f.student('Finished Last Year');
+
+    await prisma.enrollment.createMany({
+      data: [
+        {
+          studentId: active.id,
+          sectionId: f.sectionA.id,
+          academicYearId: f.thisYear.id,
+          status: 'ACTIVE',
+        },
+        {
+          studentId: finished.id,
+          sectionId: f.sectionA.id,
+          academicYearId: f.thisYear.id,
+          status: 'COMPLETED',
+        },
+      ],
+    });
+
+    // Both states asserted from ONE read: the per-school users list is cached,
+    // and seeding rows straight through Prisma bypasses the service that would
+    // clear it — so a read taken before the change would be served stale.
+    const available = await list(f.token, {
+      unassignedAcademicYearId: f.thisYear.id,
+    });
+    expect(available).toContain('Finished Last Year');
+    expect(available).not.toContain('Still Enrolled');
+  });
+
+  it('enrolling through the API updates the picker immediately', async () => {
+    const f = await seedPlacement();
+    const student = await f.student('Being Placed');
+
+    expect(
+      await list(f.token, { unassignedAcademicYearId: f.thisYear.id }),
+    ).toContain('Being Placed');
+
+    await request(app.getHttpServer())
+      .post('/api/enrollments')
+      .set('Authorization', `Bearer ${f.token}`)
+      .send({
+        studentId: student.id,
+        sectionId: f.sectionA.id,
+        academicYearId: f.thisYear.id,
+      })
+      .expect(201);
+
+    // No TTL wait: enrolling clears the cached user lists, which are filtered
+    // by enrollment. This is what kept the picker offering a placed student.
+    expect(
+      await list(f.token, { unassignedAcademicYearId: f.thisYear.id }),
+    ).not.toContain('Being Placed');
+  });
+
+  it('does not leak unassigned students from another school', async () => {
+    const f = await seedPlacement();
+    await f.student('Ours Free');
+
+    const other = await createTestSchool();
+    const otherUser = await createTestUser({
+      role: Role.STUDENT,
+      schoolId: other.id,
+    });
+    await prisma.studentProfile.create({
+      data: {
+        userId: otherUser.id,
+        schoolId: other.id,
+        fullName: 'Theirs Free',
+        monthlyFeeAmount: 0,
+      },
+    });
+
+    const available = await list(f.token, {
+      unassignedAcademicYearId: f.thisYear.id,
+    });
+    expect(available).toContain('Ours Free');
+    expect(available).not.toContain('Theirs Free');
+  });
+
+  it('rejects a non-uuid value rather than silently ignoring it', async () => {
+    const f = await seedPlacement();
+    await request(app.getHttpServer())
+      .get('/api/users')
+      .query({ role: 'STUDENT', unassignedAcademicYearId: 'not-a-uuid' })
+      .set('Authorization', `Bearer ${f.token}`)
+      .expect(400);
+  });
+});

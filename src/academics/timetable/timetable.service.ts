@@ -2078,9 +2078,15 @@ export class TimetableService extends BaseSchoolScopedService {
           id: true,
           name: true,
           room: true,
-          classGrade: { select: { id: true, name: true } },
+          classGrade: { select: { id: true, name: true, level: true } },
         },
-        orderBy: [{ classGrade: { name: 'asc' } }, { name: 'asc' }],
+        // Ladder order, so the timetable index reads PG -> 10 rather than
+        // alphabetically (which put "10" before "2").
+        orderBy: [
+          { classGrade: { level: { sort: 'asc', nulls: 'last' } } },
+          { classGrade: { name: 'asc' } },
+          { name: 'asc' },
+        ],
       }),
       this.prisma.timetable.findMany({
         where: { schoolId, academicYearId },
@@ -2226,13 +2232,13 @@ export class TimetableService extends BaseSchoolScopedService {
     const [entries, periods] = await Promise.all([
       visible
         ? this.prisma.timetableEntry.findMany({
-            where: { timetableId: timetable!.id },
+            where: { timetableId: timetable.id },
             include: this.entryInclude(),
           })
         : Promise.resolve([]),
       visible
         ? this.prisma.timetablePeriod.findMany({
-            where: { timetableId: timetable!.id },
+            where: { timetableId: timetable.id },
             orderBy: { index: 'asc' },
           })
         : Promise.resolve([]),
@@ -2246,9 +2252,9 @@ export class TimetableService extends BaseSchoolScopedService {
         classGrade: section.classGrade,
       },
       academicYearId,
-      status: visible ? timetable!.status : null,
+      status: visible ? timetable.status : null,
       timezone,
-      workingDays: visible ? (timetable!.workingDays as DayOfWeek[]) : [],
+      workingDays: visible ? (timetable.workingDays as DayOfWeek[]) : [],
       periods,
       entries,
     };

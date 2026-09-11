@@ -2,6 +2,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AppModule } from '../../src/app.module';
 import { S3PresignService } from '../../src/common/services/s3-presign.service';
+import { PrismaExceptionFilter } from '../../src/common/filters/prisma-exception.filter';
 
 const s3san = (s: string) => (s || '').replace(/[^a-zA-Z0-9._-]/g, '_');
 
@@ -69,6 +70,8 @@ export async function createTestApp(): Promise<INestApplication> {
       transform: true,
     }),
   );
+  // Mirror main.ts, or the suite would see raw Prisma errors the app never sends.
+  app.useGlobalFilters(new PrismaExceptionFilter());
   // listen(0), not init(): an already-listening server keeps supertest from
   // doing its own listen(0)/close() per request, which resets sockets when a
   // test fires several requests at once (dashboard-overview).

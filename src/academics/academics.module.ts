@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuditModule } from '../audit/audit.module';
 import { AcademicYearsController } from './academic-years/academic-years.controller';
 import { AcademicYearsService } from './academic-years/academic-years.service';
 import { ClassGradesController } from './class-grades/class-grades.controller';
@@ -13,10 +14,14 @@ import { EnrollmentsController } from './enrollments/enrollments.controller';
 import { EnrollmentsService } from './enrollments/enrollments.service';
 import { SectionSubjectsController } from './section-subjects/section-subjects.controller';
 import { SectionSubjectsService } from './section-subjects/section-subjects.service';
+import { PromotionsController } from './promotions/promotions.controller';
+import { PromotionsService } from './promotions/promotions.service';
 import { TimetableController } from './timetable/timetable.controller';
 import { TimetableService } from './timetable/timetable.service';
 
 @Module({
+  // Promotion records an audit entry per run.
+  imports: [AuditModule],
   controllers: [
     AcademicYearsController,
     ClassGradesController,
@@ -25,6 +30,7 @@ import { TimetableService } from './timetable/timetable.service';
     StudentsController,
     EnrollmentsController,
     SectionSubjectsController,
+    PromotionsController,
     TimetableController,
   ],
   providers: [
@@ -35,6 +41,7 @@ import { TimetableService } from './timetable/timetable.service';
     StudentsService,
     EnrollmentsService,
     SectionSubjectsService,
+    PromotionsService,
     TimetableService,
   ],
   exports: [
@@ -45,6 +52,7 @@ import { TimetableService } from './timetable/timetable.service';
     StudentsService,
     EnrollmentsService,
     SectionSubjectsService,
+    PromotionsService,
     TimetableService,
   ],
 })

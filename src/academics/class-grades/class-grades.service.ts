@@ -16,6 +16,7 @@ import {
   isRestrictedDelete,
   uniqueConflict,
 } from '../../common/utils/prisma-errors';
+import { CLASS_LEVEL_ORDER_BY } from '../../common/types/class-level.type';
 
 type UpdateClassGradeInput = UpdateClassGradeDto & Partial<CreateClassGradeDto>;
 type ListOpts = { page?: number; pageSize?: number; search?: string };
@@ -36,6 +37,8 @@ export class ClassGradesService extends BaseSchoolScopedService {
           name: dto.name,
           code: dto.code ?? null,
           description: dto.description ?? null,
+          defaultMonthlyFee: dto.defaultMonthlyFee ?? null,
+          level: dto.level ?? null,
         },
         include: {
           sections: true,
@@ -72,7 +75,9 @@ export class ClassGradesService extends BaseSchoolScopedService {
             { code: { contains: s, mode: 'insensitive' } },
           ];
         }
-        const orderBy = { createdAt: 'desc' as const };
+        // By ladder position, not creation date — a class added later still
+        // appears between its neighbours.
+        const orderBy = CLASS_LEVEL_ORDER_BY;
         const include = { sections: { orderBy: { name: 'asc' as const } } };
         if (opts?.page != null) {
           const { skip, take, page, pageSize } = resolvePagination(opts);
@@ -122,6 +127,13 @@ export class ClassGradesService extends BaseSchoolScopedService {
           ...(dto.description !== undefined && {
             description: dto.description,
           }),
+          // `!== undefined`, never truthiness: 0 is a real (free) default and
+          // null explicitly clears it.
+          ...(dto.defaultMonthlyFee !== undefined && {
+            defaultMonthlyFee: dto.defaultMonthlyFee,
+          }),
+          // Same reasoning: level -3 is PG, so `!== undefined` not truthiness.
+          ...(dto.level !== undefined && { level: dto.level }),
           ...(dto.isActive !== undefined && { isActive: dto.isActive }),
         },
         include: {

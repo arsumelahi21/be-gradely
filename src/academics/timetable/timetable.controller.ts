@@ -28,6 +28,7 @@ import { ApplyTemplateDto } from './dto/apply-template.dto';
 import { TeacherOptionsQueryDto } from './dto/teacher-options-query.dto';
 import { UpdateTimetableWindowDto } from './dto/update-timetable-window.dto';
 import {
+  DeleteTimetableQueryDto,
   FindTimetableQueryDto,
   MyTimetableQueryDto,
 } from './dto/find-timetable-query.dto';
@@ -276,13 +277,15 @@ export class TimetableController {
   @Delete('sections/:sectionId')
   deleteTimetable(
     @Param('sectionId') sectionId: string,
-    @Query() query: FindTimetableQueryDto,
-    // Deleting a PUBLISHED grid needs this — it is live for students.
-    @Query('force') force: string | undefined,
+    // Deleting a PUBLISHED grid needs `force` — it is live for students. It must
+    // be declared on this DTO, not read via a separate @Query('force'): the
+    // global forbidNonWhitelisted pipe validates the whole query object here.
+    @Query() query: DeleteTimetableQueryDto,
     @Req() req: any,
   ) {
+    const { force, ...rest } = query;
     return this.timetable.deleteTimetable(sectionId, req.user, {
-      ...query,
+      ...rest,
       force: force === 'true',
     });
   }

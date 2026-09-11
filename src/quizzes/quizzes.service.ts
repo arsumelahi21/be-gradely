@@ -637,6 +637,11 @@ export class QuizzesService extends BaseSchoolScopedService {
     const sectionIds = enrollments.map((e) => e.sectionId);
     if (sectionIds.length === 0) return [];
 
+    // NOT filtered by when the student joined, unlike assignments: `Quiz` has
+    // no deadline column, and `createdAt` is a poor stand-in — it would hide a
+    // quiz that is still open simply because it was written before the student
+    // arrived. A quiz becomes invisible the moment their placement in the
+    // section closes, which is what promotion already does.
     const quizzes = await this.prisma.quiz.findMany({
       where: { sectionId: { in: sectionIds }, isPublished: true },
       include: {

@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -132,17 +131,13 @@ export class BankAccountsService extends BaseSchoolScopedService {
     }
   }
 
-  /** Blocked while challans reference the account — deactivate instead. */
+  /**
+   * A confirmed delete is not refused because challans reference the account.
+   * `Challan.bankAccountId` is SetNull, and the print layout already falls back
+   * to the school's default account, so issued challans keep printing.
+   */
   async remove(id: string, actor: Actor) {
-    const account = await this.getOrThrow(id, actor);
-    const used = await this.prisma.challan.count({
-      where: { bankAccountId: id },
-    });
-    if (used > 0) {
-      throw new BadRequestException(
-        `${account.bankName} — ${account.accountNumber} is printed on ${used} existing challan(s) and cannot be deleted. Deactivate it instead.`,
-      );
-    }
+    await this.getOrThrow(id, actor);
     return this.prisma.bankAccount.delete({ where: { id } });
   }
 

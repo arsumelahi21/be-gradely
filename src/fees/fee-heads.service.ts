@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -93,19 +92,15 @@ export class FeeHeadsService extends BaseSchoolScopedService {
   }
 
   /**
-   * Deleting a head used by past challans is blocked — the correct action is
-   * deactivation, and the message says so.
+   * A confirmed delete is not refused because past challans used this head.
+   *
+   * Issued challans are unharmed: `ChallanItem` snapshots `label` and `amount`
+   * at generation and its `feeHeadId` is SetNull, so a historical bill keeps
+   * printing exactly as issued — it simply stops pointing at a head that no
+   * longer exists. That snapshot IS the immutability mechanism.
    */
   async remove(id: string, actor: Actor) {
-    const head = await this.getOrThrow(id, actor);
-    const used = await this.prisma.challanItem.count({
-      where: { feeHeadId: id },
-    });
-    if (used > 0) {
-      throw new BadRequestException(
-        `"${head.name}" is used on ${used} existing challan item(s) and cannot be deleted. Deactivate it instead — it will stop appearing on new challans.`,
-      );
-    }
+    await this.getOrThrow(id, actor);
     return this.prisma.feeHead.delete({ where: { id } });
   }
 

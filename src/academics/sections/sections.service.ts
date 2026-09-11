@@ -71,22 +71,75 @@ export class SectionsService extends BaseSchoolScopedService {
         ? (query.schoolId ?? undefined)
         : actor.schoolId!;
     const variant = { classGradeId: query.classGradeId ?? null };
-    return this.cachedSchoolList(scopedSchoolId, 'sections', variant, () => {
-      const where: any = {};
-      if (query.classGradeId) where.classGradeId = query.classGradeId;
-      if (scopedSchoolId) where.schoolId = scopedSchoolId;
-      // Include per-section counts so cards render subject/teacher/student
-      // numbers without firing 3 requests each (was 1+3N per class page).
-      return this.prisma.section.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          _count: {
-            select: { subjects: true, teachers: true, enrollments: true },
+    return this.cachedSchoolList(
+      scopedSchoolId,
+      'sections',
+      variant,
+      async () => {
+        const where: any = {};
+        if (query.classGradeId) where.classGradeId = query.classGradeId;
+        if (scopedSchoolId) where.schoolId = scopedSchoolId;
+        // Include per-section counts so cards render subject/teacher/student
+        // numbers without firing 3 requests each (was 1+3N per class page).
+        const sections = await this.prisma.section.findMany({
+          where,
+          // Class ladder first, then section name — so a whole-school list reads
+          // PG A, PG B, Nursery A, … 10 B rather than in creation order.
+          orderBy: [
+            { classGrade: { level: { sort: 'asc', nulls: 'last' } } },
+            { classGrade: { name: 'asc' } },
+            { name: 'asc' },
+          ],
+          include: {
+            _count: {
+              select: { subjects: true, teachers: true, enrollments: true },
+            },
           },
-        },
-      });
-    });
+        });
+        if (!sections.length) return sections;
+
+        // `_count.teachers` is SectionTeacher only — the homeroom assignment —
+        // so a card labelled "Teachers" showed 1 while six different people
+        // actually taught the section. The honest figure is the DISTINCT union of
+        // both ways a teacher is attached, which no Prisma `_count` can express.
+        // One grouped query for the whole list, never one per section.
+        const teacherCounts = await this.distinctTeacherCounts(
+          sections.map((s) => s.id),
+        );
+        return sections.map((s) => ({
+          ...s,
+          teacherCount: teacherCounts.get(s.id) ?? 0,
+        }));
+      },
+    );
+  }
+
+  /**
+   * How many DISTINCT teachers are attached to each section, counting both
+   * routes: the section-level assignment (`SectionTeacher`, i.e. the class
+   * teacher) and whoever teaches each subject (`SectionSubject.teacherId`).
+   *
+   * UNION — not UNION ALL — so the class teacher who also teaches two subjects
+   * is one person, not three.
+   */
+  private async distinctTeacherCounts(
+    sectionIds: string[],
+  ): Promise<Map<string, number>> {
+    if (!sectionIds.length) return new Map();
+    const rows = await this.prisma.$queryRaw<
+      Array<{ sectionId: string; count: number }>
+    >`
+      SELECT u."sectionId", COUNT(DISTINCT u."teacherId")::int AS count
+      FROM (
+        SELECT "sectionId", "teacherId" FROM "SectionTeacher"
+        WHERE "sectionId" = ANY(${sectionIds})
+        UNION
+        SELECT "sectionId", "teacherId" FROM "SectionSubject"
+        WHERE "sectionId" = ANY(${sectionIds}) AND "teacherId" IS NOT NULL
+      ) u
+      GROUP BY u."sectionId"
+    `;
+    return new Map(rows.map((r) => [r.sectionId, Number(r.count)]));
   }
 
   async findOne(id: string, actor: Actor) {
@@ -107,7 +160,12 @@ export class SectionsService extends BaseSchoolScopedService {
         subjects: {
           include: {
             subject: true,
-            teacher: true,
+            // `user` too: the card links a teacher to their profile, and a
+            // subject teacher who is not the class teacher has no other row
+            // here to source that id from.
+            teacher: {
+              include: { user: { select: { id: true, email: true } } },
+            },
           },
         },
         teachers: {

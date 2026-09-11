@@ -20,4 +20,16 @@ export class FindUsersQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
   sectionId?: string;
+
+  /**
+   * Students only: keep ONLY those holding no ACTIVE placement in
+   * `unassignedAcademicYearId` — the "not in any class yet" picker.
+   *
+   * Scoped to one session on purpose. Judging it across all time would hide
+   * every student who has ever been enrolled, so nobody could be placed after
+   * their first year.
+   */
+  @IsOptional()
+  @IsUUID()
+  unassignedAcademicYearId?: string;
 }

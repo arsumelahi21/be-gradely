@@ -55,9 +55,23 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     super(prisma, cache);
   }
 
-  /** Section cards show a student count from the cached sections list. */
+  /**
+   * Section cards show a student count from the cached sections list.
+   *
+   * `users`/`students` too: those lists can be FILTERED by enrollment
+   * (`classGradeId`, `sectionId`, `unassignedAcademicYearId`), so placing or
+   * removing a student changes who they return. Without this, the "Available
+   * students" picker kept offering someone for the whole 5-minute TTL after
+   * they were enrolled — and kept hiding them after they were removed.
+   */
   private invalidate(schoolId: string) {
-    return this.invalidateSchoolCache(schoolId, 'sections', 'classes');
+    return this.invalidateSchoolCache(
+      schoolId,
+      'sections',
+      'classes',
+      'users',
+      'students',
+    );
   }
 
   /**
