@@ -304,7 +304,11 @@ model AcademicYear {
   id               String               @id @default(uuid())
   schoolId         String
   name             String
-  code             String               @unique
+  /// Unique PER SCHOOL, not globally — two schools may both run "2027-2028".
+  /// It was a bare @unique from the first scaffold, which is why every seed
+  /// prefixes its codes with the school code to get around it. Nothing looks a
+  /// year up by code (every findUnique keys on id), so scoping it is safe.
+  code             String
   startDate        DateTime
   endDate          DateTime
   isActive         Boolean              @default(true)
@@ -318,6 +322,7 @@ model AcademicYear {
   installmentPlans FeeInstallmentPlan[]
   timetables       Timetable[]
 
+  @@unique([schoolId, code])
   @@index([schoolId])
 }
 

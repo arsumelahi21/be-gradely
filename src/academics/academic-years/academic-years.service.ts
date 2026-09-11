@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { uniqueConflict } from '../../common/utils/prisma-errors';
 import { BaseSchoolScopedService } from '../../common/services/base-school.service';
 import { CreateAcademicYearDto } from './dto/create-academic-year.dto';
 import { UpdateAcademicYearDto } from './dto/update-academic-year.dto';
@@ -22,6 +23,19 @@ export class AcademicYearsService extends BaseSchoolScopedService {
     super(prisma);
   }
 
+  /**
+   * The duplicate message, naming what the admin typed rather than a column.
+   *
+   * Without it the global Prisma filter renders `meta.target` verbatim — which
+   * for the composite key reads "That schoolId + code is already taken", leaking
+   * an internal column name and pointing at a field that isn't on the form.
+   */
+  private duplicateCode(label: string) {
+    return uniqueConflict(
+      `Academic year ${label} already exists for this school.`,
+    );
+  }
+
   async create(dto: CreateAcademicYearDto, actor: Actor) {
     const schoolId = this.resolveSchoolId(actor, dto.schoolId);
     await this.ensureSchoolExists(schoolId);
@@ -29,16 +43,22 @@ export class AcademicYearsService extends BaseSchoolScopedService {
       dto.startDate,
       dto.endDate,
     );
-    return this.prisma.academicYear.create({
-      data: {
-        schoolId,
-        name: dto.name,
-        code: dto.code,
-        startDate,
-        endDate,
-        isActive: dto.isActive ?? true,
-      },
-    });
+    return (
+      this.prisma.academicYear
+        .create({
+          data: {
+            schoolId,
+            name: dto.name,
+            code: dto.code,
+            startDate,
+            endDate,
+            isActive: dto.isActive ?? true,
+          },
+        })
+        // Caught on the write, not pre-checked: the constraint stays the source
+        // of truth and a pre-flight read would still race.
+        .catch(this.duplicateCode(dto.name || dto.code))
+    );
   }
 
   async findAll(
@@ -118,16 +138,23 @@ export class AcademicYearsService extends BaseSchoolScopedService {
     if (endDate <= startDate) {
       throw new BadRequestException('endDate must be after startDate');
     }
-    return this.prisma.academicYear.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.code !== undefined && { code: dto.code }),
-        startDate,
-        endDate,
-        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-      },
-    });
+    const label = dto.name ?? record.name ?? dto.code ?? record.code;
+    return (
+      this.prisma.academicYear
+        .update({
+          where: { id },
+          data: {
+            ...(dto.name !== undefined && { name: dto.name }),
+            ...(dto.code !== undefined && { code: dto.code }),
+            startDate,
+            endDate,
+            ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+          },
+        })
+        // Re-saving a year unchanged is not a clash — the row matches itself on
+        // the primary key, so the unique index is never violated.
+        .catch(this.duplicateCode(label))
+    );
   }
 
   async remove(id: string, actor: Actor) {
