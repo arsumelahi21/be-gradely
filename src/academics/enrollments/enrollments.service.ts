@@ -314,6 +314,12 @@ export class EnrollmentsService extends BaseSchoolScopedService {
   async findAll(actor: Actor, query: FindEnrollmentsQueryDto) {
     const where: any = {};
 
+    // Current roster by default — every caller asks "who is in this section",
+    // and promotion CLOSES the old placement (status COMPLETED) rather than
+    // deleting it, so an unfiltered list kept showing promoted students in the
+    // class they had already left. Pass `status` explicitly to read history.
+    where.status = query.status ?? EnrollmentStatus.ACTIVE;
+
     // If actor is a student, they can only see their own enrollments
     if (actor.role === Role.STUDENT) {
       if (!actor.schoolId) {
