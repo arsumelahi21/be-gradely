@@ -69,7 +69,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
   async findAll(actor: Actor, query: FindSectionSubjectsQueryDto) {
     const where: any = {};
 
-    // If actor is a student, they can see section-subjects for sections they're enrolled in
     if (actor.role === Role.STUDENT) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
@@ -82,7 +81,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Student profile not found');
       }
 
-      // Get all sections student is enrolled in
       const enrollments = await this.prisma.enrollment.findMany({
         where: {
           studentId: student.id,
@@ -100,7 +98,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       where.sectionId = { in: enrolledSectionIds };
       where.section = { schoolId: actor.schoolId };
 
-      // Apply filters
       if (query.sectionId) {
         if (!enrolledSectionIds.includes(query.sectionId)) {
           throw new ForbiddenException('You are not enrolled in this section');
@@ -109,7 +106,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       }
       if (query.subjectId) where.subjectId = query.subjectId;
     }
-    // If actor is a parent, they can see section-subjects for sections their children are enrolled in
     else if (actor.role === Role.PARENT) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
@@ -122,7 +118,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Parent profile not found');
       }
 
-      // Get all children's student IDs
       const parentStudentLinks = await (
         this.prisma as any
       ).parentStudent.findMany({
@@ -138,7 +133,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
         return [];
       }
 
-      // Get all sections children are enrolled in
       const enrollments = await this.prisma.enrollment.findMany({
         where: {
           studentId: { in: childStudentIds },
@@ -158,7 +152,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       where.sectionId = { in: enrolledSectionIds };
       where.section = { schoolId: actor.schoolId };
 
-      // Apply filters
       if (query.sectionId) {
         if (!enrolledSectionIds.includes(query.sectionId)) {
           throw new ForbiddenException(
@@ -169,14 +162,12 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       }
       if (query.subjectId) where.subjectId = query.subjectId;
     }
-    // If actor is a teacher, they can only see section-subjects they're assigned to
     else if (actor.role === Role.TEACHER) {
       // Teachers can only see section-subjects they're assigned to
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }
 
-      // Get teacher profile
       const teacher = await this.prisma.teacherProfile.findFirst({
         where: { userId: actor.userId, schoolId: actor.schoolId },
       });
@@ -184,12 +175,10 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Teacher profile not found');
       }
 
-      // If teacherId is provided in query, ensure it matches the logged-in teacher
       if (query.teacherId && query.teacherId !== teacher.id) {
         throw new ForbiddenException('Can only view your own assignments');
       }
 
-      // Filter by teacher's assignments (either directly assigned or via section-teacher)
       const sectionTeacherAssignments = await (
         this.prisma as any
       ).sectionTeacher.findMany({
@@ -217,7 +206,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       where.sectionId = { in: assignedSectionIds };
       where.section = { schoolId: actor.schoolId };
 
-      // Apply additional filters
       if (query.sectionId) {
         if (!assignedSectionIds.includes(query.sectionId)) {
           throw new ForbiddenException('Not assigned to this section');

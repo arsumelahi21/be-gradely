@@ -157,7 +157,6 @@ export class TimetableController {
     Role.STUDENT,
     Role.PARENT,
   )
-  /** The date window this timetable applies to. */
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Patch('sections/:sectionId/window')
   updateWindow(

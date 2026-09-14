@@ -50,7 +50,6 @@ import {
 } from './dto/challan-query.dto';
 import { feesCachePrefix } from './fees-cache';
 
-/** Plain-English skip reasons for the preview's "will be skipped" list. */
 const SKIP_MESSAGES: Record<string, string> = {
   NO_PLAN: 'This student is not on an installment plan for that academic year.',
   NO_SUCH_INSTALLMENT: 'Their plan has no installment with that number.',
@@ -179,9 +178,6 @@ export class ChallansService extends BaseSchoolScopedService {
     super(prisma, cache);
   }
 
-  // ==== Generation =========================================================
-
-  /** Dry run: who gets billed, who is already billed, and the totals. */
   async preview(dto: GenerateChallansDto, actor: Actor) {
     if (dto.generationType === ChallanGenerationType.INSTALLMENT) {
       return this.describeInstallmentPlan(
@@ -199,7 +195,6 @@ export class ChallansService extends BaseSchoolScopedService {
     return this.runGeneration(dto, actor);
   }
 
-  /** Single student — the same path with a roster of one. */
   async createSingle(dto: CreateChallanDto, actor: Actor) {
     const student = await this.prisma.studentProfile.findUnique({
       where: { id: dto.studentId },
@@ -208,7 +203,6 @@ export class ChallansService extends BaseSchoolScopedService {
     if (!student) throw new NotFoundException('Student not found');
     this.enforceScope(actor, student.schoolId);
 
-    // Resolve the student's section from their ACTIVE enrollment for the year.
     const enrollment = await this.prisma.enrollment.findFirst({
       where: {
         studentId: dto.studentId,
@@ -1229,8 +1223,6 @@ export class ChallansService extends BaseSchoolScopedService {
     };
   }
 
-  // ==== Installment generation =============================================
-
   /**
    * Everything the "Generate Installment Challan" modal needs for one student,
    * in a CONSTANT number of queries: their plans, every row of each, and which
@@ -1286,7 +1278,6 @@ export class ChallansService extends BaseSchoolScopedService {
           },
         },
       }),
-      // Outstanding across live challans — the modal's "Current Balance".
       this.prisma.challan.findMany({
         where: { studentId, status: { not: ChallanStatus.CANCELLED } },
         select: {
@@ -1429,7 +1420,6 @@ export class ChallansService extends BaseSchoolScopedService {
         )
       : new Set<string>();
 
-    // Bucket by seq across every student's plan.
     const bySeq = new Map<
       number,
       {
@@ -1471,8 +1461,6 @@ export class ChallansService extends BaseSchoolScopedService {
         })),
     };
   }
-
-  // ==== Reads ==============================================================
 
   async list(query: ChallanQueryDto, actor: Actor) {
     this.ensureAdmin(actor);
@@ -1519,7 +1507,6 @@ export class ChallansService extends BaseSchoolScopedService {
       };
     }
 
-    // Overdue is derived: past due AND not settled/cancelled.
     if (query.overdue === 'true') {
       where.dueDate = { lt: todayUtc() };
       where.status = {
@@ -1792,7 +1779,6 @@ export class ChallansService extends BaseSchoolScopedService {
     throw new ForbiddenException('Not allowed');
   }
 
-  /** Per-class Created / Not Created / Partially covered grid for one month. */
   async coverage(query: ChallanCoverageQueryDto, actor: Actor) {
     this.ensureAdmin(actor);
     const schoolId = this.resolveSchoolId(actor, query.schoolId);
@@ -1977,8 +1963,6 @@ export class ChallansService extends BaseSchoolScopedService {
     return { statuses };
   }
 
-  // ==== Read-only portals ==================================================
-
   /**
    * A student's own fees, or a parent's child's. `studentId` picks the child
    * for a parent with several; it must still pass the link check.
@@ -1988,7 +1972,6 @@ export class ChallansService extends BaseSchoolScopedService {
     return this.studentFeeHistory(student.id);
   }
 
-  /** One student's history, scoped per role. */
   async studentChallans(studentId: string, actor: Actor) {
     const student = await this.prisma.studentProfile.findUnique({
       where: { id: studentId },
@@ -1999,7 +1982,6 @@ export class ChallansService extends BaseSchoolScopedService {
     return this.studentFeeHistory(student.id);
   }
 
-  /** Children a parent can switch between in their portal. */
   async myChildren(actor: Actor) {
     if (actor.role !== Role.PARENT) throw new ForbiddenException('Not allowed');
     const links = await this.prisma.parentStudent.findMany({
@@ -2058,7 +2040,6 @@ export class ChallansService extends BaseSchoolScopedService {
     };
   }
 
-  /** The StudentProfile the actor is entitled to read as "their own". */
   private async resolveOwnStudent(actor: Actor, studentId?: string) {
     if (actor.role === Role.STUDENT) {
       const own = await this.prisma.studentProfile.findFirst({

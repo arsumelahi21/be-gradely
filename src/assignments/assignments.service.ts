@@ -407,7 +407,6 @@ export class AssignmentsService {
       throw new BadRequestException('Invalid status');
     }
 
-    // Validate and update academicYearId if provided
     let academicYearId = assignment.academicYearId;
     if (
       dto.academicYearId &&
@@ -426,7 +425,6 @@ export class AssignmentsService {
       academicYearId = dto.academicYearId;
     }
 
-    // Validate and update sectionSubjectId if provided
     let sectionSubjectId = assignment.sectionSubjectId;
     if (
       dto.sectionSubjectId &&
@@ -446,7 +444,6 @@ export class AssignmentsService {
         );
       }
 
-      // Verify teacher is assigned to the new section-subject
       const teachesThis = await this.isTeacherAssignedToSectionSubject({
         teacherId: teacher.id,
         sectionId: sectionSubject.sectionId,
@@ -486,7 +483,6 @@ export class AssignmentsService {
     return updated;
   }
 
-  /** Fan-out a "new assignment" notification to the section's students. */
   private async notifyAssignmentPublished(a: {
     id: string;
     title: string;
@@ -776,7 +772,6 @@ export class AssignmentsService {
       },
     );
 
-    // If submission not found by ID, try finding by assignmentId + studentId
     if (!submission) {
       submission = await (this.prisma as any).assignmentSubmission.findUnique({
         where: {
@@ -803,7 +798,6 @@ export class AssignmentsService {
       });
     }
 
-    // If still not found, check if assignment exists and student is enrolled
     if (!submission) {
       const assignment = await (this.prisma as any).assignment.findUnique({
         where: { id: assignmentId },
@@ -822,7 +816,6 @@ export class AssignmentsService {
         throw new NotFoundException('Assignment not found');
       }
 
-      // Verify student enrollment
       const enrolled = await this.prisma.enrollment.findFirst({
         where: {
           studentId: student.id,
@@ -838,7 +831,6 @@ export class AssignmentsService {
         );
       }
 
-      // Create submission if it doesn't exist
       const defaultKey = await this.s3.keyFor(
         assignment.schoolId,
         'submissions',
@@ -846,7 +838,6 @@ export class AssignmentsService {
         'submission',
       );
 
-      // Fetch assignment with createdByTeacher for consistency
       const assignmentWithTeacher = await (
         this.prisma as any
       ).assignment.findUnique({
@@ -891,7 +882,6 @@ export class AssignmentsService {
       submission.assignment = assignmentWithTeacher;
     }
 
-    // Validate submission matches assignment and student
     if (submission.assignmentId !== assignmentId) {
       throw new BadRequestException('Mismatched assignment');
     }
@@ -903,7 +893,6 @@ export class AssignmentsService {
       throw new BadRequestException('Submission already marked');
     }
 
-    // Ensure student is enrolled for that assignment
     const enrolled = await this.prisma.enrollment.findFirst({
       where: {
         studentId: student.id,
@@ -915,7 +904,6 @@ export class AssignmentsService {
     if (!enrolled)
       throw new ForbiddenException('Student not enrolled for this assignment');
 
-    // Handle file uploads if provided
     const uploadedFiles = Array.isArray(files)
       ? files.filter((f) => f && f.buffer)
       : [];
@@ -1130,7 +1118,6 @@ export class AssignmentsService {
       );
     }
 
-    // Validate assignment status - can only mark PUBLISHED or CLOSED assignments
     if (!['PUBLISHED', 'CLOSED'].includes(submission.assignment.status)) {
       throw new BadRequestException(
         `Cannot mark submissions for assignment with status '${submission.assignment.status}'. ` +

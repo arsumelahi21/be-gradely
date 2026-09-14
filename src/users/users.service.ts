@@ -247,7 +247,6 @@ export class UsersService {
               : null)
           : null;
 
-        // Create base user
         const user = await tx.user.create({
           data: {
             email: dto.email,
@@ -266,7 +265,6 @@ export class UsersService {
           },
         });
 
-        // Create profile based on role (mandatory fullName)
         if (dto.role === Role.TEACHER) {
           await tx.teacherProfile.create({
             data: {
@@ -522,7 +520,6 @@ export class UsersService {
     }
   }
 
-  /** Compose a display phone from a dial code + number (null when no number). */
   private composeGuardianPhone(
     dial?: string | null,
     number?: string | null,
@@ -548,7 +545,6 @@ export class UsersService {
     const year = new Date().getFullYear();
     const prefix = `${schoolCode}-${year}-`;
 
-    // Find the highest existing sequence for this school + year prefix.
     const latest = await tx.studentProfile.findFirst({
       where: { schoolId, admissionNo: { startsWith: prefix } },
       orderBy: { admissionNo: 'desc' },
@@ -791,7 +787,6 @@ export class UsersService {
     const items = rows.map((user: any) => {
       const { passwordHash, refreshTokenHash, ...safe } = user;
 
-      // Include fullName and phone at root level from profile if not already present
       if (!safe.fullName) {
         if (safe.teacherProfile) {
           safe.fullName = safe.teacherProfile.fullName;
@@ -804,23 +799,19 @@ export class UsersService {
         }
       }
 
-      // Include students array at root level for parents
       if (safe.parentProfile && safe.parentProfile.children) {
         safe.students = safe.parentProfile.children.map(
           (child: any) => child.student,
         );
       }
 
-      // Include parents array at root level for students
       if (safe.studentProfile && safe.studentProfile.parents) {
         safe.parents = safe.studentProfile.parents.map((parentLink: any) => {
           const parent = parentLink.parent;
-          // Include email from User table if parentProfile email is null
           const parentData: any = {
             ...parent,
             email: parent.email || parent.user?.email || null,
           };
-          // Include userId if user relation exists
           if (parent.user) {
             parentData.userId = parent.user.id;
           }
@@ -830,7 +821,6 @@ export class UsersService {
         });
       }
 
-      // Include assigned classes (sections) at root level for teachers
       if (safe.teacherProfile && safe.teacherProfile.sections) {
         safe.assignedClasses = safe.teacherProfile.sections.map((st: any) => ({
           id: st.id,
@@ -867,7 +857,6 @@ export class UsersService {
 
     // Teachers, Students, and Parents can only access their own profile
     if ([Role.TEACHER, Role.STUDENT, Role.PARENT].includes(actor.role)) {
-      // Verify the requested user ID matches the logged-in user's ID
       // actor.userId comes from JWT token's 'sub' field
       if (!actor.userId) {
         throw new ForbiddenException(
@@ -875,7 +864,6 @@ export class UsersService {
         );
       }
 
-      // Check if the requested ID matches the logged-in user's ID
       if (actor.userId !== id) {
         throw new ForbiddenException(
           `You can only access your own profile. Your userId: ${actor.userId}, Requested userId: ${id}`,
@@ -896,7 +884,6 @@ export class UsersService {
     // Return safe shape (no passwordHash/refreshTokenHash)
     const { passwordHash, refreshTokenHash, ...safe } = user as any;
 
-    // Include fullName and phone at root level from profile if not already present
     if (!safe.fullName) {
       if (safe.teacherProfile) {
         safe.fullName = safe.teacherProfile.fullName;
@@ -909,23 +896,19 @@ export class UsersService {
       }
     }
 
-    // Include students array at root level for parents
     if (safe.parentProfile && safe.parentProfile.children) {
       safe.students = safe.parentProfile.children.map(
         (child: any) => child.student,
       );
     }
 
-    // Include parents array at root level for students
     if (safe.studentProfile && safe.studentProfile.parents) {
       safe.parents = safe.studentProfile.parents.map((parentLink: any) => {
         const parent = parentLink.parent;
-        // Include email from User table if parentProfile email is null
         const parentData: any = {
           ...parent,
           email: parent.email || parent.user?.email || null,
         };
-        // Include userId if user relation exists
         if (parent.user) {
           parentData.userId = parent.user.id;
         }
@@ -935,7 +918,6 @@ export class UsersService {
       });
     }
 
-    // Include assigned classes (sections) at root level for teachers
     if (safe.teacherProfile && safe.teacherProfile.sections) {
       safe.assignedClasses = safe.teacherProfile.sections.map((st: any) => ({
         id: st.id,
@@ -1014,7 +996,6 @@ export class UsersService {
       }
     }
 
-    // Validate email uniqueness if email is being updated
     if (dto.email && dto.email !== user.email) {
       const exists = await this.prisma.user.findUnique({
         where: { email: dto.email },
@@ -1078,7 +1059,6 @@ export class UsersService {
       }
     }
 
-    // Validate school exists if schoolId is being updated (only SUPER_ADMIN can do this)
     if (dto.schoolId !== undefined && dto.schoolId !== user.schoolId) {
       if (actor.role !== Role.SUPER_ADMIN) {
         throw new ForbiddenException('Only SUPER_ADMIN can change user school');
@@ -1092,7 +1072,6 @@ export class UsersService {
       }
     }
 
-    // Update User model fields (email, schoolId)
     const userUpdateData: any = {};
     if (dto.email !== undefined && dto.email !== user.email) {
       userUpdateData.email = dto.email;
@@ -1111,7 +1090,6 @@ export class UsersService {
       });
     }
 
-    // Update profile based on role
     if (user.role === Role.TEACHER && user.teacherProfile) {
       await this.prisma.teacherProfile.update({
         where: { id: user.teacherProfile.id },
@@ -1332,7 +1310,6 @@ export class UsersService {
     });
     await this.invalidateRoleCache(user.role, user.schoolId);
 
-    // Return updated user with full profile
     return this.findById(id, actor);
   }
 
@@ -1417,7 +1394,6 @@ export class UsersService {
       },
     });
 
-    // Return parent with linked children
     return this.prisma.parentProfile.findUnique({
       where: { id: parentProfileId },
       include: {

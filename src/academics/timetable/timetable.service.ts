@@ -232,7 +232,6 @@ export class TimetableService extends BaseSchoolScopedService {
 
   // ---- setup + periods ---------------------------------------------------
 
-  /** Create the section's timetable and generate its bell schedule (per-section). */
   async setupTimetable(
     sectionId: string,
     dto: SetupTimetableDto,
@@ -541,7 +540,6 @@ export class TimetableService extends BaseSchoolScopedService {
     };
   }
 
-  /** Broad read of a section's bell schedule (members need times to render). */
   async listPeriods(
     sectionId: string,
     actor: Actor,
@@ -768,7 +766,6 @@ export class TimetableService extends BaseSchoolScopedService {
     });
     if (errors.length) throw new BadRequestException(errors.join('; '));
 
-    // If a CLASS period becomes non-CLASS while it still holds assignments, block it.
     if (NON_CLASS_KINDS.includes(kind)) {
       const entryCount = await this.prisma.timetableEntry.count({
         where: { periodId: id },
@@ -1232,7 +1229,6 @@ export class TimetableService extends BaseSchoolScopedService {
       throw new BadRequestException('This timetable has no working days');
     }
 
-    // Validate every assignment once (period is CLASS + belongs here; subject/teacher qualified).
     const resolved = await Promise.all(
       dto.assignments.map(async (a) => {
         const period = await this.loadPeriod(a.periodId, section.schoolId);
@@ -2260,7 +2256,6 @@ export class TimetableService extends BaseSchoolScopedService {
     };
   }
 
-  /** For a teacher's cross-section view, derive a distinct sorted period list. */
   private periodsFromEntries(entries: Array<any>) {
     const map = new Map<string, any>();
     for (const e of entries) {

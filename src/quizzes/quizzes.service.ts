@@ -518,7 +518,6 @@ export class QuizzesService extends BaseSchoolScopedService {
     return this.getQuizForAuthor(quizId, actor);
   }
 
-  /** Fan-out a "new quiz" notification to the section's students. */
   private async notifyQuizPublished(quiz: {
     id: string;
     title: string;

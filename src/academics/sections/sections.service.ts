@@ -385,13 +385,11 @@ export class SectionsService extends BaseSchoolScopedService {
       throw new NotFoundException('Section not found');
     }
 
-    // If actor is a teacher, check if they are assigned to this section
     if (actor.role === Role.TEACHER) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }
 
-      // Get teacher profile
       const teacher = await this.prisma.teacherProfile.findFirst({
         where: { userId: actor.userId, schoolId: actor.schoolId },
       });
@@ -399,7 +397,6 @@ export class SectionsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Teacher profile not found');
       }
 
-      // Check if teacher is assigned to this section (via SectionTeacher or SectionSubject)
       const sectionTeacher = await this.sectionTeachers.findFirst({
         where: { teacherId: teacher.id, sectionId: section.id },
       });
@@ -412,7 +409,6 @@ export class SectionsService extends BaseSchoolScopedService {
         throw new ForbiddenException('You are not assigned to this section');
       }
     } else {
-      // For admins, enforce school scope
       this.enforceScope(actor, section.schoolId);
     }
 

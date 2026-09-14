@@ -81,8 +81,6 @@ export class AcademicYearsService extends BaseSchoolScopedService {
           'No school context. Please ensure your user account has a schoolId set.',
         );
       }
-      // For non-admin roles, if schoolId query param is provided, validate it matches their schoolId
-      // Otherwise, use their actor.schoolId
       if (schoolId) {
         if (schoolId !== actor.schoolId) {
           throw new ForbiddenException(
