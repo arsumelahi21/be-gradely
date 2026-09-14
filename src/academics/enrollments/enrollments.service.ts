@@ -30,7 +30,6 @@ type UpdateEnrollmentInput = UpdateEnrollmentDto & Partial<CreateEnrollmentDto>;
  */
 const PLACEMENT_LIMIT = 20000;
 
-/** Where one student sits this year. The shape the enrol picker types against. */
 export interface StudentPlacement {
   studentId: string;
   sectionId: string;
@@ -55,9 +54,23 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     super(prisma, cache);
   }
 
-  /** Section cards show a student count from the cached sections list. */
+  /**
+   * Section cards show a student count from the cached sections list.
+   *
+   * `users`/`students` too: those lists can be FILTERED by enrollment
+   * (`classGradeId`, `sectionId`, `unassignedAcademicYearId`), so placing or
+   * removing a student changes who they return. Without this, the "Available
+   * students" picker kept offering someone for the whole 5-minute TTL after
+   * they were enrolled — and kept hiding them after they were removed.
+   */
   private invalidate(schoolId: string) {
-    return this.invalidateSchoolCache(schoolId, 'sections', 'classes');
+    return this.invalidateSchoolCache(
+      schoolId,
+      'sections',
+      'classes',
+      'users',
+      'students',
+    );
   }
 
   /**
@@ -300,7 +313,12 @@ export class EnrollmentsService extends BaseSchoolScopedService {
   async findAll(actor: Actor, query: FindEnrollmentsQueryDto) {
     const where: any = {};
 
-    // If actor is a student, they can only see their own enrollments
+    // Current roster by default — every caller asks "who is in this section",
+    // and promotion CLOSES the old placement (status COMPLETED) rather than
+    // deleting it, so an unfiltered list kept showing promoted students in the
+    // class they had already left. Pass `status` explicitly to read history.
+    where.status = query.status ?? EnrollmentStatus.ACTIVE;
+
     if (actor.role === Role.STUDENT) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
@@ -317,11 +335,9 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       where.studentId = student.id;
       where.student = { schoolId: actor.schoolId };
 
-      // Apply filters
       if (query.sectionId) where.sectionId = query.sectionId;
       if (query.academicYearId) where.academicYearId = query.academicYearId;
     }
-    // If actor is a parent, they can only see enrollments for their children
     else if (actor.role === Role.PARENT) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
@@ -334,7 +350,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Parent profile not found');
       }
 
-      // Get all children's student IDs
       const parentStudentLinks = await (
         this.prisma as any
       ).parentStudent.findMany({
@@ -350,11 +365,9 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         return [];
       }
 
-      // Filter by children's enrollments
       where.studentId = { in: childStudentIds };
       where.student = { schoolId: actor.schoolId };
 
-      // If studentId is provided, validate it's a child
       if (query.studentId) {
         if (!childStudentIds.includes(query.studentId)) {
           throw new ForbiddenException('Student is not your child');
@@ -362,17 +375,14 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         where.studentId = query.studentId;
       }
 
-      // Apply filters
       if (query.sectionId) where.sectionId = query.sectionId;
       if (query.academicYearId) where.academicYearId = query.academicYearId;
     }
-    // If actor is a teacher, they can only see enrollments for sections they are assigned to
     else if (actor.role === Role.TEACHER) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }
 
-      // Get teacher profile
       const teacher = await this.prisma.teacherProfile.findFirst({
         where: { userId: actor.userId, schoolId: actor.schoolId },
       });
@@ -380,7 +390,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Teacher profile not found');
       }
 
-      // Get all sections assigned to this teacher (via SectionTeacher or SectionSubject)
       const sectionTeacher = (this.prisma as any).sectionTeacher;
       const sectionTeachers = await sectionTeacher.findMany({
         where: { teacherId: teacher.id },
@@ -403,25 +412,20 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         return [];
       }
 
-      // If sectionId is provided, validate it's assigned to the teacher
       if (query.sectionId) {
         if (!assignedSectionIds.includes(query.sectionId)) {
           throw new ForbiddenException('You are not assigned to this section');
         }
         where.sectionId = query.sectionId;
       } else {
-        // Otherwise, filter by all assigned sections
         where.sectionId = { in: assignedSectionIds };
       }
 
-      // Apply other filters
       if (query.studentId) where.studentId = query.studentId;
       if (query.academicYearId) where.academicYearId = query.academicYearId;
 
-      // Enforce school scope
       where.student = { schoolId: actor.schoolId };
     } else {
-      // For admins, use existing logic
       this.ensureAdmin(actor);
       if (query.studentId) where.studentId = query.studentId;
       if (query.sectionId) where.sectionId = query.sectionId;
@@ -443,7 +447,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
   }
 
   async findOne(id: string, actor: Actor) {
-    // If actor is a student, they can only see their own enrollment
     if (actor.role === Role.STUDENT) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
@@ -471,7 +474,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
 
       return enrollment;
     }
-    // If actor is a parent, they can only see enrollments for their children
     else if (actor.role === Role.PARENT) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
@@ -493,7 +495,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         throw new NotFoundException('Enrollment not found');
       }
 
-      // Check if enrollment belongs to a child
       const parentStudentLink = await (
         this.prisma as any
       ).parentStudent.findUnique({
@@ -514,7 +515,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       return enrollment;
     }
 
-    // For teachers and admins, use existing logic
     return this.getOrThrow(id, actor);
   }
 
@@ -576,13 +576,11 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       throw new NotFoundException('Enrollment not found');
     }
 
-    // If actor is a teacher, check if they are assigned to the section
     if (actor.role === Role.TEACHER) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }
 
-      // Get teacher profile
       const teacher = await this.prisma.teacherProfile.findFirst({
         where: { userId: actor.userId, schoolId: actor.schoolId },
       });
@@ -590,7 +588,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Teacher profile not found');
       }
 
-      // Check if teacher is assigned to this section (via SectionTeacher or SectionSubject)
       const sectionTeacher = (this.prisma as any).sectionTeacher;
       const teacherAssignment = await sectionTeacher.findFirst({
         where: { teacherId: teacher.id, sectionId: enrollment.sectionId },
@@ -609,7 +606,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Cross-school access denied');
       }
     } else {
-      // For admins, enforce school scope
       this.enforceScope(actor, enrollment.student.schoolId);
     }
 

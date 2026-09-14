@@ -133,7 +133,6 @@ export class SearchService {
       }
     }
 
-    // Resolve grade → section (within grade) → subject over the scoped taxonomy.
     const grade = this.resolveTaxon(grades, tokenSet, GRADE_WORDS);
     if (grade) {
       this.consumeTaxon(grade, GRADE_WORDS, tokenSet, consumed);
@@ -389,7 +388,6 @@ export class SearchService {
     return tokenize(s).filter((x) => !generic.has(x));
   }
 
-  /** Mark a resolved taxon's tokens (name or code) that appear in the query. */
   private consumeTaxon(
     t: Taxon,
     generic: Set<string>,

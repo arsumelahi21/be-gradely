@@ -48,7 +48,6 @@ export function assertPdfOnly(input: {
   }
 }
 
-/** Throws BadRequestException if MIME is off the allow-list or size exceeds cap. */
 export function assertAttachmentAllowed(input: {
   mimeType?: string | null;
   sizeBytes?: number | null;

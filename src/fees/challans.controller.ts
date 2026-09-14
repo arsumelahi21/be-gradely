@@ -86,7 +86,6 @@ export class ChallansController {
     return this.submissions.submit(challanId, dto, file, req.user);
   }
 
-  /** The verification queue. */
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Get('payment-submissions')
   listSubmissions(@Query() query: PaymentSubmissionQueryDto, @Req() req: any) {
@@ -114,14 +113,12 @@ export class ChallansController {
     res.send(data);
   }
 
-  /** Verify -> creates the real Payment via the existing workflow. */
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Post('payment-submissions/:id/verify')
   verifySubmission(@Param('id') id: string, @Req() req: any) {
     return this.submissions.verify(id, req.user);
   }
 
-  /** Reject -> creates nothing. */
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Post('payment-submissions/:id/reject')
   rejectSubmission(
@@ -180,7 +177,6 @@ export class ChallansController {
     return this.challans.printBatch(query, req.user);
   }
 
-  /** Which installment rows a whole section can be billed for. */
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Get('challans/installment-options')
   sectionInstallmentOptions(
@@ -237,7 +233,6 @@ export class ChallansController {
 
   // ---- One student's fee heads (admin only) ------------------------------
 
-  /** Effective heads for a student: school defaults + their overrides. */
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Get('students/:studentId/fee-heads')
   studentFeeHeads(@Param('studentId') studentId: string, @Req() req: any) {

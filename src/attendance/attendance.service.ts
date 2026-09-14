@@ -129,7 +129,6 @@ export class AttendanceService extends BaseSchoolScopedService {
 
   // ---- endpoints ---------------------------------------------------------
 
-  /** Bulk upsert attendance for one subject-period on a date. */
   async mark(dto: MarkAttendanceDto, actor: Actor) {
     const sectionSubject = await this.loadSectionSubject(dto.sectionSubjectId);
     await this.assertSubjectAccess(actor, sectionSubject);
@@ -194,7 +193,6 @@ export class AttendanceService extends BaseSchoolScopedService {
     return { count: results.length, date: dto.date, period, records: results };
   }
 
-  /** Fan-out attendance-marked notifications to students + parents, per status. */
   private async notifyAttendanceMarked(
     dto: MarkAttendanceDto,
     sectionSubject: { subject: { name: string } },
@@ -223,7 +221,6 @@ export class AttendanceService extends BaseSchoolScopedService {
     }
   }
 
-  /** Roster + status for one subject-period on a date (pre-populates marking UI). */
   async getSectionSubjectAttendance(
     sectionSubjectId: string,
     query: SectionSubjectAttendanceQueryDto,
@@ -264,7 +261,6 @@ export class AttendanceService extends BaseSchoolScopedService {
     };
   }
 
-  /** A student's per-period history in a date range, paginated. */
   async getStudentAttendance(
     studentId: string,
     query: StudentAttendanceQueryDto,
@@ -320,7 +316,6 @@ export class AttendanceService extends BaseSchoolScopedService {
     };
   }
 
-  /** Attendance-rate aggregates (period-based, plus a daily rollup). */
   async getStudentStats(
     studentId: string,
     query: StudentAttendanceStatsQueryDto,

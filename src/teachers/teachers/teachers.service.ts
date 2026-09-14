@@ -187,13 +187,11 @@ export class TeachersService extends BaseSchoolScopedService {
     const sectionTeachers = (this.prisma as any).sectionTeacher;
     const sectionSubjects = (this.prisma as any).sectionSubject;
 
-    // Get all sections where teacher is assigned (SectionTeacher)
     const sectionTeacherAssignments = await sectionTeachers.findMany({
       where: { teacherId: teacher.id },
       select: { sectionId: true },
     });
 
-    // Get all sections where teacher teaches subjects (SectionSubject) with subject details
     const sectionSubjectAssignments = await sectionSubjects.findMany({
       where: { teacherId: teacher.id },
       select: {
@@ -216,7 +214,6 @@ export class TeachersService extends BaseSchoolScopedService {
       return [];
     }
 
-    // Get all enrollments for these sections
     const enrollments = await this.prisma.enrollment.findMany({
       where: {
         sectionId: { in: sectionIds },
@@ -233,7 +230,6 @@ export class TeachersService extends BaseSchoolScopedService {
       },
     });
 
-    // Build map of subjects taught by this teacher per section
     const sectionSubjectMap = new Map<string, any[]>();
     sectionSubjectAssignments.forEach((ss: any) => {
       const sectionId = ss.sectionId;
@@ -264,13 +260,11 @@ export class TeachersService extends BaseSchoolScopedService {
       throw new NotFoundException('Teacher not found');
     }
 
-    // If actor is a TEACHER, they can only access their own profile
     if (actor.role === Role.TEACHER) {
       if (teacher.userId !== actor.userId) {
         throw new ForbiddenException('Teachers can only access their own data');
       }
     } else {
-      // For admins, enforce school scope
       this.enforceScope(actor, teacher.schoolId);
     }
 

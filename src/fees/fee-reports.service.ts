@@ -42,7 +42,6 @@ export class FeeReportsService extends BaseSchoolScopedService {
     super(prisma, cache);
   }
 
-  /** Headline figures for the summary cards. */
   async summary(query: FeeReportQueryDto, actor: Actor) {
     const schoolId = this.scope(actor, query);
     return this.cached(schoolId, ['summary', query], async () => {
@@ -462,7 +461,6 @@ export class FeeReportsService extends BaseSchoolScopedService {
     return null;
   }
 
-  /** Serialisable window for the response payload. */
   private windowMeta(query: FeeReportQueryDto) {
     const w = this.resolveWindow(query);
     if (!w) return null;

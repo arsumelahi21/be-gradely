@@ -338,7 +338,6 @@ export class DemoChatbotProvider implements ChatbotProvider {
   }
 }
 
-/** Lowercase word list, punctuation stripped, trivial stop-words removed. */
 function tokenize(question: string): string[] {
   return question
     .toLowerCase()

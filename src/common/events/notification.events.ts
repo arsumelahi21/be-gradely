@@ -44,12 +44,10 @@ export type NotifyPreferenceKey =
   | 'notifyAttendance';
 
 export interface NotificationCreateEvent {
-  /** Full recipient set — the listener fans out (createMany + batched email). */
   userIds: string[];
   type: NotificationType;
   title: string;
   body: string;
-  /** Deep link, e.g. /student-dashboard/messages/{threadId}. */
   link?: string;
   /** Correlates the notification to its source for read-sync (e.g. 'Announcement' + the announcement id). */
   entityType?: string;
@@ -68,9 +66,7 @@ export interface NotificationCreateEvent {
  */
 export const NOTIFICATION_CREATE_BATCH = 'notification.create.batch';
 
-/** One personalised notification inside a batch. */
 export interface NotificationBatchItem {
-  /** Recipients for THIS item (e.g. one student plus their guardians). */
   userIds: string[];
   title: string;
   body: string;

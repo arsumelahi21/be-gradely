@@ -7,7 +7,6 @@ async function main() {
   const email = 'superadmin@gradely.com';
   const password = 'Admin@12345678';
 
-  // check if super admin already exists
   const existing = await prisma.user.findUnique({
     where: { email },
   });

@@ -113,7 +113,6 @@ export class CacheService implements OnModuleDestroy {
     }
   }
 
-  /** Invalidate every key starting with `prefix` (e.g. a domain/tenant namespace). */
   async delByPrefix(prefix: string): Promise<void> {
     try {
       if (this.redis) {

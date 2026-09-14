@@ -108,7 +108,6 @@ export class SchoolsService {
     });
     if (!school) throw new NotFoundException('School not found');
 
-    // If code is being updated, check for uniqueness
     if (dto.code && dto.code !== school.code) {
       const exists = await (this.prisma as any).school.findUnique({
         where: { code: dto.code },

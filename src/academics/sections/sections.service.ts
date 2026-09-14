@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -15,11 +14,7 @@ import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { FindSectionsQueryDto } from './dto/find-sections-query.dto';
 import { CacheService } from '../../common/services/cache.service';
-import {
-  describeBlockers,
-  isRestrictedDelete,
-  uniqueConflict,
-} from '../../common/utils/prisma-errors';
+import { uniqueConflict } from '../../common/utils/prisma-errors';
 
 type UpdateSectionInput = UpdateSectionDto & Partial<CreateSectionDto>;
 
@@ -71,22 +66,75 @@ export class SectionsService extends BaseSchoolScopedService {
         ? (query.schoolId ?? undefined)
         : actor.schoolId!;
     const variant = { classGradeId: query.classGradeId ?? null };
-    return this.cachedSchoolList(scopedSchoolId, 'sections', variant, () => {
-      const where: any = {};
-      if (query.classGradeId) where.classGradeId = query.classGradeId;
-      if (scopedSchoolId) where.schoolId = scopedSchoolId;
-      // Include per-section counts so cards render subject/teacher/student
-      // numbers without firing 3 requests each (was 1+3N per class page).
-      return this.prisma.section.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          _count: {
-            select: { subjects: true, teachers: true, enrollments: true },
+    return this.cachedSchoolList(
+      scopedSchoolId,
+      'sections',
+      variant,
+      async () => {
+        const where: any = {};
+        if (query.classGradeId) where.classGradeId = query.classGradeId;
+        if (scopedSchoolId) where.schoolId = scopedSchoolId;
+        // Include per-section counts so cards render subject/teacher/student
+        // numbers without firing 3 requests each (was 1+3N per class page).
+        const sections = await this.prisma.section.findMany({
+          where,
+          // Class ladder first, then section name — so a whole-school list reads
+          // PG A, PG B, Nursery A, … 10 B rather than in creation order.
+          orderBy: [
+            { classGrade: { level: { sort: 'asc', nulls: 'last' } } },
+            { classGrade: { name: 'asc' } },
+            { name: 'asc' },
+          ],
+          include: {
+            _count: {
+              select: { subjects: true, teachers: true, enrollments: true },
+            },
           },
-        },
-      });
-    });
+        });
+        if (!sections.length) return sections;
+
+        // `_count.teachers` is SectionTeacher only — the homeroom assignment —
+        // so a card labelled "Teachers" showed 1 while six different people
+        // actually taught the section. The honest figure is the DISTINCT union of
+        // both ways a teacher is attached, which no Prisma `_count` can express.
+        // One grouped query for the whole list, never one per section.
+        const teacherCounts = await this.distinctTeacherCounts(
+          sections.map((s) => s.id),
+        );
+        return sections.map((s) => ({
+          ...s,
+          teacherCount: teacherCounts.get(s.id) ?? 0,
+        }));
+      },
+    );
+  }
+
+  /**
+   * How many DISTINCT teachers are attached to each section, counting both
+   * routes: the section-level assignment (`SectionTeacher`, i.e. the class
+   * teacher) and whoever teaches each subject (`SectionSubject.teacherId`).
+   *
+   * UNION — not UNION ALL — so the class teacher who also teaches two subjects
+   * is one person, not three.
+   */
+  private async distinctTeacherCounts(
+    sectionIds: string[],
+  ): Promise<Map<string, number>> {
+    if (!sectionIds.length) return new Map();
+    const rows = await this.prisma.$queryRaw<
+      Array<{ sectionId: string; count: number }>
+    >`
+      SELECT u."sectionId", COUNT(DISTINCT u."teacherId")::int AS count
+      FROM (
+        SELECT "sectionId", "teacherId" FROM "SectionTeacher"
+        WHERE "sectionId" = ANY(${sectionIds})
+        UNION
+        SELECT "sectionId", "teacherId" FROM "SectionSubject"
+        WHERE "sectionId" = ANY(${sectionIds}) AND "teacherId" IS NOT NULL
+      ) u
+      GROUP BY u."sectionId"
+    `;
+    return new Map(rows.map((r) => [r.sectionId, Number(r.count)]));
   }
 
   async findOne(id: string, actor: Actor) {
@@ -107,7 +155,12 @@ export class SectionsService extends BaseSchoolScopedService {
         subjects: {
           include: {
             subject: true,
-            teacher: true,
+            // `user` too: the card links a teacher to their profile, and a
+            // subject teacher who is not the class teacher has no other row
+            // here to source that id from.
+            teacher: {
+              include: { user: { select: { id: true, email: true } } },
+            },
           },
         },
         teachers: {
@@ -179,44 +232,12 @@ export class SectionsService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     const section = await this.getOrThrow(id, actor);
-    let removed;
-    try {
-      removed = await this.prisma.section.delete({ where: { id } });
-    } catch (e) {
-      throw await this.explainBlockedDelete(id, e);
-    }
+    // Enrollments, subjects, quizzes and timetables cascade; message threads
+    // and announcements hold the section optionally, so they null it out.
+    // Nothing refuses the delete any more.
+    const removed = await this.prisma.section.delete({ where: { id } });
     await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
     return removed;
-  }
-
-  /**
-   * Enrollments, subjects, quizzes and timetables all point at a Section with
-   * no cascade, so one in use simply can't be deleted. Name what is holding it:
-   * the raw P2003 reaches the admin as "Internal server error", which tells
-   * them nothing about the 23 children still on the roster.
-   *
-   * The counts run only after the delete has already failed, so a normal
-   * delete pays nothing for them.
-   */
-  private async explainBlockedDelete(id: string, e: unknown) {
-    if (!isRestrictedDelete(e)) return e as Error;
-    const [enrollments, subjects, quizzes, timetables] = await Promise.all([
-      this.prisma.enrollment.count({ where: { sectionId: id } }),
-      this.prisma.sectionSubject.count({ where: { sectionId: id } }),
-      this.prisma.quiz.count({ where: { sectionId: id } }),
-      this.prisma.timetable.count({ where: { sectionId: id } }),
-    ]);
-    const held = describeBlockers([
-      [enrollments, 'enrolled student', 'enrolled students'],
-      [subjects, 'subject', 'subjects'],
-      [quizzes, 'quiz', 'quizzes'],
-      [timetables, 'timetable', 'timetables'],
-    ]);
-    return new ConflictException(
-      held
-        ? `This section still has ${held}. Remove them before deleting it.`
-        : 'This section is still in use and cannot be deleted.',
-    );
   }
 
   async listTeachers(sectionId: string, actor: Actor) {
@@ -364,13 +385,11 @@ export class SectionsService extends BaseSchoolScopedService {
       throw new NotFoundException('Section not found');
     }
 
-    // If actor is a teacher, check if they are assigned to this section
     if (actor.role === Role.TEACHER) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }
 
-      // Get teacher profile
       const teacher = await this.prisma.teacherProfile.findFirst({
         where: { userId: actor.userId, schoolId: actor.schoolId },
       });
@@ -378,7 +397,6 @@ export class SectionsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Teacher profile not found');
       }
 
-      // Check if teacher is assigned to this section (via SectionTeacher or SectionSubject)
       const sectionTeacher = await this.sectionTeachers.findFirst({
         where: { teacherId: teacher.id, sectionId: section.id },
       });
@@ -391,7 +409,6 @@ export class SectionsService extends BaseSchoolScopedService {
         throw new ForbiddenException('You are not assigned to this section');
       }
     } else {
-      // For admins, enforce school scope
       this.enforceScope(actor, section.schoolId);
     }
 

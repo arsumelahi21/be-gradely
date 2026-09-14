@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 
@@ -10,6 +11,10 @@ async function bootstrap() {
   // Route SIGTERM/SIGINT through Nest's lifecycle so PrismaService.onModuleDestroy
   // runs a clean $disconnect on shutdown/redeploy (no lingering DB connections).
   app.enableShutdownHooks();
+
+  // Without this every proxied request shares the proxy's IP, so the 5/min
+  // login limit would be shared by all users.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
 
   app.setGlobalPrefix('api');
 
@@ -39,6 +44,8 @@ async function bootstrap() {
       transform: true,
     }),
   );
+  // A database error must never reach the browser as a raw driver dump.
+  app.useGlobalFilters(new PrismaExceptionFilter());
 
   await app.listen(process.env.PORT || 3002);
 }

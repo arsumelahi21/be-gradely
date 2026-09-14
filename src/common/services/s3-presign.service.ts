@@ -141,7 +141,6 @@ export class S3PresignService {
     return { bucket: this.bucket(), key: input.key };
   }
 
-  /** Fetch an object's raw bytes (used to stream S3-stored images through the API). */
   async getObjectBuffer(key: string): Promise<Buffer> {
     const cmd = new GetObjectCommand({ Bucket: this.bucket(), Key: key });
     const res = await this.s3.send(cmd);

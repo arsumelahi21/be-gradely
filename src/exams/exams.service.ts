@@ -280,7 +280,6 @@ export class ExamsService {
     return updated;
   }
 
-  /** Fan-out a "new exam scheduled" notification to the section's students. */
   private async notifyExamPublished(a: {
     id: string;
     title: string;
@@ -407,7 +406,6 @@ export class ExamsService {
       throw new ForbiddenException('Only creator teacher can view results');
     }
 
-    // Get all enrolled students for this exam's section
     const enrollments = await this.prisma.enrollment.findMany({
       where: {
         sectionId: exam.sectionSubject.sectionId,
@@ -420,7 +418,6 @@ export class ExamsService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Get all results for this exam
     const results = await (this.prisma as any).examResult.findMany({
       where: { examId },
       include: {
@@ -428,7 +425,6 @@ export class ExamsService {
       },
     });
 
-    // Create a map of results by studentId for quick lookup
     const resultsMap = new Map(results.map((r: any) => [r.studentId, r]));
 
     // Combine: show all students with their results (or null if not marked)

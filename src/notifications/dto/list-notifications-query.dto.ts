@@ -3,7 +3,6 @@ import { IsBoolean, IsDateString, IsOptional } from 'class-validator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 export class ListNotificationsQueryDto extends PaginationQueryDto {
-  /** When true, return only unread notifications. */
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true')
   @IsBoolean()

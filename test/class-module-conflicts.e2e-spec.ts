@@ -181,31 +181,9 @@ describe('Class module duplicate names (e2e)', () => {
     });
   });
 
-  /**
-   * Section, ClassGrade and Subject are all referenced WITHOUT a cascade, so
-   * Prisma's default Restrict refuses the delete. Untranslated that is another
-   * 500 — and a worse one, because the admin is told nothing about the roster
-   * still sitting in the section.
-   */
-  describe('deletes blocked by rows that do not cascade', () => {
-    it('refuses to delete a section in use and names what is holding it', async () => {
-      const cls = await seedClass({ studentCount: 3 });
-      const token = await adminFor(cls.school.id);
-
-      const res = await server()
-        .delete(`/api/sections/${cls.section.id}`)
-        .set('Authorization', `Bearer ${token}`);
-
-      expect(res.status).toBe(409);
-      expect(res.body.message).toContain('3 enrolled students');
-      expect(res.body.message).toContain('1 subject');
-
-      // Nothing may be half-deleted.
-      await expect(
-        prisma.section.findUniqueOrThrow({ where: { id: cls.section.id } }),
-      ).resolves.toBeDefined();
-    });
-
+  // Cascade behaviour itself lives in deletion.e2e-spec; this only pins that
+  // the plain path still answers 200.
+  describe('deletes', () => {
     it('deletes an empty section normally', async () => {
       const cls = await seedClass({ studentCount: 0 });
       const token = await adminFor(cls.school.id);
@@ -227,29 +205,5 @@ describe('Class module duplicate names (e2e)', () => {
       ).toBeNull();
     });
 
-    it('refuses to delete a class that still has sections', async () => {
-      const cls = await seedClass({ studentCount: 0 });
-      const token = await adminFor(cls.school.id);
-
-      const res = await server()
-        .delete(`/api/class-grades/${cls.classGrade.id}`)
-        .set('Authorization', `Bearer ${token}`);
-
-      // The old comment here claimed sections cascade. They do not.
-      expect(res.status).toBe(409);
-      expect(res.body.message).toContain('1 section');
-    });
-
-    it('refuses to delete a subject still allocated to a class', async () => {
-      const cls = await seedClass({ studentCount: 0 });
-      const token = await adminFor(cls.school.id);
-
-      const res = await server()
-        .delete(`/api/subjects/${cls.subject.id}`)
-        .set('Authorization', `Bearer ${token}`);
-
-      expect(res.status).toBe(409);
-      expect(res.body.message).toContain('1 class allocation');
-    });
   });
 });

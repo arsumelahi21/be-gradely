@@ -9,12 +9,10 @@ export class ListAnnouncementsQueryDto extends PaginationQueryDto {
   @IsUUID()
   schoolId?: string;
 
-  /** Filter to a single announcement type. */
   @IsOptional()
   @IsEnum(AnnouncementType)
   type?: AnnouncementType;
 
-  /** When true, return only unread (not-yet-opened) announcements. */
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true')
   @IsBoolean()

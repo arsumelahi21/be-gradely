@@ -8,7 +8,6 @@ import { PrismaService } from '../../prisma/prisma.service';
  * Shared so read-scoping isn't reimplemented per feature and can't drift.
  */
 
-/** Sections this teacher is attached to, by either route. */
 export async function resolveTeacherSectionIds(
   prisma: PrismaService,
   teacherProfileId: string,
@@ -31,7 +30,6 @@ export async function resolveTeacherSectionIds(
   ];
 }
 
-/** StudentProfile ids enrolled (ACTIVE) in any of this teacher's sections. */
 export async function resolveTeacherStudentIds(
   prisma: PrismaService,
   teacherProfileId: string,
@@ -45,7 +43,6 @@ export async function resolveTeacherStudentIds(
   return [...new Set(enrollments.map((e) => e.studentId))];
 }
 
-/** The acting user's TeacherProfile id, or null when they have none. */
 export async function resolveTeacherProfileId(
   prisma: PrismaService,
   userId: string,

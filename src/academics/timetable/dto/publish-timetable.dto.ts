@@ -12,7 +12,6 @@ import { DayOfWeek } from '@prisma/client';
 // The period DTOs use the module's own enum, matching create/update-period-slot.
 import { PeriodKind } from '../../../common/types/timetable.type';
 
-/** One retimed period in the draft (existing period, referenced by id). */
 export class PublishPeriodDto {
   @IsString()
   id!: string;
@@ -41,7 +40,6 @@ export class PublishPeriodDto {
   kind?: PeriodKind;
 }
 
-/** One lecture in the draft grid. */
 export class PublishEntryDto {
   @IsEnum(DayOfWeek)
   dayOfWeek!: DayOfWeek;

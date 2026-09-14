@@ -37,7 +37,6 @@ export class PeriodInputDto {
   kind?: PeriodKind;
 }
 
-/** Bulk-replace the whole bell schedule of a section (drives edit-all/recalculate). */
 export class ReplacePeriodsDto {
   @IsArray()
   @ValidateNested({ each: true })

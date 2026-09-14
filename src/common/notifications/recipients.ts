@@ -6,7 +6,6 @@ import { Role } from '../types/role.type';
  * PrismaService so services don't re-implement these queries; all return User ids.
  */
 
-/** StudentProfile ids of ACTIVE enrollments in a section. */
 export async function sectionStudentIds(
   prisma: PrismaService,
   sectionId: string,
@@ -18,7 +17,6 @@ export async function sectionStudentIds(
   return rows.map((r) => r.studentId);
 }
 
-/** User ids for the given StudentProfile ids (skips students with no login). */
 export async function studentUserIds(
   prisma: PrismaService,
   studentIds: string[],
@@ -31,7 +29,6 @@ export async function studentUserIds(
   return rows.map((r) => r.userId).filter((id): id is string => !!id);
 }
 
-/** User ids of the parents linked to the given StudentProfile ids. */
 export async function parentUserIds(
   prisma: PrismaService,
   studentIds: string[],
@@ -44,7 +41,6 @@ export async function parentUserIds(
   return rows.map((r) => r.parent?.userId).filter((id): id is string => !!id);
 }
 
-/** User ids of the active SCHOOL_ADMINs of a school. */
 export async function schoolAdminUserIds(
   prisma: PrismaService,
   schoolId: string,
@@ -102,7 +98,6 @@ export async function parentUserIdsByStudent(
   return byStudent;
 }
 
-/** Everyone who should hear about ONE student: their login + their guardians. */
 export async function studentAudienceUserIds(
   prisma: PrismaService,
   studentId: string,

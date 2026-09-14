@@ -9,7 +9,6 @@ export class ReportUserDto {
   @MaxLength(1000)
   reason!: string;
 
-  /** Optional thread the report relates to (for context). */
   @IsOptional()
   @IsUUID()
   threadId?: string;

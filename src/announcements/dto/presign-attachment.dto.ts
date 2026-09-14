@@ -1,6 +1,5 @@
 import { IsInt, IsString, MaxLength, Min } from 'class-validator';
 
-/** Request a presigned S3 PUT url for an announcement attachment (validated server-side). */
 export class PresignAttachmentDto {
   @IsString()
   @MaxLength(255)

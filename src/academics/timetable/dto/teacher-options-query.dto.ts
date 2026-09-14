@@ -1,7 +1,6 @@
 import { IsEnum, IsOptional, IsUUID } from 'class-validator';
 import { DayOfWeek } from '../../../common/types/timetable.type';
 
-/** Candidate slot to evaluate qualified teachers against (UX support for the picker). */
 export class TeacherOptionsQueryDto {
   @IsUUID()
   sectionSubjectId: string;

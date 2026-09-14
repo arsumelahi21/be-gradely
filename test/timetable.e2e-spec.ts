@@ -398,6 +398,179 @@ describe('Timetable V2 (e2e)', () => {
     expect(String(res.body.message)).toMatch(/No teacher is allocated/i);
   });
 
+  // ---- batch publish carries the draft's period kinds ---------------------
+
+  describe('batch publish with period kinds', () => {
+    /** A draft with 4 CLASS periods on Monday, plus a valid lecture payload. */
+    async function draftWithPeriods() {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const periods = await setup(cls.section.id, token, {
+        dayStartMin: 480,
+        dayEndMin: 660,
+      });
+      expect(periods.length).toBeGreaterThanOrEqual(2);
+      return { cls, token, periods };
+    }
+
+    const periodPayload = (
+      periods: Array<{ id: string; startMin: number; endMin: number }>,
+      overrides: Record<string, { kind?: string }> = {},
+    ) =>
+      periods.map((p) => ({
+        id: p.id,
+        startMin: p.startMin,
+        endMin: p.endMin,
+        ...(overrides[p.id] ?? {}),
+      }));
+
+    it('accepts kind on each period — the draft editor has no other flush path', async () => {
+      const { cls, token, periods } = await draftWithPeriods();
+
+      const res = await request(server())
+        .post(`/api/timetable/sections/${cls.section.id}/publish`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          // Every period carries its kind, exactly as the editor sends it.
+          periods: periods.map((p) => ({
+            id: p.id,
+            startMin: p.startMin,
+            endMin: p.endMin,
+            kind: p.kind,
+          })),
+          entries: [
+            {
+              dayOfWeek: 'MONDAY',
+              periodId: periods[0].id,
+              sectionSubjectId: cls.sectionSubject.id,
+              teacherId: cls.teacherProfile.id,
+            },
+          ],
+        });
+
+      // Used to be 400 "periods.0.property kind should not exist".
+      expect(res.status).toBe(201);
+      expect(res.body.status).toBe('PUBLISHED');
+    });
+
+    it('persists a period turned into a break', async () => {
+      const { cls, token, periods } = await draftWithPeriods();
+      const becomesBreak = periods[1];
+
+      await request(server())
+        .post(`/api/timetable/sections/${cls.section.id}/publish`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          periods: periodPayload(periods, {
+            [becomesBreak.id]: { kind: 'BREAK' },
+          }),
+          entries: [
+            {
+              dayOfWeek: 'MONDAY',
+              periodId: periods[0].id,
+              sectionSubjectId: cls.sectionSubject.id,
+              teacherId: cls.teacherProfile.id,
+            },
+          ],
+        })
+        .expect(201);
+
+      const stored = await prisma.timetablePeriod.findUnique({
+        where: { id: becomesBreak.id },
+      });
+      // Accepting the field but not writing it would be a silent no-op.
+      expect(stored?.kind).toBe('BREAK');
+
+      const untouched = await prisma.timetablePeriod.findUnique({
+        where: { id: periods[0].id },
+      });
+      expect(untouched?.kind).toBe('CLASS');
+    });
+
+    it('validates a lecture against the NEW kind, not the stored one', async () => {
+      const { cls, token, periods } = await draftWithPeriods();
+
+      // Turn period 0 into a break AND try to teach in it in the same payload.
+      const res = await request(server())
+        .post(`/api/timetable/sections/${cls.section.id}/publish`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          periods: periodPayload(periods, {
+            [periods[0].id]: { kind: 'LUNCH' },
+          }),
+          entries: [
+            {
+              dayOfWeek: 'MONDAY',
+              periodId: periods[0].id,
+              sectionSubjectId: cls.sectionSubject.id,
+              teacherId: cls.teacherProfile.id,
+            },
+          ],
+        });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toMatch(/not a class period/i);
+
+      // Refused as a whole — the kind change must not have landed either.
+      const stored = await prisma.timetablePeriod.findUnique({
+        where: { id: periods[0].id },
+      });
+      expect(stored?.kind).toBe('CLASS');
+    });
+  });
+
+  // ---- deleting a published timetable needs ?force ------------------------
+
+  it('accepts ?force on delete and refuses a published grid without it', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const token = await adminFor(cls.school.id);
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
+    await assign(cls.section.id, token, {
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
+    }).expect(201);
+    await request(server())
+      .post(`/api/timetable/sections/${cls.section.id}/publish`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(201);
+
+    // Published and live for students — refused, and explained.
+    const bare = await request(server())
+      .delete(`/api/timetable/sections/${cls.section.id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(bare.status).toBe(409);
+    expect(JSON.stringify(bare.body)).toMatch(/published/i);
+
+    // `force` used to be rejected by the whitelist pipe as an unknown query
+    // property, so the confirm dialog could never actually delete anything.
+    const forced = await request(server())
+      .delete(`/api/timetable/sections/${cls.section.id}`)
+      .query({ force: 'true' })
+      .set('Authorization', `Bearer ${token}`);
+    expect(forced.status).toBe(200);
+
+    expect(
+      await prisma.timetable.count({ where: { sectionId: cls.section.id } }),
+    ).toBe(0);
+  });
+
+  it('rejects a nonsense force value rather than silently ignoring it', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const token = await adminFor(cls.school.id);
+    await setup(cls.section.id, token, { dayStartMin: 600, dayEndMin: 690 });
+
+    await request(server())
+      .delete(`/api/timetable/sections/${cls.section.id}`)
+      .query({ force: 'yes-please' })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+  });
+
   // ---- validation + publish gating --------------------------------------
 
   it('publish is blocked while a blocking conflict exists, allowed once resolved', async () => {
