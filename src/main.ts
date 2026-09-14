@@ -11,6 +11,10 @@ async function bootstrap() {
   // runs a clean $disconnect on shutdown/redeploy (no lingering DB connections).
   app.enableShutdownHooks();
 
+  // Without this every proxied request shares the proxy's IP, so the 5/min
+  // login limit would be shared by all users.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
   app.setGlobalPrefix('api');
 
   // Baseline security headers (CSP/HSTS/X-Frame-Options/etc.) — defense in depth
