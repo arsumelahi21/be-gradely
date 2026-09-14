@@ -5,13 +5,19 @@ process.env.DATABASE_URL =
   process.env.TEST_DATABASE_URL ||
   'postgresql://postgres:postgres@localhost:5433/gradely_test?schema=public';
 
-// Pin the cache to a SEPARATE Redis database (index 1) so the suite never
+// When a Redis is configured, pin the suite to database index 1 so it never
 // reads or flushes the dev cache on index 0. Set here, before anything else
 // loads, because ConfigModule.forRoot() reads .env during app construction and
 // dotenv only fills variables that are still undefined — so this value wins.
 // Cleared between tests by resetDb(); without that, a cached response outlives
 // the TRUNCATE and leaks into the next test.
-process.env.REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379/1';
+//
+// Left UNSET when there is none: CacheService then uses its in-memory backend.
+// Pointing at a Redis that isn't there hangs the whole suite — CacheService
+// reconnects forever — which is what CI does, having no redis service.
+if (process.env.REDIS_URL) {
+  process.env.REDIS_URL = process.env.REDIS_URL.replace(/\/\d+$/, '') + '/1';
+}
 
 process.env.JWT_ACCESS_SECRET =
   process.env.JWT_ACCESS_SECRET || 'test-access-secret';
