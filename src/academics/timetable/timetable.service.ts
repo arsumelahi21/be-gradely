@@ -232,7 +232,6 @@ export class TimetableService extends BaseSchoolScopedService {
 
   // ---- setup + periods ---------------------------------------------------
 
-  /** Create the section's timetable and generate its bell schedule (per-section). */
   async setupTimetable(
     sectionId: string,
     dto: SetupTimetableDto,
@@ -541,7 +540,6 @@ export class TimetableService extends BaseSchoolScopedService {
     };
   }
 
-  /** Broad read of a section's bell schedule (members need times to render). */
   async listPeriods(
     sectionId: string,
     actor: Actor,
@@ -768,7 +766,6 @@ export class TimetableService extends BaseSchoolScopedService {
     });
     if (errors.length) throw new BadRequestException(errors.join('; '));
 
-    // If a CLASS period becomes non-CLASS while it still holds assignments, block it.
     if (NON_CLASS_KINDS.includes(kind)) {
       const entryCount = await this.prisma.timetableEntry.count({
         where: { periodId: id },
@@ -1232,7 +1229,6 @@ export class TimetableService extends BaseSchoolScopedService {
       throw new BadRequestException('This timetable has no working days');
     }
 
-    // Validate every assignment once (period is CLASS + belongs here; subject/teacher qualified).
     const resolved = await Promise.all(
       dto.assignments.map(async (a) => {
         const period = await this.loadPeriod(a.periodId, section.schoolId);
@@ -2078,9 +2074,15 @@ export class TimetableService extends BaseSchoolScopedService {
           id: true,
           name: true,
           room: true,
-          classGrade: { select: { id: true, name: true } },
+          classGrade: { select: { id: true, name: true, level: true } },
         },
-        orderBy: [{ classGrade: { name: 'asc' } }, { name: 'asc' }],
+        // Ladder order, so the timetable index reads PG -> 10 rather than
+        // alphabetically (which put "10" before "2").
+        orderBy: [
+          { classGrade: { level: { sort: 'asc', nulls: 'last' } } },
+          { classGrade: { name: 'asc' } },
+          { name: 'asc' },
+        ],
       }),
       this.prisma.timetable.findMany({
         where: { schoolId, academicYearId },
@@ -2226,13 +2228,13 @@ export class TimetableService extends BaseSchoolScopedService {
     const [entries, periods] = await Promise.all([
       visible
         ? this.prisma.timetableEntry.findMany({
-            where: { timetableId: timetable!.id },
+            where: { timetableId: timetable.id },
             include: this.entryInclude(),
           })
         : Promise.resolve([]),
       visible
         ? this.prisma.timetablePeriod.findMany({
-            where: { timetableId: timetable!.id },
+            where: { timetableId: timetable.id },
             orderBy: { index: 'asc' },
           })
         : Promise.resolve([]),
@@ -2246,15 +2248,14 @@ export class TimetableService extends BaseSchoolScopedService {
         classGrade: section.classGrade,
       },
       academicYearId,
-      status: visible ? timetable!.status : null,
+      status: visible ? timetable.status : null,
       timezone,
-      workingDays: visible ? (timetable!.workingDays as DayOfWeek[]) : [],
+      workingDays: visible ? (timetable.workingDays as DayOfWeek[]) : [],
       periods,
       entries,
     };
   }
 
-  /** For a teacher's cross-section view, derive a distinct sorted period list. */
   private periodsFromEntries(entries: Array<any>) {
     const map = new Map<string, any>();
     for (const e of entries) {

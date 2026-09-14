@@ -216,34 +216,41 @@ export class AssignmentsService {
     } else if (role === Role.STUDENT) {
       const student = await this.getStudentOrThrow(actor);
       targetStudentId = student.id;
-      const sectionSubjectIds = await this.sectionSubjectIdsForStudent(
-        student.id,
-        query.academicYearId,
-      );
+      // AND, never assignment: a requested sectionSubjectId NARROWS the
+      // enrolment scope. Overwriting it let a student with no active
+      // enrolment read any section's assignments by passing its id.
       where = {
-        sectionSubjectId: { in: sectionSubjectIds },
+        AND: [
+          await this.assignmentScopeForStudent(
+            student.id,
+            query.academicYearId,
+          ),
+          ...(query.sectionSubjectId
+            ? [{ sectionSubjectId: query.sectionSubjectId }]
+            : []),
+        ],
         status: { in: ['PUBLISHED', 'CLOSED'] },
       };
       if (query.academicYearId) where.academicYearId = query.academicYearId;
-      if (query.sectionSubjectId)
-        where.sectionSubjectId = query.sectionSubjectId;
     } else if (role === Role.PARENT) {
       const parent = await this.getParentOrThrow(actor);
       if (!query.studentId)
         throw new BadRequestException('studentId is required');
       await this.ensureChildOfParent(parent.id, query.studentId);
       targetStudentId = query.studentId;
-      const sectionSubjectIds = await this.sectionSubjectIdsForStudent(
-        query.studentId,
-        query.academicYearId,
-      );
       where = {
-        sectionSubjectId: { in: sectionSubjectIds },
+        AND: [
+          await this.assignmentScopeForStudent(
+            query.studentId,
+            query.academicYearId,
+          ),
+          ...(query.sectionSubjectId
+            ? [{ sectionSubjectId: query.sectionSubjectId }]
+            : []),
+        ],
         status: { in: ['PUBLISHED', 'CLOSED'] },
       };
       if (query.academicYearId) where.academicYearId = query.academicYearId;
-      if (query.sectionSubjectId)
-        where.sectionSubjectId = query.sectionSubjectId;
     } else {
       throw new ForbiddenException('Not allowed');
     }
@@ -400,7 +407,6 @@ export class AssignmentsService {
       throw new BadRequestException('Invalid status');
     }
 
-    // Validate and update academicYearId if provided
     let academicYearId = assignment.academicYearId;
     if (
       dto.academicYearId &&
@@ -419,7 +425,6 @@ export class AssignmentsService {
       academicYearId = dto.academicYearId;
     }
 
-    // Validate and update sectionSubjectId if provided
     let sectionSubjectId = assignment.sectionSubjectId;
     if (
       dto.sectionSubjectId &&
@@ -439,7 +444,6 @@ export class AssignmentsService {
         );
       }
 
-      // Verify teacher is assigned to the new section-subject
       const teachesThis = await this.isTeacherAssignedToSectionSubject({
         teacherId: teacher.id,
         sectionId: sectionSubject.sectionId,
@@ -479,7 +483,6 @@ export class AssignmentsService {
     return updated;
   }
 
-  /** Fan-out a "new assignment" notification to the section's students. */
   private async notifyAssignmentPublished(a: {
     id: string;
     title: string;
@@ -769,7 +772,6 @@ export class AssignmentsService {
       },
     );
 
-    // If submission not found by ID, try finding by assignmentId + studentId
     if (!submission) {
       submission = await (this.prisma as any).assignmentSubmission.findUnique({
         where: {
@@ -796,7 +798,6 @@ export class AssignmentsService {
       });
     }
 
-    // If still not found, check if assignment exists and student is enrolled
     if (!submission) {
       const assignment = await (this.prisma as any).assignment.findUnique({
         where: { id: assignmentId },
@@ -815,7 +816,6 @@ export class AssignmentsService {
         throw new NotFoundException('Assignment not found');
       }
 
-      // Verify student enrollment
       const enrolled = await this.prisma.enrollment.findFirst({
         where: {
           studentId: student.id,
@@ -831,7 +831,6 @@ export class AssignmentsService {
         );
       }
 
-      // Create submission if it doesn't exist
       const defaultKey = await this.s3.keyFor(
         assignment.schoolId,
         'submissions',
@@ -839,7 +838,6 @@ export class AssignmentsService {
         'submission',
       );
 
-      // Fetch assignment with createdByTeacher for consistency
       const assignmentWithTeacher = await (
         this.prisma as any
       ).assignment.findUnique({
@@ -884,7 +882,6 @@ export class AssignmentsService {
       submission.assignment = assignmentWithTeacher;
     }
 
-    // Validate submission matches assignment and student
     if (submission.assignmentId !== assignmentId) {
       throw new BadRequestException('Mismatched assignment');
     }
@@ -896,7 +893,6 @@ export class AssignmentsService {
       throw new BadRequestException('Submission already marked');
     }
 
-    // Ensure student is enrolled for that assignment
     const enrolled = await this.prisma.enrollment.findFirst({
       where: {
         studentId: student.id,
@@ -908,7 +904,6 @@ export class AssignmentsService {
     if (!enrolled)
       throw new ForbiddenException('Student not enrolled for this assignment');
 
-    // Handle file uploads if provided
     const uploadedFiles = Array.isArray(files)
       ? files.filter((f) => f && f.buffer)
       : [];
@@ -1123,7 +1118,6 @@ export class AssignmentsService {
       );
     }
 
-    // Validate assignment status - can only mark PUBLISHED or CLOSED assignments
     if (!['PUBLISHED', 'CLOSED'].includes(submission.assignment.status)) {
       throw new BadRequestException(
         `Cannot mark submissions for assignment with status '${submission.assignment.status}'. ` +
@@ -1475,28 +1469,67 @@ export class AssignmentsService {
       throw new ForbiddenException('Student is not linked to this parent');
   }
 
-  private async sectionSubjectIdsForStudent(
+  /**
+   * What a student may see, scoped to WHEN they joined each section.
+   *
+   * A promotion stamps `Enrollment.startDate`, so someone moved up into 6-A in
+   * January is shown 6-A's work that is still due, but not the assignments that
+   * came and went before they ever sat in the room. Nothing is deleted to
+   * achieve this — an assignment belongs to the class, not to a student.
+   *
+   * A null `startDate` (legacy rows, direct admission) means "no join date
+   * known", and filters nothing — today's behaviour is preserved exactly.
+   */
+  private async assignmentScopeForStudent(
     studentId: string,
     academicYearId?: string,
-  ) {
+  ): Promise<Prisma.AssignmentWhereInput> {
     const enrollments = await this.prisma.enrollment.findMany({
       where: {
         studentId,
         ...(academicYearId ? { academicYearId } : {}),
         status: 'ACTIVE',
       } as any,
-      select: { sectionId: true },
+      select: { sectionId: true, startDate: true },
+    });
+    if (!enrollments.length) return { sectionSubjectId: { in: [] } };
+
+    const sectionSubjects = await this.prisma.sectionSubject.findMany({
+      where: {
+        sectionId: { in: [...new Set(enrollments.map((e) => e.sectionId))] },
+      },
+      select: { id: true, sectionId: true },
     });
 
-    const sectionIds = Array.from(new Set(enrollments.map((e) => e.sectionId)));
-    if (sectionIds.length === 0) return [];
+    const bySection = new Map<string, string[]>();
+    for (const ss of sectionSubjects) {
+      const list = bySection.get(ss.sectionId) ?? [];
+      list.push(ss.id);
+      bySection.set(ss.sectionId, list);
+    }
 
-    const sectionSubjects = await (this.prisma as any).sectionSubject.findMany({
-      where: { sectionId: { in: sectionIds } },
-      select: { id: true },
-    });
+    // Newest placement wins per section, so a re-enrolled student is not held
+    // to an older join date than the one they are actually sitting under.
+    const joinedAt = new Map<string, Date | null>();
+    for (const e of enrollments) {
+      const seen = joinedAt.get(e.sectionId);
+      if (seen === undefined || (e.startDate && seen && e.startDate > seen)) {
+        joinedAt.set(e.sectionId, e.startDate);
+      }
+    }
 
-    return sectionSubjects.map((ss: any) => ss.id);
+    const or: Prisma.AssignmentWhereInput[] = [];
+    for (const [sectionId, ids] of bySection) {
+      if (!ids.length) continue;
+      const since = joinedAt.get(sectionId) ?? null;
+      or.push({
+        sectionSubjectId: { in: ids },
+        // An undated assignment has no deadline to have missed, so it stays.
+        ...(since ? { OR: [{ dueAt: null }, { dueAt: { gte: since } }] } : {}),
+      });
+    }
+
+    return or.length ? { OR: or } : { sectionSubjectId: { in: [] } };
   }
 
   private async isTeacherAssignedToSectionSubject(input: {
