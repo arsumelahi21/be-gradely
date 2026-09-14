@@ -333,11 +333,19 @@ export class ChallansService extends BaseSchoolScopedService {
 
       try {
         const challanIds = await this.prisma.$transaction(async (tx) => {
-          // Challans are never hard-deleted (cancel only), so count is a
-          // monotonic per-school sequence source.
-          const existingCount = await tx.challan.count({
-            where: { schoolId: plan.schoolId },
-          });
+          // The HIGHEST number ever issued, not a row count: a challan can now
+          // be cascade-deleted with its student or academic year, and a count
+          // would then walk back onto numbers already spent — which collide on
+          // @@unique([schoolId, challanNo]) and brick generation for the school,
+          // because the retry below rebuilds the same plan and collides again.
+          // BIGINT, not INTEGER: test fixtures mint challan numbers from a
+          // timestamp, which overflows int4.
+          const [{ max }] = await tx.$queryRaw<{ max: bigint | null }[]>`
+            SELECT MAX(CAST(regexp_replace("challanNo", '^.*-', '') AS BIGINT)) AS max
+            FROM "Challan"
+            WHERE "schoolId" = ${plan.schoolId}
+          `;
+          const existingCount = Number(max ?? 0);
           const ids: string[] = [];
 
           for (const [i, row] of plan.toGenerate.entries()) {

@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -15,11 +14,7 @@ import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { FindSectionsQueryDto } from './dto/find-sections-query.dto';
 import { CacheService } from '../../common/services/cache.service';
-import {
-  describeBlockers,
-  isRestrictedDelete,
-  uniqueConflict,
-} from '../../common/utils/prisma-errors';
+import { uniqueConflict } from '../../common/utils/prisma-errors';
 
 type UpdateSectionInput = UpdateSectionDto & Partial<CreateSectionDto>;
 
@@ -237,44 +232,12 @@ export class SectionsService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     const section = await this.getOrThrow(id, actor);
-    let removed;
-    try {
-      removed = await this.prisma.section.delete({ where: { id } });
-    } catch (e) {
-      throw await this.explainBlockedDelete(id, e);
-    }
+    // Enrollments, subjects, quizzes and timetables cascade; message threads
+    // and announcements hold the section optionally, so they null it out.
+    // Nothing refuses the delete any more.
+    const removed = await this.prisma.section.delete({ where: { id } });
     await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
     return removed;
-  }
-
-  /**
-   * Enrollments, subjects, quizzes and timetables all point at a Section with
-   * no cascade, so one in use simply can't be deleted. Name what is holding it:
-   * the raw P2003 reaches the admin as "Internal server error", which tells
-   * them nothing about the 23 children still on the roster.
-   *
-   * The counts run only after the delete has already failed, so a normal
-   * delete pays nothing for them.
-   */
-  private async explainBlockedDelete(id: string, e: unknown) {
-    if (!isRestrictedDelete(e)) return e as Error;
-    const [enrollments, subjects, quizzes, timetables] = await Promise.all([
-      this.prisma.enrollment.count({ where: { sectionId: id } }),
-      this.prisma.sectionSubject.count({ where: { sectionId: id } }),
-      this.prisma.quiz.count({ where: { sectionId: id } }),
-      this.prisma.timetable.count({ where: { sectionId: id } }),
-    ]);
-    const held = describeBlockers([
-      [enrollments, 'enrolled student', 'enrolled students'],
-      [subjects, 'subject', 'subjects'],
-      [quizzes, 'quiz', 'quizzes'],
-      [timetables, 'timetable', 'timetables'],
-    ]);
-    return new ConflictException(
-      held
-        ? `This section still has ${held}. Remove them before deleting it.`
-        : 'This section is still in use and cannot be deleted.',
-    );
   }
 
   async listTeachers(sectionId: string, actor: Actor) {
