@@ -1701,6 +1701,20 @@ export class UsersService {
       }
     }
 
+    // Challan.studentId is Restrict: bills and the payments under them outlive
+    // the student record. The DB would refuse this anyway — asking first turns
+    // a generic "still linked to other data" 409 into one that says what to do.
+    if (user.studentProfile) {
+      const challans = await this.prisma.challan.count({
+        where: { studentId: user.studentProfile.id },
+      });
+      if (challans) {
+        throw new ConflictException(
+          `${user.studentProfile.fullName} has ${challans} fee challan${challans === 1 ? '' : 's'} on record, which cannot be deleted. Mark the student inactive instead.`,
+        );
+      }
+    }
+
     // Atomic: delete the role profile (+ parent-student links) then the user
     // in one transaction — separate awaits could orphan rows on a mid-sequence failure.
     await this.prisma.$transaction(async (tx) => {

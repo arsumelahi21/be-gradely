@@ -93,9 +93,9 @@ export class PrismaExceptionFilter implements ExceptionFilter {
             status: HttpStatus.NOT_FOUND,
             message: 'That record no longer exists.',
           };
-        // A remaining referential constraint. With the cascade rules in place
-        // this should be unreachable on a delete; if it fires, the schema and
-        // the operation disagree and the log above is the thing to read.
+        // A remaining referential constraint — Challan still Restricts its
+        // student and academic year, so this IS reachable. Paths that can
+        // predict it (see UsersService.remove) say something more useful first.
         case 'P2003':
           return {
             status: HttpStatus.CONFLICT,

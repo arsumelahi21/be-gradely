@@ -1166,8 +1166,8 @@ model Challan {
 
   school             School              @relation(fields: [schoolId], references: [id])
   // Restrict: financial history outlives profile cleanup.
-  student            StudentProfile      @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  academicYear       AcademicYear        @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  student            StudentProfile      @relation(fields: [studentId], references: [id], onDelete: Restrict) // financial history outlives cleanup
+  academicYear       AcademicYear        @relation(fields: [academicYearId], references: [id], onDelete: Restrict) // a year cannot take its billing with it
   classGrade         ClassGrade?         @relation(fields: [classGradeId], references: [id], onDelete: SetNull)
   section            Section?            @relation(fields: [sectionId], references: [id], onDelete: SetNull)
   bankAccount        BankAccount?        @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)

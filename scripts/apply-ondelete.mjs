@@ -27,13 +27,13 @@ const CHANGES = [
   ['Attendance', 'sectionSubject', 'Cascade'],
   // --- StudentProfile -----------------------------------------------------
   ['Attendance', 'student', 'Cascade'],
-  ['Challan', 'student', 'Cascade'],
+  ['Challan', 'student', 'Restrict'],
   ['ParentStudent', 'student', 'Cascade'],
   ['QuizAttempt', 'student', 'Cascade'],
   // --- ParentProfile ------------------------------------------------------
   ['ParentStudent', 'parent', 'Cascade'],
   // --- AcademicYear -------------------------------------------------------
-  ['Challan', 'academicYear', 'Cascade'],
+  ['Challan', 'academicYear', 'Restrict'],
   ['Enrollment', 'academicYear', 'Cascade'],
   ['FeeInstallmentPlan', 'academicYear', 'Cascade'],
   ['Timetable', 'academicYear', 'Cascade'],

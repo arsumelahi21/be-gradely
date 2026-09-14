@@ -391,8 +391,33 @@ describe('Deletion cascades (e2e)', () => {
   });
 
   describe('Student', () => {
-    it('deletes with attendance, results, enrollments and fee records', async () => {
+    // Challan.studentId is Restrict on purpose: a bill and the payments under
+    // it are evidence the school received money, and outlive the student row.
+    it('is refused while fee records exist, and destroys nothing', async () => {
       const f = await seedFullGraph();
+      const res = await del(`/api/users/${f.studentUser.id}`, f.token);
+
+      expect(res.status).toBe(409);
+      expect(res.body.message).toContain('fee challan');
+      expect(
+        await prisma.studentProfile.count({ where: { id: f.student.id } }),
+      ).toBe(1);
+      expect(
+        await prisma.challan.count({ where: { studentId: f.student.id } }),
+      ).toBe(1);
+      expect(
+        await prisma.payment.count({ where: { challanId: f.challan.id } }),
+      ).toBe(1);
+      // A refused delete is not a partial one.
+      expect(
+        await prisma.attendance.count({ where: { studentId: f.student.id } }),
+      ).toBeGreaterThan(0);
+    });
+
+    it('deletes with attendance, results and enrollments once nothing is billed', async () => {
+      const f = await seedFullGraph();
+      await prisma.payment.deleteMany({ where: { challanId: f.challan.id } });
+      await prisma.challan.deleteMany({ where: { studentId: f.student.id } });
       await del(`/api/users/${f.studentUser.id}`, f.token).expect(200);
 
       expect(
@@ -424,14 +449,6 @@ describe('Deletion cascades (e2e)', () => {
         [
           'parentLink',
           prisma.parentStudent.count({ where: { studentId: f.student.id } }),
-        ],
-        [
-          'challan',
-          prisma.challan.count({ where: { studentId: f.student.id } }),
-        ],
-        [
-          'payment',
-          prisma.payment.count({ where: { challanId: f.challan.id } }),
         ],
       ] as const) {
         expect(`${label}=${await count}`).toBe(`${label}=0`);
@@ -487,8 +504,25 @@ describe('Deletion cascades (e2e)', () => {
   });
 
   describe('AcademicYear', () => {
-    it('deletes with its enrollments, challans and timetables', async () => {
+    // A year's billing is school-wide, so cascading it would let one delete
+    // erase every bill and payment of that session. Restrict, like the student.
+    it('is refused while the year still has challans', async () => {
       const f = await seedFullGraph();
+      const res = await del(`/api/academic-years/${f.year.id}`, f.token);
+
+      expect(res.status).toBe(409);
+      expect(
+        await prisma.academicYear.count({ where: { id: f.year.id } }),
+      ).toBe(1);
+      expect(
+        await prisma.challan.count({ where: { academicYearId: f.year.id } }),
+      ).toBe(1);
+    });
+
+    it('deletes with its enrollments and timetables once nothing is billed', async () => {
+      const f = await seedFullGraph();
+      await prisma.payment.deleteMany({ where: { challanId: f.challan.id } });
+      await prisma.challan.deleteMany({ where: { academicYearId: f.year.id } });
       await del(`/api/academic-years/${f.year.id}`, f.token).expect(200);
 
       expect(
@@ -496,9 +530,6 @@ describe('Deletion cascades (e2e)', () => {
       ).toBe(0);
       expect(
         await prisma.enrollment.count({ where: { academicYearId: f.year.id } }),
-      ).toBe(0);
-      expect(
-        await prisma.challan.count({ where: { academicYearId: f.year.id } }),
       ).toBe(0);
       expect(
         await prisma.timetable.count({ where: { academicYearId: f.year.id } }),
