@@ -50,6 +50,14 @@ export async function disconnectCache(): Promise<void> {
   cache = null;
 }
 
+// Registered here rather than in 32 copies of the same afterAll: every spec
+// imports this module, and none of them called disconnectCache — so with a
+// REDIS_URL set the connection stayed open and Jest never exited after the
+// last test. In CI that reads as a hung run, not a failing one.
+if (typeof afterAll === 'function') {
+  afterAll(disconnectCache);
+}
+
 /**
  * Truncate every application table (keeping the migration history) so each
  * test starts from a clean slate. RESTART IDENTITY + CASCADE handles FKs.
