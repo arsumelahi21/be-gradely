@@ -40,7 +40,6 @@ export class AuditLogService {
     }
   }
 
-  /** Admin-only, tenant-scoped audit log list with optional filters. */
   async list(actor: Actor, query: FindAuditLogsQueryDto) {
     if (![Role.SUPER_ADMIN, Role.SCHOOL_ADMIN].includes(actor.role)) {
       throw new ForbiddenException('Not allowed');

@@ -38,7 +38,6 @@ export class AuthService {
 
   private getAccessExpiresIn(): StringValue | number {
     // Short-lived (PLAN.md P0-13b / Phase 1 §1.5.2): a 20-day token in localStorage is XSS-stealable; rely on refresh for longevity.
-    // supports: "15m", "7d" etc
     return (process.env.JWT_ACCESS_EXPIRES_IN ?? '15m') as StringValue;
   }
 
@@ -100,7 +99,6 @@ export class AuthService {
       data: { refreshTokenHash: await bcrypt.hash(refreshToken, 10) },
     });
 
-    // Fetch user with all profile data
     const userWithProfile = await this.prisma.user.findUnique({
       where: { id: user.id },
       include: {
@@ -281,7 +279,6 @@ export class AuthService {
     const { passwordHash, refreshTokenHash, ...userData } =
       userWithProfile as any;
 
-    // Include parent email from User table if parentProfile email is null
     if (userData.studentProfile && userData.studentProfile.parents) {
       userData.studentProfile.parents = userData.studentProfile.parents.map(
         (parentLink: any) => {
@@ -290,7 +287,6 @@ export class AuthService {
             ...parent,
             email: parent.email || parent.user?.email || null,
           };
-          // Include userId if user relation exists
           if (parent.user) {
             parentData.userId = parent.user.id;
           }

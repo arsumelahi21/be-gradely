@@ -369,7 +369,6 @@ export class AnnouncementsService extends BaseSchoolScopedService {
     return actor.schoolId;
   }
 
-  /** De-dupe targets and force refId to null for whole-role/school kinds. */
   private normalizeTargets(
     raw: AnnouncementTargetDto[] | undefined,
   ): TargetInput[] {
@@ -505,7 +504,6 @@ export class AnnouncementsService extends BaseSchoolScopedService {
     return rows.map((r) => r.id);
   }
 
-  /** Section ids relevant to a non-admin actor (teach / enrolled / parent-of). */
   private async actorSectionIds(actor: Actor): Promise<string[]> {
     if (actor.role === Role.TEACHER) {
       const teacher = await this.prisma.teacherProfile.findFirst({
@@ -560,7 +558,6 @@ export class AnnouncementsService extends BaseSchoolScopedService {
     return [];
   }
 
-  /** Class/Grade ids the actor's sections belong to (for CLASS-target visibility). */
   private async actorClassGradeIds(
     actor: Actor,
     sectionIds?: string[],
@@ -662,7 +659,6 @@ export class AnnouncementsService extends BaseSchoolScopedService {
     if (!ok) throw new ForbiddenException('Not allowed');
   }
 
-  /** Batch-resolve Section/ClassGrade names for target labels across rows. */
   private async buildTargetLabelMap(
     rows: {
       targets?: { kind: AnnouncementTargetKind; refId: string | null }[];
@@ -843,7 +839,6 @@ export class AnnouncementsService extends BaseSchoolScopedService {
     return [...userIds];
   }
 
-  /** Enrolled students + their linked parents + assigned teachers, as User ids. */
   private async sectionRecipientUserIds(
     sectionId: string,
   ): Promise<Set<string>> {

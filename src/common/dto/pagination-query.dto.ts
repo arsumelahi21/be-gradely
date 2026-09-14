@@ -22,7 +22,6 @@ export class PaginationQueryDto {
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 200;
 
-/** Normalize raw page/pageSize into a safe { page, pageSize, skip, take }. */
 export function resolvePagination(query: {
   page?: number;
   pageSize?: number;

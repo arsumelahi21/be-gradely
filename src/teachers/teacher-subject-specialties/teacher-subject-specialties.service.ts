@@ -51,7 +51,6 @@ export class TeacherSubjectSpecialtiesService extends BaseSchoolScopedService {
       if (teacherById) {
         where.teacherId = teacherById.id;
       } else {
-        // If not found, try by userId
         const teacherByUserId = await this.prisma.teacherProfile.findUnique({
           where: { userId: query.teacherId },
         });
@@ -140,7 +139,6 @@ export class TeacherSubjectSpecialtiesService extends BaseSchoolScopedService {
       where: { id: teacherId },
     });
 
-    // If not found, try to find by userId
     if (!teacher) {
       teacher = await this.prisma.teacherProfile.findUnique({
         where: { userId: teacherId },

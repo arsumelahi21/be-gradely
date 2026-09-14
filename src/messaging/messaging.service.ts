@@ -336,7 +336,6 @@ export class MessagingService extends BaseSchoolScopedService {
     return this.getThread(thread.id, actor);
   }
 
-  /** Enrolled students + their linked parents + assigned teachers, as User ids. */
   private async deriveClassParticipants(
     sectionId: string,
   ): Promise<Set<string>> {
@@ -536,7 +535,6 @@ export class MessagingService extends BaseSchoolScopedService {
     return this.getThread(threadId, actor);
   }
 
-  /** Rename a GROUP thread (staff + participant). */
   async renameGroup(threadId: string, title: string, actor: Actor) {
     const thread = await this.loadManageableGroup(threadId, actor);
     const clean = title.trim();
@@ -1359,7 +1357,6 @@ export class MessagingService extends BaseSchoolScopedService {
     return { messageId, emoji: dto.emoji };
   }
 
-  /** Notify a message's author that someone reacted to it. */
   private async notifyReaction(
     threadId: string,
     authorUserId: string,

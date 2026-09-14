@@ -32,8 +32,8 @@ import { ChatbotModule } from './chatbot/chatbot.module';
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
     // Global rate limiting (PLAN.md P0-13a / Phase 1 §1.5.1). Sane default of
     // 100 req/min/IP; auth-sensitive routes tighten this with @Throttle.
-    // THROTTLE_LIMIT lets the e2e suite lift the cap: the global guard is
-    // registered via APP_GUARD, which `overrideGuard()` cannot replace.
+    // THROTTLE_LIMIT is how the e2e suite lifts the cap — an APP_GUARD cannot
+    // be replaced with overrideGuard().
     ThrottlerModule.forRoot([
       {
         ttl: 60_000, // 1 minute (ms)

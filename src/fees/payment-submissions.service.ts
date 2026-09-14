@@ -87,7 +87,6 @@ export class PaymentSubmissionsService extends BaseSchoolScopedService {
 
   // ==== Submit =============================================================
 
-  /** Student or parent uploads proof against an unsettled challan. */
   async submit(
     challanId: string,
     dto: CreatePaymentSubmissionDto,
@@ -347,7 +346,6 @@ export class PaymentSubmissionsService extends BaseSchoolScopedService {
 
   // ==== Reads ==============================================================
 
-  /** The admin verification queue. */
   async list(query: PaymentSubmissionQueryDto, actor: Actor) {
     this.ensureAdmin(actor);
     const schoolId = this.resolveSchoolId(actor, query.schoolId);
@@ -728,7 +726,6 @@ export class PaymentSubmissionsService extends BaseSchoolScopedService {
 
   // ==== Notifications ======================================================
 
-  /** Tell the school's admins that a receipt is waiting for review. */
   private async notifyAdminsOfSubmission(
     challan: { schoolId: string; id: string; challanNo: string },
     amount: number,

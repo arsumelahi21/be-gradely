@@ -182,7 +182,6 @@ export class MessagingController {
     return this.messaging.reactToMessage(id, messageId, dto, req.user);
   }
 
-  // Remove the caller's reaction.
   @Roles(...MESSAGING_ROLES)
   @Delete('threads/:id/messages/:messageId/reaction')
   unreactMessage(

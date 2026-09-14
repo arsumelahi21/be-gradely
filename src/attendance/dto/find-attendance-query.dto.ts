@@ -8,7 +8,6 @@ import {
   Min,
 } from 'class-validator';
 
-/** Roster + status for one subject-period on a date. */
 export class SectionSubjectAttendanceQueryDto {
   @IsDateString()
   date: string;
@@ -25,7 +24,6 @@ export class SectionSubjectAttendanceQueryDto {
   schoolId?: string;
 }
 
-/** A student's per-period history in a date range, paginated. */
 export class StudentAttendanceQueryDto {
   @IsOptional()
   @IsDateString()
@@ -53,7 +51,6 @@ export class StudentAttendanceQueryDto {
   schoolId?: string;
 }
 
-/** Aggregates for dashboard widgets. */
 export class StudentAttendanceStatsQueryDto {
   @IsOptional()
   @IsDateString()
@@ -68,7 +65,6 @@ export class StudentAttendanceStatsQueryDto {
   schoolId?: string;
 }
 
-/** Per-student attendance percentages across a subject-class's roster. */
 export class SectionSubjectSummaryQueryDto {
   @IsOptional()
   @IsDateString()
@@ -83,7 +79,6 @@ export class SectionSubjectSummaryQueryDto {
   schoolId?: string;
 }
 
-/** Schoolwide attendance rate (admin/principal dashboard). */
 export class SchoolAttendanceStatsQueryDto {
   @IsOptional()
   @IsDateString()
@@ -99,7 +94,6 @@ export class SchoolAttendanceStatsQueryDto {
   schoolId?: string;
 }
 
-/** A teacher's per-subject-class attendance rate (teacher dashboard). */
 export class TeacherAttendanceStatsQueryDto {
   @IsOptional()
   @IsDateString()

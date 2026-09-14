@@ -110,7 +110,6 @@ export class PaymentsService extends BaseSchoolScopedService {
     return result;
   }
 
-  /** Confirm the receipt to the student and their guardians. */
   private async notifyPaymentReceived(
     studentId: string,
     challanId: string,

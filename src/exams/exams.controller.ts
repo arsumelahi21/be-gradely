@@ -113,11 +113,9 @@ export class ExamsController {
     @Req() req: any,
     @Query('studentId') studentId?: string,
   ) {
-    // For teachers: if no studentId, list all results; if studentId provided, get specific
     if (req.user.role === Role.TEACHER && !studentId) {
       return this.exams.listResults(id, req.user);
     }
-    // For teachers with studentId, students, and parents: get specific result
     return this.exams.results(id, req.user, { studentId });
   }
 

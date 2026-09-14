@@ -73,7 +73,6 @@ export class ChallanQueryDto extends PaginationQueryDto {
   to?: string;
 }
 
-/** Per-class Created / Not Created grid for one billing month. */
 export class ChallanCoverageQueryDto {
   @IsOptional()
   @IsUUID()
@@ -95,7 +94,6 @@ export class ChallanCoverageQueryDto {
   periodMonth: number;
 }
 
-/** Which installment rows a section can be billed for, and which already are. */
 export class SectionInstallmentQueryDto {
   @IsOptional()
   @IsUUID()
