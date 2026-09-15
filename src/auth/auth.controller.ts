@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Req,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { JwtService } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
@@ -38,9 +46,13 @@ export class AuthController {
 
   @Post('refresh')
   async refresh(@Body() dto: RefreshDto) {
-    const payload = await this.jwt.verifyAsync(dto.refreshToken, {
-      secret: process.env.JWT_REFRESH_SECRET,
-    });
+    const payload = await this.jwt
+      .verifyAsync(dto.refreshToken, {
+        secret: process.env.JWT_REFRESH_SECRET,
+      })
+      .catch(() => {
+        throw new UnauthorizedException('Invalid refresh token');
+      });
     return this.auth.refresh(payload.sub, dto.refreshToken);
   }
 

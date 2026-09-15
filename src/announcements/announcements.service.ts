@@ -73,8 +73,20 @@ export class AnnouncementsService extends BaseSchoolScopedService {
     await this.validateTargets(targets, actor, schoolId);
 
     const attachments = dto.attachments ?? [];
+    // Readers get a presigned URL per key, so accept only one issued to this author (as in messaging).
+    const ownPrefix = attachments.length
+      ? await this.s3.keyForSchool(
+          actor.schoolId,
+          `announcements/${actor.userId}/`,
+        )
+      : '';
     for (const a of attachments) {
       assertAttachmentAllowed({ mimeType: a.mimeType, sizeBytes: a.sizeBytes });
+      if (
+        !a.s3Key.startsWith(ownPrefix) ||
+        !/^[\w.-]+$/.test(a.s3Key.slice(ownPrefix.length))
+      )
+        throw new BadRequestException('Invalid attachment');
     }
 
     const publishAt = dto.publishAt ? new Date(dto.publishAt) : null;

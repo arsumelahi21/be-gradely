@@ -231,6 +231,9 @@ describe('Cross-tenant isolation (e2e)', () => {
       .get(`/api/students/${schoolBStudentId}`)
       .set('Authorization', auth());
     expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toMatch(
+      /passwordHash|refreshTokenHash|resetToken/,
+    );
   });
 
   it("audit log is tenant-pinned: School B admin never sees School A's entries", async () => {

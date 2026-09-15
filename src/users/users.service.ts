@@ -786,10 +786,7 @@ export class UsersService {
       });
     }
 
-    // Return safe shape (no passwordHash/refreshTokenHash) and include fullName/phone at root level
-    const items = rows.map((user: any) => {
-      const { passwordHash, refreshTokenHash, ...safe } = user;
-
+    const items = rows.map((safe: any) => {
       if (!safe.fullName) {
         if (safe.teacherProfile) {
           safe.fullName = safe.teacherProfile.fullName;
@@ -884,8 +881,7 @@ export class UsersService {
       throw new ForbiddenException('Cross-school access denied');
     }
 
-    // Return safe shape (no passwordHash/refreshTokenHash)
-    const { passwordHash, refreshTokenHash, ...safe } = user as any;
+    const safe = user as any;
 
     if (!safe.fullName) {
       if (safe.teacherProfile) {
@@ -958,7 +954,15 @@ export class UsersService {
 
     return this.prisma.user.update({
       where: { id },
-      data: { isActive },
+      // Only deactivation revokes tokens, so a no-op "activate" logs nobody out.
+      data: {
+        isActive,
+        ...(!isActive && {
+          refreshTokenHash: null,
+          resetTokenHash: null,
+          resetTokenExpiresAt: null,
+        }),
+      },
       select: {
         id: true,
         email: true,

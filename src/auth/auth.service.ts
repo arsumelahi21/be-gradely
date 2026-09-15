@@ -78,8 +78,11 @@ export class AuthService {
   async login(email: string, password: string) {
     const user = await (this.prisma as any).user.findUnique({
       where: { email },
+      omit: { passwordHash: false },
+      include: { school: { select: { isActive: true } } },
     });
-    if (!user || !user.isActive)
+    // Super admins have no school, so only an explicit `false` locks a user out.
+    if (!user?.isActive || user.school?.isActive === false)
       throw new UnauthorizedException('Invalid credentials');
 
     const ok = await bcrypt.compare(password, user.passwordHash);
@@ -125,10 +128,6 @@ export class AuthService {
       },
     });
 
-    // Return safe shape (no passwordHash/refreshTokenHash)
-    const { passwordHash, refreshTokenHash, ...userData } =
-      userWithProfile as any;
-
     void this.audit.record(user.id, 'LOGIN', {
       schoolId: user.schoolId ?? null,
       entityType: 'User',
@@ -138,15 +137,23 @@ export class AuthService {
     return {
       accessToken,
       refreshToken,
-      user: userData,
+      user: userWithProfile,
     };
   }
 
   async refresh(userId: string, refreshToken: string) {
     const user = await (this.prisma as any).user.findUnique({
       where: { id: userId },
+      omit: { refreshTokenHash: false },
+      include: { school: { select: { isActive: true } } },
     });
-    if (!user || !user.refreshTokenHash)
+    // Without this, a deactivated user or a suspended school keeps renewing tokens forever.
+    // ponytail: an already-issued access token stays valid ≤ JWT_ACCESS_EXPIRES_IN; add a JwtStrategy state check if instant revocation is required.
+    if (
+      !user?.isActive ||
+      user.school?.isActive === false ||
+      !user.refreshTokenHash
+    )
       throw new ForbiddenException('Access denied');
 
     const ok = await bcrypt.compare(refreshToken, user.refreshTokenHash);
@@ -177,7 +184,7 @@ export class AuthService {
     return { success: true };
   }
 
-  /** Start a password reset; same response whether or not the email exists (no enumeration — Phase 1 §1.5.6). Dev: logs the link. */
+  /** Start a password reset; same response whether or not the email exists (no enumeration — Phase 1 §1.5.6). Logs the link only when NODE_ENV=development. */
   async forgotPassword(email: string) {
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (user && user.isActive) {
@@ -196,8 +203,9 @@ export class AuthService {
       const base = process.env.FRONTEND_URL ?? 'http://localhost:3000';
       const link = `${base}/reset-password?token=${encodeURIComponent(token)}`;
       // TODO(Phase 3): send via the chosen email vendor. Dev: log the link.
-
-      console.log(`[password-reset] ${email} -> ${link}`);
+      // Opt in, never opt out: production sets no NODE_ENV, and this link grants account takeover.
+      if (process.env.NODE_ENV === 'development')
+        console.log(`[password-reset] ${email} -> ${link}`);
     }
     return GENERIC_RESET_RESPONSE;
   }
@@ -208,7 +216,10 @@ export class AuthService {
     const userId = token.slice(0, sep);
     const rawToken = token.slice(sep + 1);
 
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      omit: { resetTokenHash: false, resetTokenExpiresAt: false },
+    });
     if (
       !user ||
       !user.resetTokenHash ||
@@ -275,9 +286,7 @@ export class AuthService {
       throw new UnauthorizedException('User not found');
     }
 
-    // Return safe shape (no passwordHash/refreshTokenHash)
-    const { passwordHash, refreshTokenHash, ...userData } =
-      userWithProfile as any;
+    const userData = userWithProfile as any;
 
     if (userData.studentProfile && userData.studentProfile.parents) {
       userData.studentProfile.parents = userData.studentProfile.parents.map(
