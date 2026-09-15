@@ -122,6 +122,35 @@ describe('Announcements (e2e)', () => {
     expect(res.status).toBe(403);
   });
 
+  it('accepts only attachment keys issued to the author', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const otherSchool = await createTestSchool();
+    const teacherToken = await tokenFor(app, cls.teacherUser);
+    const file = {
+      fileName: 'a.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 1024,
+    };
+    const post = (path: string, body: object) =>
+      request(app.getHttpServer())
+        .post(`/api/announcements${path}`)
+        .set('Authorization', `Bearer ${teacherToken}`)
+        .send(body);
+    const { s3Key } = (await post('/attachments/presign', file)).body;
+    const create = (key: string) =>
+      post('', {
+        title: 'Worksheet',
+        body: 'Attached',
+        targets: [{ kind: 'SECTION', refId: cls.section.id }],
+        attachments: [{ ...file, s3Key: key }],
+      });
+
+    expect(
+      (await create(`${otherSchool.id}/announcements/x/a.pdf`)).status,
+    ).toBe(400);
+    expect((await create(s3Key)).status).toBe(201);
+  });
+
   it('hides a future-publishAt announcement from the feed until it is due', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const admin = await createTestUser({
