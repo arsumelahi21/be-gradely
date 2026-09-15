@@ -262,6 +262,32 @@ describe('Messaging (e2e)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('accepts only attachment keys issued to the sender', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const otherSchool = await createTestSchool();
+    const studentToken = await tokenFor(app, cls.students[0].user);
+    const thread = await startDirect(studentToken, cls.teacherUser.id);
+    const file = {
+      fileName: 'a.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 1024,
+    };
+    const post = (path: string, body: object) =>
+      request(app.getHttpServer())
+        .post(`/api/messaging/threads/${thread.body.id}/${path}`)
+        .set('Authorization', `Bearer ${studentToken}`)
+        .send(body);
+    const { s3Key } = (await post('attachments', file)).body;
+    const send = (key: string) =>
+      post('messages', { body: '', attachments: [{ ...file, s3Key: key }] });
+
+    expect((await send(`${otherSchool.id}/messages/x/a.pdf`)).status).toBe(400);
+    expect(
+      (await send(`${s3Key}/../../../${otherSchool.id}/x.pdf`)).status,
+    ).toBe(400);
+    expect((await send(s3Key)).status).toBe(201);
+  });
+
   // ---- groups + broadcast + section targets (staff-only) ------------------
 
   it('lets a teacher create a GROUP thread with hand-picked participants', async () => {
