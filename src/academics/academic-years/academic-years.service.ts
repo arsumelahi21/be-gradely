@@ -12,6 +12,7 @@ import { UpdateAcademicYearDto } from './dto/update-academic-year.dto';
 import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { resolvePagination } from '../../common/dto/pagination-query.dto';
+import { assertNoExaminationHistory } from '../../common/services/exam-history-guard';
 
 type UpdateAcademicYearInput = UpdateAcademicYearDto &
   Partial<CreateAcademicYearDto>;
@@ -157,6 +158,7 @@ export class AcademicYearsService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     await this.getOrThrow(id, actor);
+    await assertNoExaminationHistory(this.prisma, 'academicYear', id);
     return this.prisma.academicYear.delete({ where: { id } });
   }
 

@@ -124,6 +124,19 @@ export class PrismaExceptionFilter implements ExceptionFilter {
       };
     }
 
+    // A RESTRICT key met partway down a cascade (SQLSTATE 23001) reaches Prisma as an
+    // unknown error, not P2003 — exam history does this. Same meaning, same 409.
+    if (
+      exception instanceof Prisma.PrismaClientUnknownRequestError &&
+      /\b23001\b|violates RESTRICT setting of foreign key constraint/.test(exception.message)
+    ) {
+      return {
+        status: HttpStatus.CONFLICT,
+        message:
+          'That record is still linked to other data and could not be removed. Please refresh and try again.',
+      };
+    }
+
     return {
       status: HttpStatus.INTERNAL_SERVER_ERROR,
       message: 'Something went wrong. Please try again.',

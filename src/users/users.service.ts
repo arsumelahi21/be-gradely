@@ -22,6 +22,7 @@ import { formatMinorUnits } from '../fees/money.util';
 import { CacheService } from '../common/services/cache.service';
 import {
   SCHOOL_CACHE_TTL_SECONDS,
+  SchoolCacheEntity,
   schoolCacheEntityForRole,
   schoolCacheKey,
   schoolCachePrefix,
@@ -63,6 +64,7 @@ export class UsersService {
   private async invalidateRoleCache(
     role: string,
     schoolId: string | null | undefined,
+    extra: SchoolCacheEntity[] = [],
   ) {
     // A cross-school-only user (super-admin, no schoolId): just the admin overview.
     if (!schoolId) {
@@ -81,6 +83,7 @@ export class UsersService {
         ...schoolStatsPrefixes(schoolId),
         schoolCachePrefix(schoolId, 'users'),
         ...(entity ? [schoolCachePrefix(schoolId, entity)] : []),
+        ...extra.map((e) => schoolCachePrefix(schoolId, e)),
       ),
     ]);
   }
@@ -1689,6 +1692,15 @@ export class UsersService {
           `${user.studentProfile.fullName} has ${challans} fee challan${challans === 1 ? '' : 's'} on record, which cannot be deleted. Mark the student inactive instead.`,
         );
       }
+      // Exam results are Restrict for the same reason: academic history outlives the profile.
+      const examResults = await this.prisma.examResult.count({
+        where: { studentId: user.studentProfile.id },
+      });
+      if (examResults) {
+        throw new ConflictException(
+          `${user.studentProfile.fullName} has exam results on record, which cannot be deleted. Mark the student inactive instead.`,
+        );
+      }
     }
 
     // Atomic: delete the role profile (+ parent-student links) then the user
@@ -1722,7 +1734,12 @@ export class UsersService {
       entityId: id,
       metadata: { role: user.role },
     });
-    await this.invalidateRoleCache(user.role, user.schoolId);
+    // Their roster rows, allocations and enrolments go with the profile, so section cards change too.
+    await this.invalidateRoleCache(
+      user.role,
+      user.schoolId,
+      user.teacherProfile || user.studentProfile ? ['sections', 'classes'] : [],
+    );
 
     return { success: true, message: 'User deleted successfully' };
   }

@@ -14,7 +14,10 @@ import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { FindSectionsQueryDto } from './dto/find-sections-query.dto';
 import { CacheService } from '../../common/services/cache.service';
+import { EnrollmentStatus, Prisma } from '@prisma/client';
 import { uniqueConflict } from '../../common/utils/prisma-errors';
+import { assertNoExaminationHistory } from '../../common/services/exam-history-guard';
+import { pruneSectionRoster } from '../section-subjects/section-roster';
 
 type UpdateSectionInput = UpdateSectionDto & Partial<CreateSectionDto>;
 
@@ -87,7 +90,12 @@ export class SectionsService extends BaseSchoolScopedService {
           ],
           include: {
             _count: {
-              select: { subjects: true, teachers: true, enrollments: true },
+              select: {
+                subjects: true,
+                teachers: true,
+                // Current students only, matching the enrolment lists; promotion keeps COMPLETED rows.
+                enrollments: { where: { status: EnrollmentStatus.ACTIVE } },
+              },
             },
           },
         });
@@ -173,6 +181,8 @@ export class SectionsService extends BaseSchoolScopedService {
           },
         },
         enrollments: {
+          // Same students the card counts and the enrolment list shows.
+          where: { status: EnrollmentStatus.ACTIVE },
           include: {
             student: true,
           },
@@ -232,9 +242,9 @@ export class SectionsService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     const section = await this.getOrThrow(id, actor);
-    // Enrollments, subjects, quizzes and timetables cascade; message threads
-    // and announcements hold the section optionally, so they null it out.
-    // Nothing refuses the delete any more.
+    // Enrollments, subjects, quizzes and timetables cascade; threads and announcements null it.
+    // Only examination history refuses the delete (Restrict), so results outlive cleanup.
+    await assertNoExaminationHistory(this.prisma, 'section', id);
     const removed = await this.prisma.section.delete({ where: { id } });
     await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
     return removed;
@@ -280,37 +290,44 @@ export class SectionsService extends BaseSchoolScopedService {
     if (teacher.schoolId !== section.schoolId) {
       throw new BadRequestException('Teacher belongs to a different school');
     }
-    if (dto.isPrimary) {
-      await this.clearPrimary(section.id);
-    }
-    // Idempotent on (sectionId, teacherId): re-assigning updates rather than
-    // 409s, and never silently demotes an existing class teacher (isPrimary only set, never cleared).
-    const assigned = await this.sectionTeachers.upsert({
-      where: {
-        sectionId_teacherId: {
+    const assigned = await this.prisma.$transaction(async (tx) => {
+      if (dto.isPrimary) {
+        await this.clearPrimary(tx, section.id);
+      }
+      // Idempotent on (sectionId, teacherId): re-assigning updates rather than
+      // 409s, and never silently demotes an existing class teacher (isPrimary only set, never cleared).
+      const row = await tx.sectionTeacher.upsert({
+        where: {
+          sectionId_teacherId: {
+            sectionId: section.id,
+            teacherId: teacher.id,
+          },
+        },
+        create: {
           sectionId: section.id,
           teacherId: teacher.id,
-        },
-      },
-      create: {
-        sectionId: section.id,
-        teacherId: teacher.id,
-        assignmentRole: dto.assignmentRole ?? null,
-        isPrimary: dto.isPrimary ?? false,
-        startDate: this.toDate(dto.startDate),
-        endDate: this.toDate(dto.endDate),
-      },
-      update: {
-        ...(dto.assignmentRole !== undefined && {
-          assignmentRole: dto.assignmentRole,
-        }),
-        ...(dto.isPrimary ? { isPrimary: true } : {}),
-        ...(dto.startDate !== undefined && {
+          assignmentRole: dto.assignmentRole ?? null,
+          isPrimary: dto.isPrimary ?? false,
           startDate: this.toDate(dto.startDate),
-        }),
-        ...(dto.endDate !== undefined && { endDate: this.toDate(dto.endDate) }),
-      },
-      include: this.assignmentInclude(),
+          endDate: this.toDate(dto.endDate),
+        },
+        update: {
+          ...(dto.assignmentRole !== undefined && {
+            assignmentRole: dto.assignmentRole,
+          }),
+          ...(dto.isPrimary ? { isPrimary: true } : {}),
+          ...(dto.startDate !== undefined && {
+            startDate: this.toDate(dto.startDate),
+          }),
+          ...(dto.endDate !== undefined && {
+            endDate: this.toDate(dto.endDate),
+          }),
+        },
+        include: this.assignmentInclude(),
+      });
+      // A demoted class teacher who teaches nothing here no longer belongs on the roster.
+      await pruneSectionRoster(tx, section.id, row.id);
+      return row;
     });
     await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
     return assigned;
@@ -341,23 +358,30 @@ export class SectionsService extends BaseSchoolScopedService {
       }
       teacherId = teacher.id;
     }
-    if (dto.isPrimary) {
-      await this.clearPrimary(section.id, assignment.id);
-    }
-    const updated = await this.sectionTeachers.update({
-      where: { id: assignment.id },
-      data: {
-        teacherId,
-        ...(dto.assignmentRole !== undefined && {
-          assignmentRole: dto.assignmentRole,
-        }),
-        ...(dto.isPrimary !== undefined && { isPrimary: dto.isPrimary }),
-        ...(dto.startDate !== undefined && {
-          startDate: this.toDate(dto.startDate),
-        }),
-        ...(dto.endDate !== undefined && { endDate: this.toDate(dto.endDate) }),
-      },
-      include: this.assignmentInclude(),
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (dto.isPrimary) {
+        await this.clearPrimary(tx, section.id, assignment.id);
+      }
+      const row = await tx.sectionTeacher.update({
+        where: { id: assignment.id },
+        data: {
+          teacherId,
+          ...(dto.assignmentRole !== undefined && {
+            assignmentRole: dto.assignmentRole,
+          }),
+          ...(dto.isPrimary !== undefined && { isPrimary: dto.isPrimary }),
+          ...(dto.startDate !== undefined && {
+            startDate: this.toDate(dto.startDate),
+          }),
+          ...(dto.endDate !== undefined && {
+            endDate: this.toDate(dto.endDate),
+          }),
+        },
+        include: this.assignmentInclude(),
+      });
+      // Turning class teacher off can leave a teacher here who teaches nothing, including this row.
+      await pruneSectionRoster(tx, section.id);
+      return row;
     });
     await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
     return updated;
@@ -426,13 +450,13 @@ export class SectionsService extends BaseSchoolScopedService {
     return assignment;
   }
 
-  private async clearPrimary(sectionId: string, excludeId?: string) {
-    const where: any = { sectionId };
-    if (excludeId) {
-      where.id = { not: excludeId };
-    }
-    await this.sectionTeachers.updateMany({
-      where,
+  private async clearPrimary(
+    tx: Prisma.TransactionClient,
+    sectionId: string,
+    excludeId?: string,
+  ) {
+    await tx.sectionTeacher.updateMany({
+      where: { sectionId, ...(excludeId && { id: { not: excludeId } }) },
       data: { isPrimary: false },
     });
   }

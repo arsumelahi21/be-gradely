@@ -17,6 +17,19 @@ export async function sectionStudentIds(
   return rows.map((r) => r.studentId);
 }
 
+/** Distinct students currently placed in a section for ONE session; sectionStudentIds spans every year. */
+export async function sectionYearStudentIds(
+  prisma: PrismaService,
+  sectionId: string,
+  academicYearId: string,
+): Promise<string[]> {
+  const rows = await prisma.enrollment.findMany({
+    where: { sectionId, academicYearId, status: 'ACTIVE' },
+    select: { studentId: true },
+  });
+  return [...new Set(rows.map((r) => r.studentId))];
+}
+
 export async function studentUserIds(
   prisma: PrismaService,
   studentIds: string[],

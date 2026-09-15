@@ -64,6 +64,7 @@ async function wipe(schoolId: string) {
   await prisma.attendance.deleteMany({ where: { schoolId } });
   await prisma.examResult.deleteMany({ where: { student: { schoolId } } });
   await prisma.exam.deleteMany({ where: { schoolId } });
+  await prisma.examination.deleteMany({ where: { schoolId } });
   await prisma.assignmentSubmission.deleteMany({
     where: { assignment: { schoolId } },
   });
@@ -481,32 +482,60 @@ async function main() {
     }
   }
 
-  // --- Exams (1 per sectionSubject, PUBLISHED) + results ---
+  // --- One finalized midterm examination per section, a subject paper per sectionSubject ---
   let resCounter = 0;
+  const subjectsBySection = new Map<string, typeof sectionSubjects>();
   for (const ss of sectionSubjects) {
-    const roster = students.filter((s) => s.sectionId === ss.sectionId);
-    const exam = await prisma.exam.create({
+    subjectsBySection.set(ss.sectionId, [...(subjectsBySection.get(ss.sectionId) ?? []), ss]);
+  }
+  for (const [sectionId, sectionSubs] of subjectsBySection) {
+    const section = await prisma.section.findUniqueOrThrow({
+      where: { id: sectionId },
+      include: { classGrade: true },
+    });
+    const heldAt = new Date(Date.now() - 3 * 86400000);
+    const examination = await prisma.examination.create({
       data: {
         schoolId: sid,
         academicYearId: year.id,
-        sectionSubjectId: ss.id,
-        createdByTeacherId: ss.teacher.profile.id,
-        title: 'Midterm Exam',
+        classGradeId: section.classGradeId,
+        sectionId,
+        title: 'Midterm Examination',
         status: 'PUBLISHED',
-        maxScore: 100,
-        heldAt: new Date(Date.now() - 3 * 86400000),
+        resultStatus: 'FINALIZED',
+        className: section.classGrade.name,
+        sectionName: section.name,
+        createdByTeacherId: sectionSubs[0].teacher.profile.id,
+        publishedAt: heldAt,
+        finalizedAt: new Date(),
       },
     });
-    for (const st of roster) {
-      resCounter++;
-      await prisma.examResult.create({
+    const roster = students.filter((s) => s.sectionId === sectionId);
+    for (const ss of sectionSubs) {
+      const exam = await prisma.exam.create({
         data: {
-          examId: exam.id,
-          studentId: st.id,
-          score: 55 + (resCounter % 41),
-          markedAt: new Date(),
+          schoolId: sid,
+          academicYearId: year.id,
+          examinationId: examination.id,
+          sectionSubjectId: ss.id,
+          createdByTeacherId: ss.teacher.profile.id,
+          title: 'Midterm Exam',
+          maxScore: 100,
+          passingMarks: 40,
+          heldAt,
         },
       });
+      for (const st of roster) {
+        resCounter++;
+        await prisma.examResult.create({
+          data: {
+            examId: exam.id,
+            studentId: st.id,
+            score: 55 + (resCounter % 41),
+            markedAt: new Date(),
+          },
+        });
+      }
     }
   }
 

@@ -4,6 +4,7 @@ import { createTestApp } from './utils/app';
 import { prisma, resetDb } from './utils/db';
 import { createTestSchool, createTestUser, tokenFor } from './utils/factories';
 import { seedClass } from './utils/class-fixture';
+import { seedExamination } from './utils/exam-fixture';
 import { Role } from '../src/common/types/role.type';
 
 /**
@@ -112,17 +113,16 @@ describe('Reporting aggregates (e2e)', () => {
     });
     const token = await tokenFor(app, admin);
 
-    // One published exam with a graded result (50/100).
-    const exam = await prisma.exam.create({
-      data: {
-        schoolId: cls.school.id,
-        academicYearId: cls.academicYear.id,
-        sectionSubjectId: cls.sectionSubject.id,
-        createdByTeacherId: cls.teacherProfile.id,
-        title: 'Exam',
-        status: 'PUBLISHED',
-        maxScore: 100,
-      },
+    // One finalized examination with a graded result (50/100); provisional marks don't count.
+    const {
+      subjects: [exam],
+    } = await seedExamination({
+      schoolId: cls.school.id,
+      academicYearId: cls.academicYear.id,
+      sectionId: cls.section.id,
+      sectionSubjectIds: [cls.sectionSubject.id],
+      createdByTeacherId: cls.teacherProfile.id,
+      resultStatus: 'FINALIZED',
     });
     await prisma.examResult.create({
       data: {

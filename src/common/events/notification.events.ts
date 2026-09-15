@@ -21,6 +21,11 @@ export type NotificationType =
   | 'EXAM_PUBLISHED'
   | 'EXAM_RESULT'
   | 'EXAM_UPCOMING'
+  // Examination review cycle: submitted (-> admins), then reviewed (-> author).
+  | 'EXAM_SUBMITTED'
+  | 'EXAM_CHANGES_REQUESTED'
+  | 'EXAM_REJECTED'
+  | 'EXAM_APPROVED'
   | 'ATTENDANCE_MARKED'
   // Fee events ride the existing notifyGrades preference — no new UserSettings column.
   | 'FEE_CHALLAN_ISSUED'

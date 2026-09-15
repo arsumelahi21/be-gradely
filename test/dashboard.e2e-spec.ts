@@ -4,6 +4,7 @@ import { createTestApp } from './utils/app';
 import { prisma, resetDb } from './utils/db';
 import { createTestSchool, createTestUser, tokenFor } from './utils/factories';
 import { seedClass } from './utils/class-fixture';
+import { seedExamination } from './utils/exam-fixture';
 import { Role } from '../src/common/types/role.type';
 
 /**
@@ -43,17 +44,16 @@ describe('Dashboard school stats (e2e)', () => {
       data: { gender: 'FEMALE' },
     });
 
-    // Exam out of 100: A averages 95 (high achiever), B averages 30 (< pass).
-    const exam = await prisma.exam.create({
-      data: {
-        schoolId: cls.school.id,
-        academicYearId: cls.academicYear.id,
-        sectionSubjectId: cls.sectionSubject.id,
-        createdByTeacherId: cls.teacherProfile.id,
-        title: 'Exam',
-        status: 'PUBLISHED',
-        maxScore: 100,
-      },
+    // Finalized exam out of 100: A averages 95 (high achiever), B averages 30 (< pass).
+    const {
+      subjects: [exam],
+    } = await seedExamination({
+      schoolId: cls.school.id,
+      academicYearId: cls.academicYear.id,
+      sectionId: cls.section.id,
+      sectionSubjectIds: [cls.sectionSubject.id],
+      createdByTeacherId: cls.teacherProfile.id,
+      resultStatus: 'FINALIZED',
     });
     await prisma.examResult.createMany({
       data: [

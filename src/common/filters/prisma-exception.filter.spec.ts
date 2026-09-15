@@ -105,6 +105,26 @@ describe('PrismaExceptionFilter', () => {
       expect(run(known('P2014')).status).toBe(HttpStatus.CONFLICT);
     });
 
+    it('a RESTRICT hit inside a cascade (23001, unknown to Prisma) is a 409, not a 500', () => {
+      const res = run(
+        new Prisma.PrismaClientUnknownRequestError(
+          'Error occurred during query execution: ConnectorError(... PostgresError { code: "23001", message: "update or delete on table \\"SectionSubject\\" violates RESTRICT setting of foreign key constraint \\"Exam_sectionSubjectId_fkey\\" on table \\"Exam\\"" })',
+          { clientVersion: 'test' },
+        ),
+      );
+      expect(res.status).toBe(HttpStatus.CONFLICT);
+      expect(res.body.message).not.toMatch(/Exam_sectionSubjectId_fkey|SectionSubject/);
+    });
+
+    it('other unknown request errors stay a generic 500', () => {
+      const res = run(
+        new Prisma.PrismaClientUnknownRequestError('something else entirely', {
+          clientVersion: 'test',
+        }),
+      );
+      expect(res.status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+    });
+
     it('a validation error is a 400, not a 500', () => {
       const res = run(
         new Prisma.PrismaClientValidationError('bad shape', {

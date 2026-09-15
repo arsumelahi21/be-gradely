@@ -152,7 +152,13 @@ export class TeachersService extends BaseSchoolScopedService {
   async remove(id: string, actor: Actor) {
     const teacher = await this.getOrThrow(id, actor);
     const removed = await this.prisma.teacherProfile.delete({ where: { id } });
-    await this.invalidateSchoolCache(teacher.schoolId, 'teachers');
+    // The cascade drops their roster rows and unstaffs their subjects, so section cards change too.
+    await this.invalidateSchoolCache(
+      teacher.schoolId,
+      'teachers',
+      'sections',
+      'classes',
+    );
     return removed;
   }
 

@@ -200,14 +200,16 @@ export class DashboardService extends BaseSchoolScopedService {
       this.prisma.studentProfile.count({
         where: { schoolId, isActive: true, dateOfJoining: { gte: yearStart } },
       }),
-      // Aggregate in SQL since groupBy can't reach Exam.maxScore across the
-      // relation. `${schoolId}` is a bound param; `::float` avoids integer division.
+      // Aggregate in SQL since groupBy can't reach Exam.maxScore across the relation.
+      // Finalized results only: provisional marks must not flag a student as low-performing.
       this.prisma.$queryRaw<Array<{ studentId: string; avg: number }>>`
         SELECT er."studentId" AS "studentId",
                AVG(er.score::float / e."maxScore") * 100 AS avg
         FROM "ExamResult" er
         JOIN "Exam" e ON e.id = er."examId"
+        JOIN "Examination" x ON x.id = e."examinationId"
         WHERE e."schoolId" = ${schoolId}
+          AND x."resultStatus" = 'FINALIZED'
           AND er.score IS NOT NULL
           AND e."maxScore" > 0
         GROUP BY er."studentId"

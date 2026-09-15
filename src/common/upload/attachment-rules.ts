@@ -23,6 +23,9 @@ export const ALLOWED_ATTACHMENT_MIME_TYPES = new Set<string>([
 
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MB
 
+// Scanned exam papers routinely exceed the 5 MB attachment cap.
+export const MAX_EXAM_PAPER_BYTES = 10 * 1024 * 1024; // 10 MB
+
 /**
  * PDF-only gate for the assignment module (attachments + student submissions).
  * Checks the declared MIME / .pdf extension and, when the bytes are on hand

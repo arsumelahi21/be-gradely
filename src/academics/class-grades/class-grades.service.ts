@@ -9,6 +9,7 @@ import { resolvePagination } from '../../common/dto/pagination-query.dto';
 import { CacheService } from '../../common/services/cache.service';
 import { uniqueConflict } from '../../common/utils/prisma-errors';
 import { CLASS_LEVEL_ORDER_BY } from '../../common/types/class-level.type';
+import { assertNoExaminationHistory } from '../../common/services/exam-history-guard';
 
 type UpdateClassGradeInput = UpdateClassGradeDto & Partial<CreateClassGradeDto>;
 type ListOpts = { page?: number; pageSize?: number; search?: string };
@@ -145,6 +146,7 @@ export class ClassGradesService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     const grade = await this.getOrThrow(id, actor);
+    await assertNoExaminationHistory(this.prisma, 'classGrade', id);
     const removed = await this.prisma.classGrade.delete({ where: { id } });
     // Sections are gone with it, so the sections list is stale too.
     await this.invalidateSchoolCache(grade.schoolId, 'classes', 'sections');
