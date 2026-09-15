@@ -115,6 +115,17 @@ export class SchoolsService {
       if (exists) throw new BadRequestException('School code already exists');
     }
 
+    // Revoke before suspending: if the next write fails, users only re-login instead of keeping revivable refresh tokens.
+    if (dto.isActive === false)
+      await this.prisma.user.updateMany({
+        where: { schoolId: id },
+        data: {
+          refreshTokenHash: null,
+          resetTokenHash: null,
+          resetTokenExpiresAt: null,
+        },
+      });
+
     const updated = await (this.prisma as any).school.update({
       where: { id },
       data: {
