@@ -1167,9 +1167,18 @@ export class MessagingService extends BaseSchoolScopedService {
     if (!body && attachments.length === 0) {
       throw new BadRequestException('Message must have text or an attachment');
     }
-    // Re-validate every attachment server-side (never trust the client).
+    // Every reader is handed a presigned URL for these keys, so accept only one issued to
+    // this sender: their upload folder plus a sanitized file name (no `/` to climb out).
+    const ownPrefix = attachments.length
+      ? await this.s3.keyForSchool(actor.schoolId, `messages/${actor.userId}/`)
+      : '';
     for (const a of attachments) {
       assertAttachmentAllowed({ mimeType: a.mimeType, sizeBytes: a.sizeBytes });
+      if (
+        !a.s3Key.startsWith(ownPrefix) ||
+        !/^[\w.-]+$/.test(a.s3Key.slice(ownPrefix.length))
+      )
+        throw new BadRequestException('Invalid attachment');
     }
 
     // A reply must quote a message that lives in this same thread.
