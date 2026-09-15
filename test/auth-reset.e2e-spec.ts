@@ -44,6 +44,7 @@ describe('Password reset (e2e)', () => {
 
   it('forgot-password returns the same response for existing and unknown emails', async () => {
     await createTestUser({ role: Role.STUDENT, email: 'exists@test.local' });
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
 
     const known = await request(app.getHttpServer())
       .post('/api/auth/forgot-password')
@@ -51,6 +52,8 @@ describe('Password reset (e2e)', () => {
     const unknown = await request(app.getHttpServer())
       .post('/api/auth/forgot-password')
       .send({ email: 'nobody@test.local' });
+    const logged = log.mock.calls.flat().join(' ');
+    log.mockRestore();
 
     expect(known.status).toBe(unknown.status);
     expect(known.body).toEqual(unknown.body);
@@ -60,6 +63,9 @@ describe('Password reset (e2e)', () => {
       where: { email: 'exists@test.local' },
     });
     expect(realUser?.resetTokenHash).toBeTruthy();
+
+    // The link grants account takeover, so it must stay out of logs outside development.
+    expect(logged).not.toContain('reset-password?token=');
   });
 
   it('resets the password with a valid token, then lets the user log in', async () => {
