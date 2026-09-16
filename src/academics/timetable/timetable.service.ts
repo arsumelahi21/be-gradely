@@ -2477,8 +2477,13 @@ export class TimetableService extends BaseSchoolScopedService {
         select: { id: true },
       });
       if (!student) throw new ForbiddenException('Student profile not found');
+      // Promotion closes the old row rather than deleting it — a promoted student would keep this access.
       const enrolled = await this.prisma.enrollment.findFirst({
-        where: { sectionId: section.id, studentId: student.id },
+        where: {
+          sectionId: section.id,
+          studentId: student.id,
+          status: 'ACTIVE',
+        },
         select: { id: true },
       });
       if (!enrolled)
@@ -2489,6 +2494,7 @@ export class TimetableService extends BaseSchoolScopedService {
       const link = await this.prisma.enrollment.findFirst({
         where: {
           sectionId: section.id,
+          status: 'ACTIVE',
           student: { parents: { some: { parent: { userId: actor.userId } } } },
         },
         select: { id: true },

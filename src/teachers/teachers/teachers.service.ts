@@ -217,6 +217,7 @@ export class TeachersService extends BaseSchoolScopedService {
     const enrollments = await this.prisma.enrollment.findMany({
       where: {
         sectionId: { in: sectionIds },
+        status: 'ACTIVE',
       },
       orderBy: { createdAt: 'desc' },
       include: {
