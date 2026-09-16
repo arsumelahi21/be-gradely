@@ -31,9 +31,8 @@ describe('Reporting aggregates (e2e)', () => {
       .set('Authorization', `Bearer ${token}`);
 
   /**
-   * UTC midnight today. `getSchoolStats` defaults to a trailing 30-day window
-   * (`today - 29 days`), so a hard-coded date silently drops out of range as
-   * the clock moves on — which is exactly how this suite started failing.
+   * `getSchoolStats` defaults to a trailing 30-day window, so a hard-coded date silently
+   * drops out of range as the clock moves on — exactly how this suite started failing.
    */
   function todayUtc(): Date {
     const now = new Date();

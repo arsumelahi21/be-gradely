@@ -1,6 +1,6 @@
 /**
- * Demo seed (DEMO-001): one full-feature demo school for the Phase 4.1 dashboards. Idempotent
- * (skips if it exists; SEED_DEMO_FORCE=1 wipes+re-seeds). Run: npx ts-node src/scripts/seed-demo.ts
+ * Demo seed (DEMO-001): one full-feature demo school. Idempotent (skips if it exists;
+ * SEED_DEMO_FORCE=1 wipes+re-seeds). Run: npx ts-node src/scripts/seed-demo.ts
  */
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
@@ -23,16 +23,13 @@ function recentWeekdays(days: number): Date[] {
   for (let i = days; i >= 0; i--) {
     const d = new Date(today - i * 86400000);
     const dow = d.getUTCDay();
-    if (dow !== 0 && dow !== 6) out.push(d); // skip Sun/Sat
+    if (dow !== 0 && dow !== 6) out.push(d);
   }
   return out;
 }
 
-/**
- * Accounts this script creates. Everything else sitting in the demo school is
- * REAL data that happens to live there, and must survive a re-seed — a previous
- * version deleted every user in the school and destroyed a genuine admin.
- */
+// Only accounts this script creates; anything else in the demo school is REAL data that must
+// survive a re-seed (an earlier version deleted every user in the school, incl. a real admin).
 const SEED_EMAIL_SUFFIX = '@demo-academy.test';
 const seedUsers = (schoolId: string) => ({
   schoolId,
@@ -40,18 +37,15 @@ const seedUsers = (schoolId: string) => ({
 });
 
 async function wipe(schoolId: string) {
-  // Delete in FK-safe order (children first). Messages/attendance/results, then
-  // structure, then profiles + users. The School row itself is NOT deleted —
-  // see main(): keeping it makes the school id stable across re-seeds, so
-  // surviving users keep their link and AuditLog rows don't strand.
+  // Delete children first (FK-safe order). The School row itself is kept so its id stays
+  // stable across re-seeds — see main().
   const students = await prisma.studentProfile.findMany({
     where: { schoolId },
     select: { id: true },
   });
   const studentIds = students.map((s) => s.id);
-  // Fees first: Challan.studentId and Payment.challanId are Restrict, so
-  // students/challans can't be deleted while these rows exist.
-  // PaymentSubmission.challanId is Restrict too — it must go before the challan.
+  // Fees first: Challan.studentId, Payment.challanId and PaymentSubmission.challanId are
+  // Restrict, so these rows must go before their challans/students.
   await prisma.paymentSubmission.deleteMany({ where: { schoolId } });
   await prisma.payment.deleteMany({ where: { schoolId } });
   await prisma.challanItem.deleteMany({ where: { challan: { schoolId } } });
@@ -133,9 +127,8 @@ async function main() {
     feeChallanPrefix: 'DEMO',
     feeDueDayOfMonth: 10,
   };
-  // Upsert, never delete-and-recreate: the school id must stay STABLE across
-  // re-seeds. A new id each time orphans real users (School->User is SetNull)
-  // and strands AuditLog rows, which have a schoolId but no FK.
+  // Upsert, never delete-and-recreate: a new school id orphans real users (School->User is
+  // SetNull) and strands AuditLog rows, which carry a schoolId but no FK.
   const school = await prisma.school.upsert({
     where: { code: CODE },
     update: schoolData,
@@ -143,7 +136,7 @@ async function main() {
   });
   const sid = school.id;
 
-  // --- Fee catalogue (amounts in MINOR units) ---
+  // Fee amounts are in MINOR units.
   await prisma.feeHead.createMany({
     data: [
       {
@@ -183,7 +176,6 @@ async function main() {
     },
   });
 
-  // --- School admin ---
   const admin = await prisma.user.create({
     data: {
       email: 'principal@demo-academy.test',
@@ -195,7 +187,6 @@ async function main() {
     },
   });
 
-  // --- Academic year, subjects, grades, sections ---
   const year = await prisma.academicYear.create({
     data: {
       schoolId: sid,
@@ -227,7 +218,6 @@ async function main() {
     sections.push({ grade, section });
   }
 
-  // --- Teachers (+profiles) ---
   const teacherNames = ['Alex Rivera', 'Sam Chen', 'Priya Patel'];
   const teachers: any[] = [];
   for (let i = 0; i < teacherNames.length; i++) {
@@ -252,7 +242,6 @@ async function main() {
     teachers.push({ user, profile });
   }
 
-  // --- SectionSubjects (subject × section, round-robin teacher) + homeroom ---
   const sectionSubjects: {
     id: string;
     sectionId: string;
@@ -287,7 +276,6 @@ async function main() {
     });
   }
 
-  // --- Parents + students (4 per section). Parent 0 has 2 children (siblings). ---
   const firstNames = [
     'Emma',
     'Liam',
@@ -377,11 +365,8 @@ async function main() {
     students.push({ id: profile.id, userId: user.id, sectionId: section.id });
   }
 
-  // --- Installment plan for student 0 ---
-  // Deliberately spans the reminder window: one installment already past due
-  // (reads OVERDUE), one due inside the default 3-day window (so a sweep has
-  // something to find), and one still ahead — every state visible without
-  // waiting for the calendar.
+  // Student 0's installments deliberately span the reminder window: one OVERDUE, one due
+  // inside the default 3-day window, one still ahead — every state visible at once.
   {
     const today = new Date();
     const day = (offset: number) =>
@@ -412,7 +397,7 @@ async function main() {
     });
   }
 
-  // --- Attendance: ~10 weekdays incl. today, present-heavy mix ---
+  // Attendance over ~10 weekdays incl. today, present-heavy mix.
   const days = recentWeekdays(13);
   let aCounter = 0;
   const attendanceRows: any[] = [];
@@ -443,7 +428,6 @@ async function main() {
   }
   await prisma.attendance.createMany({ data: attendanceRows });
 
-  // --- Assignments (2 per sectionSubject, PUBLISHED) + submissions mix ---
   let subCounter = 0;
   for (const ss of sectionSubjects) {
     const roster = students.filter((s) => s.sectionId === ss.sectionId);
@@ -464,7 +448,7 @@ async function main() {
       for (const st of roster) {
         subCounter++;
         // ~1 in 4 missing; of the rest, ~half graded, half ungraded.
-        if (subCounter % 4 === 0) continue; // missing
+        if (subCounter % 4 === 0) continue;
         const graded = subCounter % 2 === 0;
         await prisma.assignmentSubmission.create({
           data: {
@@ -482,7 +466,6 @@ async function main() {
     }
   }
 
-  // --- One finalized midterm examination per section, a subject paper per sectionSubject ---
   let resCounter = 0;
   const subjectsBySection = new Map<string, typeof sectionSubjects>();
   for (const ss of sectionSubjects) {
@@ -542,7 +525,6 @@ async function main() {
     }
   }
 
-  // --- Quiz per section (PUBLISHED) with 3 questions + attempts ---
   for (const { section } of sections) {
     const roster = students.filter((s) => s.sectionId === section.id);
     const teacher = teachers[0];
@@ -583,7 +565,6 @@ async function main() {
         order: 2,
       },
     });
-    // Half the roster attempts (submitted + graded).
     for (let i = 0; i < roster.length; i++) {
       if (i % 2 !== 0) continue;
       const st = roster[i];
@@ -602,7 +583,6 @@ async function main() {
     }
   }
 
-  // --- A couple of message threads (teacher ↔ parent) ---
   const t0 = teachers[0].user.id;
   const p0 = parents[0].userId;
   const thread = await prisma.messageThread.create({
@@ -622,7 +602,6 @@ async function main() {
     },
   });
 
-  // --- Announcements (school-wide) ---
   await prisma.announcement.createMany({
     data: [
       {

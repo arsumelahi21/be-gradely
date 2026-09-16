@@ -3,14 +3,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaExceptionFilter } from './prisma-exception.filter';
 
 /**
- * This filter decides what a user sees when the database misbehaves, so the
- * wording is part of its contract, not decoration.
- *
- * The case that motivated these tests: a login against an unreachable database
- * was reported as "Something went wrong while saving. Please try again." on the
- * sign-in screen — a write-shaped message for a read, and a 500 for what is
- * really a 503. Anyone debugging that goes looking at the login code instead of
- * at the database connection.
+ * The wording is part of the contract: a login against an unreachable database once showed a 500
+ * "Something went wrong while saving" — a write-shaped message for a read that was really a 503.
  */
 describe('PrismaExceptionFilter', () => {
   const filter = new PrismaExceptionFilter();

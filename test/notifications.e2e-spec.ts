@@ -14,7 +14,6 @@ import { AttendanceService } from '../src/attendance/attendance.service';
 import { seedClass } from './utils/class-fixture';
 import { seedExamination } from './utils/exam-fixture';
 
-/** The NOTIFICATION_CREATE events a spied emitter captured. */
 function notifEvents(spy: jest.SpyInstance): any[] {
   return spy.mock.calls
     .filter((c) => c[0] === NOTIFICATION_CREATE)
@@ -51,7 +50,6 @@ describe('Notifications (e2e)', () => {
       notifyPreferenceKey: 'notifyAnnouncements',
     });
 
-    // Row count equals recipient count.
     expect(await prisma.notification.count()).toBe(4);
   });
 
@@ -143,7 +141,6 @@ describe('Notifications (e2e)', () => {
       .set('Authorization', `Bearer ${u1Token}`);
     expect(readTheirs.status).toBe(403);
 
-    // read-all clears the caller's remaining unread.
     await prisma.notification.create({
       data: { userId: u1.id, type: 'NEW_MESSAGE', title: 'd', body: 'd' },
     });

@@ -7,11 +7,8 @@ import { seedClass } from './utils/class-fixture';
 import { CacheService } from '../src/common/services/cache.service';
 import { Role } from '../src/common/types/role.type';
 
-/**
- * The invariant: SectionTeacher (what the Teachers panel lists and what the class
- * card's `_count.teachers` counts) must mirror SectionSubject.teacherId (who
- * actually teaches a subject in that section).
- */
+// Invariant: SectionTeacher (the Teachers panel and the card's `_count.teachers`) must
+// mirror SectionSubject.teacherId (who actually teaches a subject in that section).
 describe('Section roster mirrors subject teachers (e2e)', () => {
   let app: INestApplication;
   let cache: {
@@ -21,10 +18,8 @@ describe('Section roster mirrors subject teachers (e2e)', () => {
 
   beforeAll(async () => {
     app = await createTestApp();
-    // `.env` points REDIS_URL at a Redis that is not running under e2e and
-    // CacheService fails open, so nothing would be cached at all — pin the
-    // in-memory backend so the invalidation test means the same thing on every
-    // machine, Redis running or not.
+    // `.env`'s Redis isn't running under e2e and CacheService fails open (caches nothing),
+    // so pin the in-memory backend to make the invalidation test meaningful everywhere.
     cache = app.get(CacheService);
     cache.redis?.disconnect();
     cache.redis = null;
@@ -42,9 +37,8 @@ describe('Section roster mirrors subject teachers (e2e)', () => {
 
   const server = () => request(app.getHttpServer());
 
-  /** A school + section + an admin token for it. NOTE: seedClass writes its own
-   *  sectionSubject straight through Prisma, so the section starts with an EMPTY
-   *  roster — the legacy state this fix exists for. */
+  /** NOTE: seedClass writes its sectionSubject straight through Prisma, so the section
+   *  starts with an EMPTY roster — the legacy state this fix exists for. */
   const setup = async () => {
     const cls = await seedClass({ studentCount: 0 });
     const admin = await createTestUser({
@@ -76,7 +70,6 @@ describe('Section roster mirrors subject teachers (e2e)', () => {
   const rosterIds = async (sectionId: string) =>
     (await roster(sectionId)).map((r) => r.teacherId).sort();
 
-  /** The Teachers panel. */
   const panelIds = async (auth: Record<string, string>, sectionId: string) => {
     const res = await server()
       .get(`/api/sections/${sectionId}/teachers`)
@@ -544,9 +537,8 @@ describe('Section roster mirrors subject teachers (e2e)', () => {
         teachers: 0,
       });
 
-      // Written straight through Prisma, so nothing can invalidate: the count
-      // must still read 1, which proves the entry really is cached and the
-      // fresh reads below cannot pass vacuously.
+      // Written straight through Prisma, so nothing invalidates: still reading 1 proves the
+      // entry is cached, so the fresh reads below cannot pass vacuously.
       const bypassSubject = await makeSubject(cls.school.id, 'Bypass');
       const bypass = await prisma.sectionSubject.create({
         data: { sectionId: cls.section.id, subjectId: bypassSubject.id },

@@ -86,9 +86,8 @@ export async function studentUserIdByStudent(
 }
 
 /**
- * StudentProfile id -> the User ids of that student's guardians. One query.
- * The ParentStudent join IS the authorization rule, so a parent can only ever
- * appear against a child they're actually linked to.
+ * StudentProfile id -> guardians' User ids. The ParentStudent join IS the authorization
+ * rule, so a parent can only ever appear against a child they're actually linked to.
  */
 export async function parentUserIdsByStudent(
   prisma: PrismaService,

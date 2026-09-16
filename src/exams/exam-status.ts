@@ -34,7 +34,6 @@ const TRANSITIONS: Record<
   PUBLISH: { from: [S.PENDING_REVIEW, S.DRAFT], to: S.PUBLISHED },
 };
 
-/** The status an action moves to, or null when the move isn't allowed. */
 export function nextStatus(
   current: ExaminationStatus,
   action: ReviewAction,
@@ -67,7 +66,6 @@ export function paperIsEditable(status: ExaminationStatus): boolean {
   return teacherCanEdit(status);
 }
 
-/** Only an unsubmitted draft with no marks can be deleted. */
 export function canDelete(
   status: ExaminationStatus,
   hasMarks: boolean,

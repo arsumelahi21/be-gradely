@@ -138,8 +138,6 @@ export class ExamsService extends BaseSchoolScopedService {
     super(prisma, cache);
   }
 
-  // ---- Create / read ----
-
   async create(dto: CreateExaminationDto, actor: Actor) {
     const schoolId = this.access.schoolOf(actor);
     const teacherId =
@@ -326,8 +324,6 @@ export class ExamsService extends BaseSchoolScopedService {
       },
     });
   }
-
-  // ---- Edit ----
 
   async update(id: string, dto: UpdateExaminationDto, actor: Actor) {
     const core = await this.access.loadCore(id);
@@ -629,8 +625,6 @@ export class ExamsService extends BaseSchoolScopedService {
     return this.getStaff(id, actor, teacherId);
   }
 
-  // ---- Review workflow ----
-
   async submit(id: string, actor: Actor) {
     const core = await this.access.loadCore(id);
     this.access.assertSameSchool(actor, core.schoolId);
@@ -786,8 +780,6 @@ export class ExamsService extends BaseSchoolScopedService {
     return this.getStaff(id, actor, null);
   }
 
-  // ---- Stats (school dashboard) ----
-
   /** School-wide average across FINALIZED results only — provisional marks never reach the dashboard. */
   async getSchoolStats(actor: Actor, opts?: { schoolId?: string }) {
     if (actor.role !== Role.SUPER_ADMIN && actor.role !== Role.SCHOOL_ADMIN) {
@@ -832,8 +824,6 @@ export class ExamsService extends BaseSchoolScopedService {
     });
     return { schoolId, examCount, gradedResults, averageScorePercent };
   }
-
-  // ---- Helpers ----
 
   private async getStaff(id: string, actor: Actor, teacherId: string | null) {
     const row = await this.prisma.examination.findUniqueOrThrow({
@@ -1095,7 +1085,6 @@ export class ExamsService extends BaseSchoolScopedService {
     return termId;
   }
 
-  /** Whether the session has any term at all, i.e. whether a choice even exists. */
   private async hasTerms(academicYearId: string): Promise<boolean> {
     return (
       (await this.prisma.academicTerm.count({ where: { academicYearId } })) > 0

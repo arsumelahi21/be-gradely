@@ -10,13 +10,8 @@ let seq = 0;
 const uniq = () => `${Date.now()}${seq++}`;
 
 /**
- * A confirmed delete removes the entity and everything that exists only because
- * of it. The exceptions are records kept as history: fee challans and exam results
- * are Restrict, so those deletes are refused (409) until that history is cleared.
- *
- * Each case is run twice: once on a bare entity and once on one loaded with
- * every dependent record we can attach, so a cascade that only works on empty
- * data cannot pass. Independent history (AuditLog holds no FK) must survive.
+ * A delete cascades to everything that exists only because of the entity; history (fee challans, exam
+ * results) is Restrict and 409s until cleared. Seeds are fully loaded so an empty-data-only cascade can't pass.
  */
 describe('Deletion cascades (e2e)', () => {
   let app: INestApplication;
@@ -32,7 +27,6 @@ describe('Deletion cascades (e2e)', () => {
     await resetDb();
   });
 
-  /** A school with a full academic graph and every dependent row hung off it. */
   async function seedFullGraph() {
     const school = await createTestSchool();
     const admin = await createTestUser({
@@ -118,7 +112,6 @@ describe('Deletion cascades (e2e)', () => {
       },
     });
 
-    // Dependent records across every module.
     await prisma.attendance.create({
       data: {
         schoolId: school.id,

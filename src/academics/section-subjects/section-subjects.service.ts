@@ -159,7 +159,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       }
       if (query.subjectId) where.subjectId = query.subjectId;
     } else if (actor.role === Role.TEACHER) {
-      // Teachers can only see section-subjects they're assigned to
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }
@@ -211,7 +210,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       if (query.subjectId) where.subjectId = query.subjectId;
       if (query.teacherId) where.teacherId = query.teacherId;
     } else {
-      // Admin access
       this.ensureAdmin(actor);
       if (query.sectionId) where.sectionId = query.sectionId;
       if (query.subjectId) where.subjectId = query.subjectId;

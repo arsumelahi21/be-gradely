@@ -208,7 +208,6 @@ export class TeachersService extends BaseSchoolScopedService {
       },
     });
 
-    // Combine and get unique section IDs
     const sectionIds = [
       ...new Set([
         ...sectionTeacherAssignments.map((st: any) => st.sectionId),
@@ -265,7 +264,6 @@ export class TeachersService extends BaseSchoolScopedService {
       });
     });
 
-    // Enrich enrollments with subjects taught by this teacher
     return enrollments.map((enrollment) => ({
       ...enrollment,
       subjectsTaughtByTeacher:

@@ -230,8 +230,6 @@ export class DashboardService extends BaseSchoolScopedService {
       this.settings.bandsFor(this.prisma, schoolId, null),
     ]);
 
-    // Gender split — OTHER/PREFER_NOT_TO_SAY/null all roll into "unspecified"
-    // except explicit OTHER, which the dashboard shows separately.
     const gender = { male: 0, female: 0, other: 0, unspecified: 0 };
     for (const g of genderGroups) {
       const c = g._count;
@@ -254,7 +252,6 @@ export class DashboardService extends BaseSchoolScopedService {
     }
     const gradedStudents = examByStudent.length;
 
-    // Per-student attendance rate from status tallies (PRESENT+LATE = attended).
     const byAttendance = new Map<string, { attended: number; total: number }>();
     for (const g of attendanceGroups) {
       const agg = byAttendance.get(g.studentId) ?? { attended: 0, total: 0 };

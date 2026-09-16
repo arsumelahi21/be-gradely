@@ -202,7 +202,6 @@ describe('Cross-tenant isolation (e2e)', () => {
       'get',
       () => `/api/messaging/threads/${ids.thread}`,
     ],
-    // Mutations last.
     ['PATCH students/:id', 'patch', () => `/api/students/${ids.student}`],
     ['PATCH sections/:id', 'patch', () => `/api/sections/${ids.section}`],
     ['PATCH exams/:id', 'patch', () => `/api/exams/${ids.exam}`],

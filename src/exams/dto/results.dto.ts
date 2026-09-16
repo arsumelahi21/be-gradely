@@ -67,7 +67,6 @@ export class SaveRemarksDto {
   entries!: RemarkEntryDto[];
 }
 
-/** Narrows a student's result card to one session and, optionally, one term. */
 export class ResultCardQueryDto {
   @IsOptional()
   @IsUUID()

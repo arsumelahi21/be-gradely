@@ -139,8 +139,6 @@ export class ExamsController {
     return this.exams.history(id, req.user);
   }
 
-  // ---- Subject papers ----
-
   @Roles(Role.SCHOOL_ADMIN, Role.TEACHER)
   @Post(':id/subjects')
   addSubject(
@@ -172,8 +170,7 @@ export class ExamsController {
     return this.exams.removeSubject(id, subjectId, req.user);
   }
 
-  // ---- Confidential exam paper: staff only, re-authorized on every request ----
-
+  // Confidential exam paper: staff only, re-authorized on every request.
   @Roles(Role.SCHOOL_ADMIN, Role.TEACHER)
   @Put(':id/subjects/:subjectId/paper')
   @UseInterceptors(
@@ -219,8 +216,6 @@ export class ExamsController {
     res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
     res.send(data);
   }
-
-  // ---- Review workflow ----
 
   @Roles(Role.TEACHER)
   @Post(':id/submit')

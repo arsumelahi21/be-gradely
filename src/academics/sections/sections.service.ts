@@ -101,11 +101,8 @@ export class SectionsService extends BaseSchoolScopedService {
         });
         if (!sections.length) return sections;
 
-        // `_count.teachers` is SectionTeacher only — the homeroom assignment —
-        // so a card labelled "Teachers" showed 1 while six different people
-        // actually taught the section. The honest figure is the DISTINCT union of
-        // both ways a teacher is attached, which no Prisma `_count` can express.
-        // One grouped query for the whole list, never one per section.
+        // `_count.teachers` is only the homeroom SectionTeacher, so it undercounts; Prisma `_count`
+        // can't express the DISTINCT union of both routes, so one grouped query covers the whole list.
         const teacherCounts = await this.distinctTeacherCounts(
           sections.map((s) => s.id),
         );
@@ -118,12 +115,8 @@ export class SectionsService extends BaseSchoolScopedService {
   }
 
   /**
-   * How many DISTINCT teachers are attached to each section, counting both
-   * routes: the section-level assignment (`SectionTeacher`, i.e. the class
-   * teacher) and whoever teaches each subject (`SectionSubject.teacherId`).
-   *
-   * UNION — not UNION ALL — so the class teacher who also teaches two subjects
-   * is one person, not three.
+   * DISTINCT teachers per section across `SectionTeacher` and `SectionSubject.teacherId`.
+   * UNION, not UNION ALL, so a class teacher who also teaches two subjects counts once.
    */
   private async distinctTeacherCounts(
     sectionIds: string[],
@@ -163,9 +156,8 @@ export class SectionsService extends BaseSchoolScopedService {
         subjects: {
           include: {
             subject: true,
-            // `user` too: the card links a teacher to their profile, and a
-            // subject teacher who is not the class teacher has no other row
-            // here to source that id from.
+            // `user` too: the card links a teacher to their profile, and a subject teacher
+            // who is not the class teacher has no other row here to source that id from.
             teacher: {
               include: { user: { select: { id: true, email: true } } },
             },
@@ -232,7 +224,6 @@ export class SectionsService extends BaseSchoolScopedService {
           `That class already has a section named "${dto.name ?? section.name}".`,
         ),
       );
-    // Invalidate the original and (if moved) the destination school.
     await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
     if (schoolId !== section.schoolId) {
       await this.invalidateSchoolCache(schoolId, 'sections', 'classes');

@@ -39,7 +39,6 @@ const paper = (
 const grade = (obtained: number, total: number, b = bands) =>
   gradeForMarks(obtained, total, b)?.label;
 
-/** One examination's outcome in the shape a term result consumes. */
 const examOf = (
   examId: string,
   subjects: SubjectMarkInput[],

@@ -8,9 +8,8 @@ import { addSecondSubject, seedClass } from './utils/class-fixture';
 import { Role } from '../src/common/types/role.type';
 
 /**
- * Exam papers are confidential. Every check here goes straight at the API: hiding a button
- * in the UI is not a control. Students, parents, other teachers, other schools and the
- * platform admin must all be refused, and no response or notification may reveal the file.
+ * Exam papers are confidential; every check hits the API directly, since hiding a UI button is
+ * not a control. All non-owners must be refused, and no response or notification may reveal the file.
  */
 describe('Exam paper security (e2e)', () => {
   let app: INestApplication;
@@ -217,7 +216,6 @@ describe('Exam paper security (e2e)', () => {
       .get(w.paperPath + childQuery)
       .set(bearer(w.tokens.parent))
       .expect(403);
-    // Neither can upload or delete one either.
     await upload(w.paperPath, w.tokens.student).expect(403);
     await api().delete(w.paperPath).set(bearer(w.tokens.parent)).expect(403);
   });

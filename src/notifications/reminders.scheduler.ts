@@ -14,9 +14,8 @@ import {
 import { formatMinutes } from '../exams/exam-mappers';
 
 /**
- * Daily "due tomorrow" reminders (Reminders category); windowed to tomorrow so each assignment/exam reminds once.
- * ponytail: no per-item dedupe table — a cron double-fire in the same day could
- * double-remind; add a `remindedAt` marker if that ever matters.
+ * Daily "due tomorrow" reminders, windowed to tomorrow so each assignment/exam reminds once.
+ * ponytail: no dedupe table, so a same-day cron double-fire could double-remind; add `remindedAt` if needed.
  */
 @Injectable()
 export class RemindersScheduler {

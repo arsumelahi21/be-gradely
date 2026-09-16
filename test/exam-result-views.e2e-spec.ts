@@ -8,9 +8,8 @@ import { addSecondSubject, seedClass } from './utils/class-fixture';
 import { Role } from '../src/common/types/role.type';
 
 /**
- * The three result views: a subject register, the class matrix and a student's result card.
- * Access is re-checked on every call — a teacher reaches their own published subject and
- * nothing else, and no school ever sees another's results.
+ * Subject register, class matrix and student result card. Access is re-checked per call: a teacher
+ * reaches only their own published subject, and no school ever sees another's results.
  */
 describe('Result views (e2e)', () => {
   let app: INestApplication;

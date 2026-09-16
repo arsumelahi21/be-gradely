@@ -8,9 +8,8 @@ import { seedExamination } from './utils/exam-fixture';
 import { Role } from '../src/common/types/role.type';
 
 /**
- * One result, one answer. The same student's marks must come back as the same totals,
- * percentage, grade and verdict from every surface that shows them — and those numbers must be
- * the worked arithmetic: marks summed against each paper's own total, never averaged percentages.
+ * One result, one answer: every surface must show a student the same totals, %, grade and verdict,
+ * computed as marks summed against each paper's own total, never averaged percentages.
  */
 describe('Result mathematics across every surface (e2e)', () => {
   let app: INestApplication;

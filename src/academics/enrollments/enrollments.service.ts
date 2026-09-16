@@ -19,15 +19,8 @@ import { FindPlacementsQueryDto } from './dto/find-placements-query.dto';
 
 type UpdateEnrollmentInput = UpdateEnrollmentDto & Partial<CreateEnrollmentDto>;
 
-/**
- * A defensive ceiling, not a page size.
- *
- * Paginating this would be wrong: the caller uses it as a SET — "is this
- * student already placed?" — so a student on page 2 would simply not be
- * excluded from the picker. It is bounded by the domain instead (one row per
- * enrolled student per year), and this is the guard for a school that is
- * somehow past that.
- */
+// A defensive ceiling, not a page size: callers use the result as a SET ("already
+// placed?"), so paginating would let a page-2 student back into the picker.
 const PLACEMENT_LIMIT = 20000;
 
 export interface StudentPlacement {
@@ -40,7 +33,6 @@ export interface StudentPlacement {
   label: string;
 }
 
-/** "Grade 6 A" — what an admin calls the placement, from its two rows. */
 function sectionLabel(section: {
   name: string;
   classGrade?: { name: string } | null;
@@ -54,15 +46,8 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     super(prisma, cache);
   }
 
-  /**
-   * Section cards show a student count from the cached sections list.
-   *
-   * `users`/`students` too: those lists can be FILTERED by enrollment
-   * (`classGradeId`, `sectionId`, `unassignedAcademicYearId`), so placing or
-   * removing a student changes who they return. Without this, the "Available
-   * students" picker kept offering someone for the whole 5-minute TTL after
-   * they were enrolled — and kept hiding them after they were removed.
-   */
+  // `users`/`students` too: those lists filter by enrollment, so without this the
+  // "Available students" picker served stale placements for the whole cache TTL.
   private invalidate(schoolId: string) {
     return this.invalidateSchoolCache(
       schoolId,
@@ -73,17 +58,8 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     );
   }
 
-  /**
-   * A student sits in ONE class per academic year.
-   *
-   * The partial unique index `Enrollment_one_active_per_year` (migration
-   * 20260916120000) holds the line — Prisma cannot express one, so it lives in
-   * raw SQL. This read stays because its 409 names the class the student already
-   * sits in, which the index's P2002 cannot.
-   *
-   * Only ACTIVE rows count: a COMPLETED or INACTIVE placement is history and
-   * must not block the student's next class.
-   */
+  // One ACTIVE class per year is enforced by the raw-SQL partial index `Enrollment_one_active_per_year`;
+  // this read stays so the 409 can name the student's current class, which its P2002 cannot.
   private async findActivePlacements(
     studentIds: string[],
     academicYearId: string,
@@ -117,13 +93,8 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     return placements;
   }
 
-  /**
-   * Who already holds a class this year — the minimum the enrol picker needs in
-   * order to leave a student out of the "available" pool.
-   *
-   * Deliberately not findAll(): that is unbounded and carries the full nested
-   * include per row, where the picker wants two ids and a label.
-   */
+  // Deliberately not findAll(): that is unbounded with a full nested include, where the
+  // enrol picker only needs two ids and a label to hide already-placed students.
   async listPlacements(
     query: FindPlacementsQueryDto,
     actor: Actor,
@@ -235,11 +206,8 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       );
     }
 
-    // One class per student per year. A student already sitting in ANOTHER
-    // class is dropped from the batch rather than failing it: the picker
-    // filters them out, so anything arriving here is a stale tab or a direct
-    // API call, and one of those must not cost the operator the other 29.
-    // Already in THIS section stays the benign case skipDuplicates covered.
+    // A student ACTIVE in ANOTHER class is dropped (reported as `blocked`), not fatal: it can
+    // only be a stale tab or direct API call, and must not cost the rest of the batch.
     const status = dto.status ?? EnrollmentStatus.ACTIVE;
     const placements =
       status === EnrollmentStatus.ACTIVE
@@ -300,19 +268,16 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       : 0;
 
     await this.invalidate(section.schoolId);
-    // The three are disjoint and sum to studentIds.length: `skipped` counts only the
-    // ones nothing happened to (already ACTIVE in THIS section), so it no longer
-    // double-reports the students `blocked` already names.
+    // The three are disjoint and sum to studentIds.length: `skipped` is only students
+    // already ACTIVE in THIS section, so it never double-counts `blocked`.
     return { created, skipped: eligible.length - created, blocked };
   }
 
   async findAll(actor: Actor, query: FindEnrollmentsQueryDto) {
     const where: any = {};
 
-    // Current roster by default — every caller asks "who is in this section",
-    // and promotion CLOSES the old placement (status COMPLETED) rather than
-    // deleting it, so an unfiltered list kept showing promoted students in the
-    // class they had already left. Pass `status` explicitly to read history.
+    // ACTIVE by default: promotion marks the old placement COMPLETED rather than deleting it,
+    // so unfiltered lists showed students in classes they had left. Pass `status` for history.
     where.status = query.status ?? EnrollmentStatus.ACTIVE;
 
     if (actor.role === Role.STUDENT) {
@@ -327,7 +292,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         throw new ForbiddenException('Student profile not found');
       }
 
-      // Students can only view their own enrollments
       where.studentId = student.id;
       where.student = { schoolId: actor.schoolId };
 
@@ -594,7 +558,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         throw new ForbiddenException('You are not assigned to this section');
       }
 
-      // Also enforce school scope
       if (enrollment.student.schoolId !== actor.schoolId) {
         throw new ForbiddenException('Cross-school access denied');
       }

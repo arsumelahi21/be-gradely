@@ -61,13 +61,8 @@ export interface NotificationCreateEvent {
 }
 
 /**
- * Batched variant: many DIFFERENT notifications published in one go.
- *
- * `NOTIFICATION_CREATE` carries one title/body for many recipients, which can't
- * express "each student hears their own amount". Emitting it once per student
- * would work but costs a settings query + a write per student — the N+1 this
- * exists to avoid. The listener resolves preferences for the union of all
- * recipients ONCE and writes every row in one chunked createMany.
+ * Batched variant for per-recipient title/body (e.g. each student's own amount). Avoids the N+1 of one
+ * NOTIFICATION_CREATE per student: preferences resolve once and every row goes in one chunked createMany.
  */
 export const NOTIFICATION_CREATE_BATCH = 'notification.create.batch';
 

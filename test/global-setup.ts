@@ -6,8 +6,7 @@ import {
   workerDatabaseUrl,
 } from './utils/worker-db';
 
-// Runs once before the e2e suite: creates and migrates one database per Jest worker, so
-// every worker starts from a migrated schema that no other worker truncates mid-test.
+// One migrated database per Jest worker, so no worker truncates another's schema mid-test.
 // globalSetup doesn't see `setupFiles`, so the URLs are resolved through the shared helper.
 
 export default async function globalSetup() {

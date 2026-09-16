@@ -1,14 +1,5 @@
-// Pure result arithmetic (no Prisma, no I/O, no clock) — the ONLY place marks become
-// percentages, grades and pass/fail; every sheet, card, register and dashboard reads from here.
-//
-// - A paper's denominator is its own total marks, never an assumed 100.
-// - Aggregates add MARKS, not percentages: overall % = Σobtained / Σtotal. The data model has
-//   no exam or subject weights, so nothing is weighted or averaged.
-// - Grades and pass/fail are decided on the exact fraction; the 2dp percentage is display only.
-// - Absent scores 0 and fails that subject; unentered marks leave a result incomplete (no %,
-//   grade or verdict) — never a silent zero.
-// - A subject passes on its passing marks when set, else on its grade band; the overall result
-//   passes only when every subject does.
+// Pure (no Prisma/I/O/clock): the ONLY place marks become %, grades and pass/fail. Aggregates add
+// MARKS (Σobtained / Σtotal), grade on the exact fraction, and unentered marks are never a silent zero.
 
 export interface GradeBandInput {
   label: string;
@@ -72,7 +63,6 @@ export function validateBands(bands: GradeBandInput[]): string[] {
   return problems;
 }
 
-/** The pass mark a scheme implies: the lowest minimum among its passing bands. */
 export function passMarkPercent(bands: GradeBandInput[]): number | null {
   const passing = bands.filter((b) => b.isPassing).map((b) => b.minPercent);
   return passing.length ? Math.min(...passing) : null;
@@ -256,7 +246,6 @@ export function studentOutcome(
   };
 }
 
-/** One examination as it enters a term result: its verdict, totals and subject lines. */
 export interface TermExamInput {
   examId: string;
   complete: boolean;
@@ -277,7 +266,6 @@ export interface TermExamInput {
 export interface TermSubjectOutcome {
   key: string;
   label: string;
-  /** Papers of this subject in the term. */
   papers: number;
   /** Σ marks across those papers (absent counts 0); null while none is marked. */
   obtained: number | null;
@@ -306,9 +294,8 @@ export interface TermOutcome {
 }
 
 /**
- * A term's examinations combined by adding marks (Σobtained / Σtotal), the same rule one
- * examination uses across its subjects. Complete only when every examination is complete;
- * passes only when every examination passes and the term % is in a passing band.
+ * A term's exams combined by adding marks (Σobtained / Σtotal), the same rule an exam uses across
+ * subjects. Complete only when every exam is; passes only when every exam passes and the term % is a pass.
  */
 export function termOutcome(
   exams: TermExamInput[],

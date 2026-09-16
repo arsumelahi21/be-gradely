@@ -9,9 +9,8 @@ import { seedExamination } from './utils/exam-fixture';
 import { Role } from '../src/common/types/role.type';
 
 /**
- * The term is the spine of the principal's workflow: chosen explicitly when an examination is
- * created and published, and named again before any result is extracted. Nothing is inferred —
- * not the current term, not the latest, not the only one.
+ * The term is chosen explicitly at create/publish and named again before any result is
+ * extracted. Nothing is inferred — not the current term, not the latest, not the only one.
  */
 describe('Examination terms (e2e)', () => {
   let app: INestApplication;

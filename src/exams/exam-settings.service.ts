@@ -96,8 +96,6 @@ export class ExamSettingsService {
     return bands.length ? bands : DEFAULT_GRADE_BANDS;
   }
 
-  // ---- Terms ----
-
   async listTerms(actor: Actor, academicYearId?: string) {
     const schoolId = this.access.schoolOf(actor);
     return this.prisma.academicTerm.findMany({
@@ -205,8 +203,6 @@ export class ExamSettingsService {
       );
     }
   }
-
-  // ---- Grading schemes ----
 
   async listSchemes(actor: Actor) {
     const schoolId = this.access.schoolOf(actor);

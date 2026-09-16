@@ -9,15 +9,8 @@ import { Prisma } from '@prisma/client';
 import type { Response } from 'express';
 
 /**
- * Turns a Prisma error into a clean HTTP response.
- *
- * Nothing here is a workaround for referential integrity — the schema decides
- * what a delete cascades (see `scripts/fk-audit.mjs`). This exists so a genuine
- * database failure reaches the client as a structured message instead of a raw
- * driver dump, which previously surfaced as a bare 500 carrying SQL internals.
- *
- * Anything unrecognised is logged in full server-side and reported as a generic
- * 500: the details belong in the log, not in the browser.
+ * Gives DB failures a structured message instead of a raw driver dump (was a bare 500 leaking SQL).
+ * Not a referential-integrity workaround; unrecognised errors are logged and returned as a generic 500.
  */
 @Catch(
   Prisma.PrismaClientKnownRequestError,
@@ -53,11 +46,8 @@ export class PrismaExceptionFilter implements ExceptionFilter {
   }
 
   /**
-   * The database is unreachable, unauthenticated or out of connections —
-   * nothing to do with the request itself. These MUST NOT be reported as a
-   * failed write: they surface on reads too (a login is the obvious one), and
-   * "something went wrong while saving" on a sign-in screen sends whoever sees
-   * it looking in entirely the wrong place.
+   * DB unreachable/unauthenticated/out of connections — not the request's fault. Never report
+   * these as a failed write: they surface on reads too (e.g. login), which would mislead.
    */
   private static readonly UNAVAILABLE_CODES = new Set([
     'P1000', // authentication failed against the database server
@@ -93,9 +83,8 @@ export class PrismaExceptionFilter implements ExceptionFilter {
             status: HttpStatus.NOT_FOUND,
             message: 'That record no longer exists.',
           };
-        // A remaining referential constraint — Challan still Restricts its
-        // student and academic year, so this IS reachable. Paths that can
-        // predict it (see UsersService.remove) say something more useful first.
+        // Reachable: Challan still Restricts its student and academic year. Paths that
+        // can predict it (see UsersService.remove) say something more useful first.
         case 'P2003':
           return {
             status: HttpStatus.CONFLICT,

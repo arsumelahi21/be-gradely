@@ -7,9 +7,8 @@ import { seedClass } from './utils/class-fixture';
 import { Role } from '../src/common/types/role.type';
 
 /**
- * TEST 15. Promotion closes a placement (COMPLETED) and opens a new one. Results
- * finalized in the old session must stay under that session, keep their values,
- * and stay visible to the student and parent.
+ * TEST 15. Promotion closes a placement (COMPLETED) and opens a new one; results finalized in the
+ * old session must stay under that session, keep their values, and stay visible to student and parent.
  */
 describe('Examination history across promotion (e2e)', () => {
   let app: INestApplication;

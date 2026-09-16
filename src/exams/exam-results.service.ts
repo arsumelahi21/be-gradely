@@ -234,8 +234,6 @@ export class ExamResultsService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  // ---- Marks entry ----
-
   async marksRoster(examinationId: string, subjectId: string, actor: Actor) {
     const core = await this.access.loadCore(examinationId);
     const teacherId = await this.access.assertStaffCanView(actor, core);
@@ -395,8 +393,6 @@ export class ExamResultsService {
     });
     return this.marksRoster(examinationId, subjectId, actor);
   }
-
-  // ---- Result sheet ----
 
   async results(examinationId: string, actor: Actor) {
     const core = await this.access.loadCore(examinationId);
@@ -823,8 +819,6 @@ export class ExamResultsService {
       })),
     };
   }
-
-  // ---- Report cards ----
 
   async reportCards(examinationId: string, actor: Actor, studentId?: string) {
     const core = await this.access.loadCore(examinationId);
@@ -1480,9 +1474,6 @@ export class ExamResultsService {
     return rows;
   }
 
-  // ---- Internals ----
-
-  /** School identity for printed result documents. */
   private schoolHeader(schoolId: string): Promise<SchoolHeaderRow> {
     return this.prisma.school.findUniqueOrThrow({
       where: { id: schoolId },
