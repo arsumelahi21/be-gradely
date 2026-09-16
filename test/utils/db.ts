@@ -58,19 +58,26 @@ if (typeof afterAll === 'function') {
   afterAll(disconnectCache);
 }
 
+// The schema is fixed for the life of a run, so this catalog query and the string it
+// builds were repeated identically before every one of the 559 tests.
+let truncateSql: string | null = null;
+
 /**
  * Truncate every application table (keeping the migration history) so each
  * test starts from a clean slate. RESTART IDENTITY + CASCADE handles FKs.
  */
 export async function resetDb(): Promise<void> {
   await resetCache();
-  const rows = await prisma.$queryRawUnsafe<Array<{ tablename: string }>>(
-    `SELECT tablename FROM pg_tables
-      WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`,
-  );
-  if (rows.length === 0) return;
-  const list = rows.map((r) => `"public"."${r.tablename}"`).join(', ');
-  const sql = `TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`;
+  if (!truncateSql) {
+    const rows = await prisma.$queryRawUnsafe<Array<{ tablename: string }>>(
+      `SELECT tablename FROM pg_tables
+        WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`,
+    );
+    if (rows.length === 0) return;
+    const list = rows.map((r) => `"public"."${r.tablename}"`).join(', ');
+    truncateSql = `TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`;
+  }
+  const sql = truncateSql;
 
   // Async listener writes can outlive the request and briefly hold row locks, so a between-test
   // TRUNCATE can hit a transient deadlock (Postgres 40P01) — retry resolves it.
