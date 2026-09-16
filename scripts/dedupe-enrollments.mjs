@@ -22,9 +22,12 @@ const prisma = new PrismaClient();
 const apply = process.argv.includes('--apply');
 const keepOldest = process.argv.includes('--keep=oldest');
 
+// `id` breaks createdAt ties — one transaction writes one createdAt (Postgres now()).
+const dir = keepOldest ? 'asc' : 'desc';
+
 const rows = await prisma.enrollment.findMany({
   where: { status: 'ACTIVE' },
-  orderBy: { createdAt: keepOldest ? 'asc' : 'desc' },
+  orderBy: [{ createdAt: dir }, { id: dir }],
   select: {
     id: true,
     studentId: true,

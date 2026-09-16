@@ -227,6 +227,34 @@ describe('One class per student (e2e)', () => {
     expect(res.status).toBe(201);
   });
 
+  it('re-opens a closed placement on batch re-enrol instead of skipping it', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const token = await adminFor(cls.school.id);
+    const student = cls.students[0].profile;
+    await prisma.enrollment.updateMany({
+      where: { studentId: student.id },
+      data: { status: 'COMPLETED', endDate: new Date() },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/enrollments/batch')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        sectionId: cls.section.id,
+        academicYearId: cls.academicYear.id,
+        studentIds: [student.id],
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ created: 1, skipped: 0 });
+
+    const rows = await prisma.enrollment.findMany({
+      where: { studentId: student.id },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'ACTIVE', endDate: null });
+  });
+
   it('drops an already-placed student from a batch without failing the rest', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);

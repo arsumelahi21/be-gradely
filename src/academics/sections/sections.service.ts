@@ -87,7 +87,12 @@ export class SectionsService extends BaseSchoolScopedService {
           ],
           include: {
             _count: {
-              select: { subjects: true, teachers: true, enrollments: true },
+              select: {
+                subjects: true,
+                teachers: true,
+                // Promotion leaves COMPLETED rows behind, which counted promoted students as enrolled.
+                enrollments: { where: { status: 'ACTIVE' } },
+              },
             },
           },
         });
