@@ -1352,6 +1352,9 @@ export class ChallansService extends BaseSchoolScopedService {
         sectionId: query.sectionId,
         academicYearId: query.academicYearId,
         status: 'ACTIVE',
+        // Binds the client-supplied sectionId to the caller's school: studentsWithoutPlan
+        // is derived from this list, and unscoped it reported a foreign roster's size.
+        section: { schoolId },
       },
       select: { studentId: true },
     });
