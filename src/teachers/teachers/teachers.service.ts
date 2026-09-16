@@ -223,10 +223,26 @@ export class TeachersService extends BaseSchoolScopedService {
     const enrollments = await this.prisma.enrollment.findMany({
       where: {
         sectionId: { in: sectionIds },
+        status: 'ACTIVE',
       },
       orderBy: { createdAt: 'desc' },
       include: {
-        student: true,
+        // A teacher needs the roster, not the file: the profile also carries national id,
+        // guardian phone, address, blood group, fee amount and the photo key.
+        student: {
+          select: {
+            id: true,
+            userId: true,
+            schoolId: true,
+            fullName: true,
+            rollNo: true,
+            admissionNo: true,
+            email: true,
+            gender: true,
+            isActive: true,
+            photoMimeType: true,
+          },
+        },
         section: {
           include: {
             classGrade: true,

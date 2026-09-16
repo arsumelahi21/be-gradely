@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { CacheService } from '../../common/services/cache.service';
 import { uniqueConflict } from '../../common/utils/prisma-errors';
+import { TEACHER_PUBLIC } from '../../common/utils/teacher-select';
 import { BaseSchoolScopedService } from '../../common/services/base-school.service';
 import { CreateSectionSubjectDto } from './dto/create-section-subject.dto';
 import { UpdateSectionSubjectDto } from './dto/update-section-subject.dto';
@@ -226,10 +227,16 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       }
     }
 
+    // This list is open to students and parents, and `teacher: true` is the whole
+    // profile — phone, address, designation. Staff keep it; they run the admin screens.
+    const teacherShape =
+      actor.role === Role.STUDENT || actor.role === Role.PARENT
+        ? TEACHER_PUBLIC
+        : true;
     return this.prisma.sectionSubject.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      include: this.defaultInclude(),
+      include: { ...this.defaultInclude(), teacher: teacherShape },
     });
   }
 

@@ -76,15 +76,10 @@ export class EnrollmentsService extends BaseSchoolScopedService {
   /**
    * A student sits in ONE class per academic year.
    *
-   * The DB can't hold this line: its unique key is
-   * [studentId, sectionId, academicYearId], which only stops the SAME section
-   * twice — nothing there prevents Grade 6 A and Grade 10 B in the same year,
-   * and 20 students had drifted into exactly that. A partial unique index
-   * (ACTIVE rows only) is what this wants and Prisma cannot express one, so the
-   * rule lives here. Note the consequence: two SIMULTANEOUS enrols of the same
-   * student can both pass this read under READ COMMITTED. Admins enrol
-   * interactively, so that window is theoretical — but this is a check, not a
-   * constraint.
+   * The partial unique index `Enrollment_one_active_per_year` (migration
+   * 20260916120000) holds the line — Prisma cannot express one, so it lives in
+   * raw SQL. This read stays because its 409 names the class the student already
+   * sits in, which the index's P2002 cannot.
    *
    * Only ACTIVE rows count: a COMPLETED or INACTIVE placement is history and
    * must not block the student's next class.
@@ -104,12 +99,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         status: EnrollmentStatus.ACTIVE,
         ...(excludeEnrollmentId && { id: { not: excludeEnrollmentId } }),
       },
-      // Newest placement wins for a student who already holds several — the
-      // same rule the fee roster uses, so both name the same class. `id` breaks
-      // the tie: rows written in one transaction share a `createdAt` (Postgres
-      // now() is transaction-start), and without it "newest" falls back to
-      // whatever order the DB happens to return.
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: {
         studentId: true,
         sectionId: true,
@@ -120,7 +109,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     });
 
     for (const row of rows) {
-      if (placements.has(row.studentId)) continue;
       placements.set(row.studentId, {
         sectionId: row.sectionId,
         label: sectionLabel(row.section),
@@ -149,10 +137,6 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         status: EnrollmentStatus.ACTIVE,
         student: { schoolId },
       },
-      // Same tiebreak as findActivePlacements: both have to name the same class
-      // for a student who holds several, or the picker and the write path
-      // disagree about where they already are.
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: PLACEMENT_LIMIT + 1,
       select: {
         studentId: true,
@@ -172,21 +156,14 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       );
     }
 
-    // ONE row per student. A legacy double placement would otherwise send the
-    // same student down twice and the caller's lookup would keep DB order.
-    const seen = new Map<string, StudentPlacement>();
-    for (const row of rows) {
-      if (seen.has(row.studentId)) continue;
-      seen.set(row.studentId, {
-        studentId: row.studentId,
-        sectionId: row.sectionId,
-        sectionName: row.section.name,
-        classGradeId: row.section.classGrade?.id ?? null,
-        className: row.section.classGrade?.name ?? null,
-        label: sectionLabel(row.section),
-      });
-    }
-    return [...seen.values()];
+    return rows.map((row) => ({
+      studentId: row.studentId,
+      sectionId: row.sectionId,
+      sectionName: row.section.name,
+      classGradeId: row.section.classGrade?.id ?? null,
+      className: row.section.classGrade?.name ?? null,
+      label: sectionLabel(row.section),
+    }));
   }
 
   async create(dto: CreateEnrollmentDto, actor: Actor) {
@@ -289,25 +266,44 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       eligible.push(studentId);
     }
 
-    // `skipDuplicates` still covers the same-section re-add (unique
-    // [studentId, sectionId, academicYearId]) instead of failing the batch.
-    const { count } = eligible.length
-      ? await this.prisma.enrollment.createMany({
-          data: eligible.map((studentId) => ({
-            studentId,
-            sectionId: section.id,
-            academicYearId: academicYear.id,
-            status,
-          })),
-          skipDuplicates: true,
+    // A student who sat here before still has the row, so `skipDuplicates` alone would
+    // skip them and re-open nothing. One transaction, so a batch can't half-apply.
+    const created = eligible.length
+      ? await this.prisma.$transaction(async (tx) => {
+          const reopened =
+            status === EnrollmentStatus.ACTIVE
+              ? await tx.enrollment.updateMany({
+                  where: {
+                    sectionId: section.id,
+                    academicYearId: academicYear.id,
+                    studentId: { in: eligible },
+                    status: { not: EnrollmentStatus.ACTIVE },
+                  },
+                  data: {
+                    status: EnrollmentStatus.ACTIVE,
+                    startDate: new Date(),
+                    endDate: null,
+                  },
+                })
+              : { count: 0 };
+          const inserted = await tx.enrollment.createMany({
+            data: eligible.map((studentId) => ({
+              studentId,
+              sectionId: section.id,
+              academicYearId: academicYear.id,
+              status,
+            })),
+            skipDuplicates: true,
+          });
+          return reopened.count + inserted.count;
         })
-      : { count: 0 };
+      : 0;
 
     await this.invalidate(section.schoolId);
-    // The three are disjoint and sum to studentIds.length: `skipped` counts
-    // only the ones the DB itself skipped (already in THIS section), so it no
-    // longer double-reports the students `blocked` already names.
-    return { created: count, skipped: eligible.length - count, blocked };
+    // The three are disjoint and sum to studentIds.length: `skipped` counts only the
+    // ones nothing happened to (already ACTIVE in THIS section), so it no longer
+    // double-reports the students `blocked` already names.
+    return { created, skipped: eligible.length - created, blocked };
   }
 
   async findAll(actor: Actor, query: FindEnrollmentsQueryDto) {
@@ -658,7 +654,22 @@ export class EnrollmentsService extends BaseSchoolScopedService {
 
   private defaultInclude() {
     return {
-      student: true,
+      // Enrolment rows are read by teachers too, so this carries only what a roster
+      // renders — never the national id, guardian phone or address on the profile.
+      student: {
+        select: {
+          id: true,
+          userId: true,
+          schoolId: true,
+          fullName: true,
+          rollNo: true,
+          admissionNo: true,
+          email: true,
+          gender: true,
+          isActive: true,
+          photoMimeType: true,
+        },
+      },
       section: {
         include: {
           classGrade: true,

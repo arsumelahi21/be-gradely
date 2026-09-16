@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createTestApp } from './utils/app';
 import { prisma, resetDb } from './utils/db';
 import { createTestSchool, createTestUser, tokenFor } from './utils/factories';
+import { seedClass } from './utils/class-fixture';
 import { Role } from '../src/common/types/role.type';
 
 let seq = 0;
@@ -76,6 +77,29 @@ describe('Section subjects & teachers (e2e)', () => {
       teacher,
     };
   }
+
+  it('hides teacher PII from a student listing section subjects', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    await prisma.teacherProfile.update({
+      where: { id: cls.teacherProfile.id },
+      data: {
+        phone: '0300-1234567',
+        designation: 'Head of Science',
+        addressLine1: '12 Private Road',
+      },
+    });
+    const studentToken = await tokenFor(app, cls.students[0].user);
+
+    const res = await request(app.getHttpServer())
+      .get('/api/section-subjects')
+      .set('Authorization', `Bearer ${studentToken}`)
+      .expect(200);
+
+    expect(res.body.length).toBeGreaterThan(0);
+    expect(JSON.stringify(res.body)).not.toMatch(
+      /0300-1234567|Head of Science|12 Private Road/,
+    );
+  });
 
   /** The exact payload the section cards render from. */
   async function sectionCard(

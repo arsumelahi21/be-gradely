@@ -62,6 +62,41 @@ describe('Assignments / re-grading (e2e)', () => {
       .send(body);
   }
 
+  it('does not name another section in the not-enrolled error', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const otherSection = await prisma.section.create({
+      data: {
+        schoolId: cls.school.id,
+        classGradeId: cls.classGrade.id,
+        name: 'Section-Zulu',
+      },
+    });
+    const otherSectionSubject = await prisma.sectionSubject.create({
+      data: {
+        sectionId: otherSection.id,
+        subjectId: cls.subject.id,
+        teacherId: cls.teacherProfile.id,
+      },
+    });
+    const assignment = await prisma.assignment.create({
+      data: {
+        schoolId: cls.school.id,
+        academicYearId: cls.academicYear.id,
+        sectionSubjectId: otherSectionSubject.id,
+        createdByTeacherId: cls.teacherProfile.id,
+        title: 'Not Yours',
+        status: 'PUBLISHED',
+      },
+    });
+    const studentToken = await tokenFor(app, cls.students[0].user);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/assignments/${assignment.id}`)
+      .set('Authorization', `Bearer ${studentToken}`);
+    expect(res.status).toBe(403);
+    expect(JSON.stringify(res.body)).not.toContain('Section-Zulu');
+  });
+
   it('grades a SUBMITTED submission then updates the grade on the MARKED one', async () => {
     const { token, submission } = await seedSubmittedAssignment();
 

@@ -3455,6 +3455,31 @@ describe('Fees — challan generation (e2e)', () => {
         expect(res.body.rows[1]).toMatchObject({ seq: 2, eligible: 2 });
       });
 
+      it('does not report another school’s roster to a foreign admin', async () => {
+        const cls = await planned(2);
+        const otherSchool = await createTestSchool();
+        const otherAdmin = await createTestUser({
+          role: Role.SCHOOL_ADMIN,
+          schoolId: otherSchool.id,
+        });
+        const otherToken = await tokenFor(app, otherAdmin);
+
+        const res = await http()
+          .get('/api/fees/challans/installment-options')
+          .query({
+            academicYearId: cls.academicYear.id,
+            sectionId: cls.section.id,
+          })
+          .set('Authorization', `Bearer ${otherToken}`)
+          .expect(200);
+
+        // studentsWithoutPlan is the leak: plans are already scoped to the caller's school,
+        // so only this count (derived from the enrolment query) exposed the foreign roster.
+        expect(res.body.studentsWithoutPlan).toBe(0);
+        expect(res.body.studentsOnPlan).toBe(0);
+        expect(res.body.rows).toEqual([]);
+      });
+
       it('lists a student’s rows with the billed ones flagged', async () => {
         const cls = await planned();
         await genInstallment(cls, 1).expect(201);

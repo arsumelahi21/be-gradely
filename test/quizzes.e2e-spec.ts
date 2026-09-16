@@ -60,6 +60,34 @@ describe('Quizzes (e2e)', () => {
     return { teacherToken, quizId, questions };
   }
 
+  it('does not let a teacher read an untaught section’s quizzes via ?sectionId=', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const teacherToken = await tokenFor(app, cls.teacherUser);
+    const otherSection = await prisma.section.create({
+      data: {
+        schoolId: cls.school.id,
+        classGradeId: cls.classGrade.id,
+        name: 'Not-Mine',
+      },
+    });
+    await prisma.quiz.create({
+      data: {
+        schoolId: cls.school.id,
+        sectionId: otherSection.id,
+        subjectId: cls.subject.id,
+        title: 'Other-Section Quiz',
+        createdByUserId: cls.teacherUser.id,
+        isPublished: true,
+      },
+    });
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/quizzes?sectionId=${otherSection.id}`)
+      .set('Authorization', `Bearer ${teacherToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.items ?? res.body).toEqual([]);
+  });
+
   it('lets a teacher create/publish but forbids a student', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const teacherToken = await tokenFor(app, cls.teacherUser);

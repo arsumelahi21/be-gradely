@@ -8,6 +8,14 @@ import { Role } from '../../src/common/types/role.type';
 let seq = 0;
 const uniq = () => `${Date.now()}${seq++}`;
 
+const DEFAULT_PASSWORD = 'Password@123';
+/**
+ * Hashed once per run rather than once per user. bcrypt at cost 10 costs ~60ms and a full
+ * suite creates roughly a thousand fixture users, nearly all with this one password — that
+ * was about a minute of pure CPU. Still a real bcrypt hash, so login paths are unchanged.
+ */
+const DEFAULT_PASSWORD_HASH = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
+
 export async function createTestSchool(
   overrides: Partial<{ name: string; code: string; isActive: boolean }> = {},
 ) {
@@ -39,12 +47,15 @@ export async function createTestUser(input: CreateTestUserInput) {
     role,
     schoolId = null,
     email = `user-${uniq()}@test.local`,
-    password = 'Password@123',
+    password = DEFAULT_PASSWORD,
     fullName = 'Test User',
     isActive = true,
   } = input;
 
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash =
+    password === DEFAULT_PASSWORD
+      ? DEFAULT_PASSWORD_HASH
+      : await bcrypt.hash(password, 10);
   const isAdmin = role === Role.SUPER_ADMIN || role === Role.SCHOOL_ADMIN;
 
   const user = await prisma.user.create({
