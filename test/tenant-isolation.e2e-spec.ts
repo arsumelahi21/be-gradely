@@ -13,6 +13,7 @@ import { Role } from '../src/common/types/role.type';
 describe('Cross-tenant isolation (e2e)', () => {
   let app: INestApplication;
   let bAdminToken: string;
+  let bStudentToken: string;
   let ids: Record<string, string>;
   let schoolBStudentId: string;
 
@@ -103,6 +104,7 @@ describe('Cross-tenant isolation (e2e)', () => {
       schoolId: b.school.id,
     });
     bAdminToken = await tokenFor(app, bAdmin);
+    bStudentToken = await tokenFor(app, b.students[0].user);
   });
 
   afterAll(async () => {
@@ -188,6 +190,14 @@ describe('Cross-tenant isolation (e2e)', () => {
     expect(JSON.stringify(res.body)).not.toMatch(
       /passwordHash|refreshTokenHash|resetToken/,
     );
+  });
+
+  it('a School B student cannot read School A exams by passing its sectionSubjectId', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/api/exams?sectionSubjectId=${ids.sectionSubject}`)
+      .set('Authorization', `Bearer ${bStudentToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
   });
 
   it("audit log is tenant-pinned: School B admin never sees School A's entries", async () => {

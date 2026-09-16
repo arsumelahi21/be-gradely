@@ -10,6 +10,7 @@ import { Role } from '../common/types/role.type';
 import { resolvePagination } from '../common/dto/pagination-query.dto';
 import { compressImage } from '../common/upload/image-compress';
 import { assertPdfOnly } from '../common/upload/attachment-rules';
+import { TEACHER_PUBLIC } from '../common/utils/teacher-select';
 import { CreateAssignmentDto } from './dto/create-assignment.dto';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto';
 import { RequestUploadDto } from './dto/request-upload.dto';
@@ -764,7 +765,7 @@ export class AssignmentsService {
                 },
               },
               academicYear: true,
-              createdByTeacher: true,
+              createdByTeacher: TEACHER_PUBLIC,
             },
           },
           student: true,
@@ -790,7 +791,7 @@ export class AssignmentsService {
                 },
               },
               academicYear: true,
-              createdByTeacher: true,
+              createdByTeacher: TEACHER_PUBLIC,
             },
           },
           student: true,
@@ -850,7 +851,7 @@ export class AssignmentsService {
             },
           },
           academicYear: true,
-          createdByTeacher: true,
+          createdByTeacher: TEACHER_PUBLIC,
         },
       });
 
@@ -871,7 +872,7 @@ export class AssignmentsService {
                 },
               },
               academicYear: true,
-              createdByTeacher: true,
+              createdByTeacher: TEACHER_PUBLIC,
             },
           },
           student: true,
@@ -973,7 +974,7 @@ export class AssignmentsService {
               },
             },
             academicYear: true,
-            createdByTeacher: true,
+            createdByTeacher: TEACHER_PUBLIC,
           },
         },
         student: true,
@@ -1102,7 +1103,7 @@ export class AssignmentsService {
               },
             },
             academicYear: true,
-            createdByTeacher: true,
+            createdByTeacher: TEACHER_PUBLIC,
           },
         },
         student: true,
@@ -1171,7 +1172,7 @@ export class AssignmentsService {
               },
             },
             academicYear: true,
-            createdByTeacher: true,
+            createdByTeacher: TEACHER_PUBLIC,
           },
         },
         student: true,
@@ -1270,11 +1271,7 @@ export class AssignmentsService {
       } as any,
     });
     if (!enrolled) {
-      throw new ForbiddenException(
-        `Student not enrolled in section ${assignment.sectionSubject.section?.name || assignment.sectionSubject.sectionId} ` +
-          `for academic year ${assignment.academicYear?.name || assignment.academicYearId}. ` +
-          `Please ensure the student is enrolled in the correct section and academic year with ACTIVE status.`,
-      );
+      throw new ForbiddenException('Student not enrolled for this assignment');
     }
 
     const submission = await (
@@ -1351,11 +1348,11 @@ export class AssignmentsService {
         include: {
           section: { include: { classGrade: true } },
           subject: true,
-          teacher: true,
+          teacher: TEACHER_PUBLIC,
         },
       },
       academicYear: true,
-      createdByTeacher: true,
+      createdByTeacher: TEACHER_PUBLIC,
       attachments: {
         where: { status: AssignmentAttachmentStatus.READY },
         orderBy: { createdAt: Prisma.SortOrder.asc },
@@ -1592,9 +1589,7 @@ export class AssignmentsService {
       });
       if (!enrolled) {
         throw new ForbiddenException(
-          `Student not enrolled in section ${assignment.sectionSubject.section?.name || assignment.sectionSubject.sectionId} ` +
-            `for academic year ${assignment.academicYear?.name || assignment.academicYearId}. ` +
-            `Please ensure you are enrolled in the correct section and academic year.`,
+          'Student not enrolled for this assignment',
         );
       }
       return;
