@@ -238,12 +238,14 @@ describe('Cross-tenant isolation (e2e)', () => {
     );
   });
 
-  it('a School B student cannot read School A exams by passing its sectionSubjectId', async () => {
+  it('a School B student cannot read School A exams by passing its sectionId', async () => {
+    // A-Exam is PUBLISHED, so a filter that widened the student's placement scope would return it.
     const res = await request(app.getHttpServer())
-      .get(`/api/exams?sectionSubjectId=${ids.sectionSubject}`)
+      .get(`/api/exams?sectionId=${ids.section}`)
       .set('Authorization', `Bearer ${bStudentToken}`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([]);
+    expect(res.body.items).toEqual([]);
+    expect(res.body.total).toBe(0);
   });
 
   it("audit log is tenant-pinned: School B admin never sees School A's entries", async () => {
