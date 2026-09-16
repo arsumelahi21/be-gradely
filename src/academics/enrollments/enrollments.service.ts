@@ -654,7 +654,22 @@ export class EnrollmentsService extends BaseSchoolScopedService {
 
   private defaultInclude() {
     return {
-      student: true,
+      // Enrolment rows are read by teachers too, so this carries only what a roster
+      // renders — never the national id, guardian phone or address on the profile.
+      student: {
+        select: {
+          id: true,
+          userId: true,
+          schoolId: true,
+          fullName: true,
+          rollNo: true,
+          admissionNo: true,
+          email: true,
+          gender: true,
+          isActive: true,
+          photoMimeType: true,
+        },
+      },
       section: {
         include: {
           classGrade: true,
