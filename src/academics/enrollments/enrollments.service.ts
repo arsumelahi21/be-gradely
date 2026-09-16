@@ -333,8 +333,7 @@ export class EnrollmentsService extends BaseSchoolScopedService {
 
       if (query.sectionId) where.sectionId = query.sectionId;
       if (query.academicYearId) where.academicYearId = query.academicYearId;
-    }
-    else if (actor.role === Role.PARENT) {
+    } else if (actor.role === Role.PARENT) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }
@@ -373,8 +372,7 @@ export class EnrollmentsService extends BaseSchoolScopedService {
 
       if (query.sectionId) where.sectionId = query.sectionId;
       if (query.academicYearId) where.academicYearId = query.academicYearId;
-    }
-    else if (actor.role === Role.TEACHER) {
+    } else if (actor.role === Role.TEACHER) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }
@@ -469,8 +467,7 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       }
 
       return enrollment;
-    }
-    else if (actor.role === Role.PARENT) {
+    } else if (actor.role === Role.PARENT) {
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }

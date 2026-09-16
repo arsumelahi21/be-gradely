@@ -18,7 +18,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate # Prisma client needed before nest build
-      - run: npm run lint
+      # Not `npm run lint`: that script passes --fix, so CI silently rewrote formatting
+      # errors instead of failing on them.
+      - run: npx eslint "{src,apps,libs,test}/**/*.ts" --quiet
       - run: npm run build
       # 197 unit tests that finish in seconds and CI has never run (KNOWN_ISSUES #17).
       - run: npm test
@@ -68,4 +70,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
+      # Drift gate: the committed migrations must still reproduce schema.prisma. Uses the
+      # service container's throwaway `postgres` database as the shadow — never a real one.
+      - run: >-
+          npx prisma migrate diff
+          --from-migrations prisma/migrations
+          --to-schema-datamodel prisma/schema.prisma
+          --shadow-database-url postgresql://postgres:postgres@localhost:5433/postgres
+          --exit-code
       - run: npm run test:e2e

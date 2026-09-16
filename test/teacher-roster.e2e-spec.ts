@@ -48,4 +48,31 @@ describe('Teacher roster (e2e)', () => {
       /35201-1234567-8|0300-7654321|0300-1111111|Lahore|Old School/,
     );
   });
+
+  it('paginates the roster when page is supplied', async () => {
+    const cls = await seedClass({ studentCount: 3 });
+    const teacherToken = await tokenFor(app, cls.teacherUser);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/teachers/${cls.teacherProfile.id}/students`)
+      .query({ page: 1, pageSize: 2 })
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .expect(200);
+
+    expect(res.body).toMatchObject({ total: 3, page: 1, pageSize: 2 });
+    expect(res.body.items).toHaveLength(2);
+  });
+
+  it('returns a plain array when no page is supplied', async () => {
+    const cls = await seedClass({ studentCount: 2 });
+    const teacherToken = await tokenFor(app, cls.teacherUser);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/teachers/${cls.teacherProfile.id}/students`)
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .expect(200);
+
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).toHaveLength(2);
+  });
 });

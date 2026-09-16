@@ -949,7 +949,7 @@ export class UsersService {
       throw new ForbiddenException('Not allowed');
     }
 
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id },
       // Only deactivation revokes tokens, so a no-op "activate" logs nobody out.
       data: {
@@ -968,6 +968,11 @@ export class UsersService {
         schoolId: true,
       },
     });
+
+    // The users/students/teachers lists are cached per school for 5 minutes and are
+    // filtered on isActive, so without this they served the old flag until the TTL.
+    await this.invalidateRoleCache(user.role, user.schoolId);
+    return updated;
   }
 
   async update(id: string, dto: UpdateUserDto, actor: Actor) {
@@ -998,6 +1003,14 @@ export class UsersService {
       if (dto.schoolId !== undefined && dto.schoolId !== user.schoolId) {
         throw new ForbiddenException('Cannot change user school');
       }
+    }
+
+    // Only a SUPER_ADMIN has no school. Nulling it on anyone else strands the row outside
+    // every tenant filter: invisible to their own school's lists, editable by nobody.
+    if (dto.schoolId === null && user.role !== Role.SUPER_ADMIN) {
+      throw new BadRequestException(
+        'Only a super admin can have no school assigned',
+      );
     }
 
     if (dto.email && dto.email !== user.email) {
@@ -1322,7 +1335,18 @@ export class UsersService {
    * the actor editing their own id. Immutable fields are rejected by UpdateMeDto's whitelist.
    */
   async updateMe(actor: Actor, dto: UpdateMeDto) {
-    return this.update(actor.userId, dto, actor);
+    // guardianName/guardianPhone are derived from the linked parent, so a self-edit must
+    // not set them. Dropped rather than removed from the DTO: MyProfile.tsx sends both on
+    // every student save, and the global whitelist would 400 the whole request.
+    const {
+      guardianName: _guardianName,
+      guardianPhone: _guardianPhone,
+      ...rest
+    } = dto as UpdateMeDto & {
+      guardianName?: string;
+      guardianPhone?: string;
+    };
+    return this.update(actor.userId, rest, actor);
   }
 
   // Self-service password change: verify current password, set the new hash, and

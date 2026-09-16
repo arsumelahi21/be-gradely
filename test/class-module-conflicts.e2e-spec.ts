@@ -204,6 +204,5 @@ describe('Class module duplicate names (e2e)', () => {
         await prisma.section.findUnique({ where: { id: empty.id } }),
       ).toBeNull();
     });
-
   });
 });
