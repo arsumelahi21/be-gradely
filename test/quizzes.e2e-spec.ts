@@ -88,6 +88,25 @@ describe('Quizzes (e2e)', () => {
     expect(res.body.items ?? res.body).toEqual([]);
   });
 
+  it('refuses to add a question to a published quiz', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const { teacherToken, quizId } = await createAndPublish(cls);
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/quizzes/${quizId}/questions`)
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send({
+        type: 'TRUE_FALSE',
+        text: 'Added after publish?',
+        correctAnswer: true,
+        points: 1,
+      });
+
+    // Quizzes are auto-scored against stored questions, so a late addition would
+    // silently rescore work students have already submitted.
+    expect(res.status).toBe(409);
+  });
+
   it('lets a teacher create/publish but forbids a student', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const teacherToken = await tokenFor(app, cls.teacherUser);
