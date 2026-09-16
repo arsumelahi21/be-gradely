@@ -10,6 +10,7 @@ import { Role } from '../common/types/role.type';
 import { CacheService } from '../common/services/cache.service';
 import { invalidateSchoolStats } from '../common/cache/stats-cache';
 import { resolvePagination } from '../common/dto/pagination-query.dto';
+import { TEACHER_PUBLIC } from '../common/utils/teacher-select';
 import { CreateExamDto } from './dto/create-exam.dto';
 import { UpdateExamDto } from './dto/update-exam.dto';
 import { MarkExamResultDto } from './dto/mark-exam-result.dto';
@@ -131,13 +132,18 @@ export class ExamsService {
         student.id,
         query.academicYearId,
       );
+      // AND, never assignment: a requested sectionSubjectId NARROWS the enrolment
+      // scope. Overwriting it let a student read any school's exams by passing its id.
       where = {
-        sectionSubjectId: { in: sectionSubjectIds },
+        AND: [
+          { sectionSubjectId: { in: sectionSubjectIds } },
+          ...(query.sectionSubjectId
+            ? [{ sectionSubjectId: query.sectionSubjectId }]
+            : []),
+        ],
         status: { in: ['PUBLISHED', 'CLOSED'] },
       };
       if (query.academicYearId) where.academicYearId = query.academicYearId;
-      if (query.sectionSubjectId)
-        where.sectionSubjectId = query.sectionSubjectId;
     } else if (role === Role.PARENT) {
       const parent = await this.getParentOrThrow(actor);
       if (!query.studentId)
@@ -149,12 +155,15 @@ export class ExamsService {
         query.academicYearId,
       );
       where = {
-        sectionSubjectId: { in: sectionSubjectIds },
+        AND: [
+          { sectionSubjectId: { in: sectionSubjectIds } },
+          ...(query.sectionSubjectId
+            ? [{ sectionSubjectId: query.sectionSubjectId }]
+            : []),
+        ],
         status: { in: ['PUBLISHED', 'CLOSED'] },
       };
       if (query.academicYearId) where.academicYearId = query.academicYearId;
-      if (query.sectionSubjectId)
-        where.sectionSubjectId = query.sectionSubjectId;
     } else {
       throw new ForbiddenException('Not allowed');
     }
@@ -550,11 +559,11 @@ export class ExamsService {
         include: {
           section: opts?.withSection ? { include: { classGrade: true } } : true,
           subject: true,
-          teacher: true,
+          teacher: TEACHER_PUBLIC,
         },
       },
       academicYear: true,
-      createdByTeacher: true,
+      createdByTeacher: TEACHER_PUBLIC,
       // For a STUDENT/PARENT list, fold in that student's own result so the
       // client skips a per-row results call; orderBy makes take:1 deterministic.
       ...(opts?.studentId
