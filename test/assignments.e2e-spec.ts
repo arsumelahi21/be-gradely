@@ -62,6 +62,41 @@ describe('Assignments / re-grading (e2e)', () => {
       .send(body);
   }
 
+  it('refuses a re-upload once the submission is marked', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const assignment = await prisma.assignment.create({
+      data: {
+        schoolId: cls.school.id,
+        academicYearId: cls.academicYear.id,
+        sectionSubjectId: cls.sectionSubject.id,
+        createdByTeacherId: cls.teacherProfile.id,
+        title: 'Marked already',
+        maxScore: 100,
+        status: 'PUBLISHED',
+      },
+    });
+    await prisma.assignmentSubmission.create({
+      data: {
+        assignmentId: assignment.id,
+        studentId: cls.students[0].profile.id,
+        status: 'MARKED',
+        score: 80,
+        s3Key: `assignments/${assignment.id}/done.pdf`,
+        submittedAt: new Date(),
+      },
+    });
+    const studentToken = await tokenFor(app, cls.students[0].user);
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/assignments/${assignment.id}/submissions/request-upload`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({ fileName: 'again.pdf', mimeType: 'application/pdf' });
+
+    // A re-upload would overwrite the graded file and reset status to UPLOADING,
+    // losing the mark. CLOSED assignments still accept late uploads (decision #10).
+    expect(res.status).toBe(400);
+  });
+
   it('does not name another section in the not-enrolled error', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const otherSection = await prisma.section.create({

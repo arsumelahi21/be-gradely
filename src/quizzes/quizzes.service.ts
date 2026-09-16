@@ -209,6 +209,9 @@ export class QuizzesService extends BaseSchoolScopedService {
   async addQuestion(quizId: string, dto: AddQuestionDto, actor: Actor) {
     const quiz = await this.loadQuizWithSection(quizId);
     await this.assertSectionWriteAccess(actor, quiz.section);
+    // Attempts are scored against the stored questions, so a late addition would rescore
+    // work students already submitted. The other four mutators already guard this.
+    await this.assertEditable(quiz);
     this.validateQuestionShape(dto);
 
     const last = await this.prisma.question.findFirst({

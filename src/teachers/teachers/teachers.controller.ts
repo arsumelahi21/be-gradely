@@ -17,6 +17,7 @@ import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/types/role.type';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('teachers')
@@ -44,8 +45,12 @@ export class TeachersController {
 
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN, Role.TEACHER)
   @Get(':id/students')
-  listStudents(@Param('id') id: string, @Req() req: any) {
-    return this.teachers.listStudents(id, req.user);
+  listStudents(
+    @Param('id') id: string,
+    @Query() query: PaginationQueryDto,
+    @Req() req: any,
+  ) {
+    return this.teachers.listStudents(id, req.user, query);
   }
 
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
