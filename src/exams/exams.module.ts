@@ -20,6 +20,7 @@ import { ExamSettingsService } from './exam-settings.service';
     ExamResultsService,
     ExamSettingsService,
   ],
-  exports: [ExamsService],
+  // Dashboards grade with the same scheme loader as results.
+  exports: [ExamsService, ExamSettingsService],
 })
 export class ExamsModule {}

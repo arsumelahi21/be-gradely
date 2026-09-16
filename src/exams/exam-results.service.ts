@@ -30,14 +30,16 @@ import {
 import { ExamSettingsService } from './exam-settings.service';
 import { canEnterMarks, canFinalize, canReopen } from './exam-status';
 import {
+  aggregateBySession,
   assignPositions,
-  gradeFor,
   GradeBandInput,
-  percentOf,
   StudentOutcome,
   studentOutcome,
   summarizeClass,
   summarizeSubjects,
+  TermExamInput,
+  termOutcome,
+  termSubjectColumns,
 } from './result-calculator';
 import { cleanText } from './exam-mappers';
 import { SaveMarksDto, SaveRemarksDto } from './dto/results.dto';
@@ -91,6 +93,7 @@ export type SchoolHeaderRow = Prisma.SchoolGetPayload<{
 
 const cardExamSelect = {
   id: true,
+  sectionId: true,
   title: true,
   className: true,
   sectionName: true,
@@ -100,15 +103,57 @@ const cardExamSelect = {
   academicYear: { select: { id: true, name: true } },
   term: { select: { id: true, name: true } },
   subjects: {
-    orderBy: [{ heldAt: 'asc' }, { createdAt: 'asc' }],
+    // `id` breaks ties so column order never depends on how the database returns rows.
+    orderBy: [{ heldAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     select: {
       id: true,
       maxScore: true,
       passingMarks: true,
-      sectionSubject: { select: { subject: { select: { name: true } } } },
+      sectionSubject: {
+        select: { subject: { select: { id: true, name: true } } },
+      },
     },
   },
 } satisfies Prisma.ExaminationSelect;
+
+/** One finalized examination result as students, parents and the principal list it. */
+export interface FinalizedResultRow {
+  examination: {
+    id: string;
+    title: string;
+    className: string;
+    sectionName: string;
+    academicYear: { id: string; name: string };
+    term: { id: string; name: string } | null;
+    finalizedAt: Date | null;
+  };
+  totalObtained: number | null;
+  totalMax: number | null;
+  percentage: number | null;
+  grade: string | null;
+  passed: boolean | null;
+  position: number | null;
+  finalizedAt: Date | null;
+}
+
+const summaryRow = (r: FinalizedResultRow) => ({
+  academicYear: r.examination.academicYear,
+  finalizedAt: r.finalizedAt,
+  totalObtained: r.totalObtained,
+  totalMax: r.totalMax,
+  percentage: r.percentage,
+});
+
+/**
+ * Sections whose unfinished examinations a student is expected to sit this session: their
+ * ACTIVE placement, or the one they completed when they hold no active placement.
+ */
+function openSectionsOf(
+  placements: { sectionId: string; status: string }[],
+): Set<string> {
+  const active = placements.filter((p) => p.status === 'ACTIVE');
+  return new Set((active.length ? active : placements).map((p) => p.sectionId));
+}
 
 export interface CardStudent {
   id: string;
@@ -366,20 +411,37 @@ export class ExamResultsService {
     const open =
       core.status === 'PUBLISHED' && core.resultStatus !== 'FINALIZED';
     const incompleteStudents = rows.filter((r) => !r.complete).length;
+    // A subject teacher reads their own columns only: class-wide totals, positions
+    // and remarks belong to the class teacher and the principal.
+    const own =
+      actor.role === Role.TEACHER && !classTeacher
+        ? new Set(
+            sheet.exam.subjects
+              .filter(
+                (s) =>
+                  s.sectionSubject.teacherId === teacherId ||
+                  s.createdByTeacherId === teacherId,
+              )
+              .map((s) => s.id),
+          )
+        : null;
+    const visibleSubjects = own
+      ? sheet.exam.subjects.filter((s) => own.has(s.id))
+      : sheet.exam.subjects;
 
     return {
       school: await this.schoolHeader(core.schoolId),
       generatedAt: new Date(),
       examination: this.header(sheet.exam),
       gradingBands: sheet.bands,
-      subjects: sheet.exam.subjects.map((s) => ({
+      subjects: visibleSubjects.map((s) => ({
         id: s.id,
         label: s.sectionSubject.subject.name,
         maxScore: s.maxScore,
         passingMarks: s.passingMarks,
         heldAt: s.heldAt,
       })),
-      rows,
+      rows: own ? rows.map((r) => this.narrowRow(r, own)) : rows,
       issues: {
         missingMarks: subjectStates.filter((s) => s === 'MISSING').length,
         invalidMarks: subjectStates.filter((s) => s === 'INVALID').length,
@@ -775,7 +837,17 @@ export class ExamResultsService {
         );
       }
     } else {
-      await this.access.assertStaffCanView(actor, core);
+      const teacherId = await this.access.assertStaffCanView(actor, core);
+      // A cross-subject card is the class teacher's and the principal's; a subject
+      // teacher reads their own register instead of every colleague's marks.
+      const classTeacher = teacherId
+        ? await this.access.isClassTeacher(teacherId, core.sectionId)
+        : true;
+      if (actor.role === Role.TEACHER && !classTeacher) {
+        throw new ForbiddenException(
+          'Only the class teacher can open report cards for this section',
+        );
+      }
       only = studentId ?? null;
     }
 
@@ -857,6 +929,25 @@ export class ExamResultsService {
     return this.finalizedResultsFor(studentId);
   }
 
+  /** Session-by-session totals of a student's own finalized results, for dashboards. */
+  async myResultsSummary(actor: Actor, studentId?: string) {
+    const sid = await this.access.resolveAudienceStudent(actor, studentId);
+    return {
+      sessions: aggregateBySession(
+        (await this.finalizedResultsFor(sid)).map(summaryRow),
+      ),
+    };
+  }
+
+  /** The principal's session totals for one student, from the same engine. */
+  async resultsSummaryForStudent(actor: Actor, studentId: string) {
+    return {
+      sessions: aggregateBySession(
+        (await this.resultsForStudent(actor, studentId)).map(summaryRow),
+      ),
+    };
+  }
+
   /**
    * One student's result card for a session: every published examination they actually sat,
    * subject by subject, with the overall total. Exams holding no marks of theirs are left out.
@@ -867,6 +958,8 @@ export class ExamResultsService {
     query: { academicYearId?: string; termId?: string },
   ) {
     this.assertPrincipal(actor);
+    // Both are demanded: a card spanning sessions or terms is not a term's result.
+    const { academicYearId, termId } = this.requireTermFilter(query);
     const student = await this.prisma.studentProfile.findUnique({
       where: { id: studentId },
       select: {
@@ -879,17 +972,19 @@ export class ExamResultsService {
     });
     if (!student) throw new NotFoundException('Student not found');
     this.access.assertSameSchool(actor, student.schoolId);
+    await this.assertTermInSession(student.schoolId, academicYearId, termId);
 
     const placements = await this.prisma.enrollment.findMany({
       where: {
         studentId,
         status: { in: HISTORY_ENROLLMENT },
-        ...(query.academicYearId && { academicYearId: query.academicYearId }),
+        academicYearId,
       },
       orderBy: { createdAt: 'desc' },
       select: {
         sectionId: true,
         academicYearId: true,
+        status: true,
         section: {
           select: { name: true, classGrade: { select: { name: true } } },
         },
@@ -912,9 +1007,15 @@ export class ExamResultsService {
         sectionId: p.sectionId,
         academicYearId: p.academicYearId,
       })),
-      ...(query.termId && { termId: query.termId }),
+      termId,
     });
-    return this.composeCard(school, student, placement, data);
+    return this.composeCard(
+      school,
+      student,
+      placement,
+      data,
+      openSectionsOf(placements),
+    );
   }
 
   /** Every student's result card for one section and session, printed a page per student. */
@@ -924,9 +1025,7 @@ export class ExamResultsService {
     query: { academicYearId?: string; termId?: string },
   ) {
     this.assertPrincipal(actor);
-    if (!query.academicYearId) {
-      throw new BadRequestException('Choose the academic session');
-    }
+    const { academicYearId, termId } = this.requireTermFilter(query);
     const section = await this.prisma.section.findUnique({
       where: { id: sectionId },
       select: {
@@ -939,10 +1038,11 @@ export class ExamResultsService {
     if (!section) throw new NotFoundException('Section not found');
     this.access.assertSameSchool(actor, section.schoolId);
     const year = await this.prisma.academicYear.findFirst({
-      where: { id: query.academicYearId, schoolId: section.schoolId },
+      where: { id: academicYearId, schoolId: section.schoolId },
       select: { id: true, name: true },
     });
     if (!year) throw new NotFoundException('Academic session not found');
+    await this.assertTermInSession(section.schoolId, year.id, termId);
 
     // The section's roster for that session only, so sessions never mix.
     const roster = await this.prisma.enrollment.findMany({
@@ -975,21 +1075,88 @@ export class ExamResultsService {
       sectionName: section.name,
       academicYear: year,
     };
+    // Each student's placements this session, so one who moved sections isn't held to this
+    // section's unfinished papers.
+    const placementsOf = new Map<
+      string,
+      { sectionId: string; status: string }[]
+    >();
+    for (const p of await this.prisma.enrollment.findMany({
+      where: {
+        studentId: { in: students.map((s) => s.id) },
+        academicYearId: year.id,
+        status: { in: HISTORY_ENROLLMENT },
+      },
+      select: { studentId: true, sectionId: true, status: true },
+    })) {
+      placementsOf.set(p.studentId, [
+        ...(placementsOf.get(p.studentId) ?? []),
+        p,
+      ]);
+    }
     const data = await this.loadCardData(
       section.schoolId,
       students.map((s) => s.id),
-      {
-        sectionId,
-        academicYearId: year.id,
-        ...(query.termId && { termId: query.termId }),
-      },
+      { sectionId, academicYearId: year.id, termId },
     );
     return {
       school,
       placement,
       generatedAt: new Date(),
-      cards: students.map((s) => this.composeCard(school, s, placement, data)),
+      // Header columns come from the server too, so the sheet only lays values out.
+      subjects: termSubjectColumns(
+        data.exams.map((e) => ({
+          subjects: e.subjects.map((s) => ({
+            key: s.sectionSubject.subject.id,
+            label: s.sectionSubject.subject.name,
+            maxScore: s.maxScore,
+          })),
+        })),
+      ),
+      cards: students.map((s) =>
+        this.composeCard(
+          school,
+          s,
+          placement,
+          data,
+          openSectionsOf(placementsOf.get(s.id) ?? []),
+        ),
+      ),
     };
+  }
+
+  /**
+   * A principal names the session AND the term before any result is extracted:
+   * "all terms" is not on offer and nothing is ever chosen on their behalf.
+   */
+  private requireTermFilter(query: {
+    academicYearId?: string;
+    termId?: string;
+  }): { academicYearId: string; termId: string } {
+    if (!query.academicYearId) {
+      throw new BadRequestException('Choose the academic session');
+    }
+    if (!query.termId) {
+      throw new BadRequestException('Please select a term.');
+    }
+    return { academicYearId: query.academicYearId, termId: query.termId };
+  }
+
+  /** The term has to be this school's, and belong to the session being extracted. */
+  private async assertTermInSession(
+    schoolId: string,
+    academicYearId: string,
+    termId: string,
+  ): Promise<void> {
+    const term = await this.prisma.academicTerm.findFirst({
+      where: { id: termId, schoolId, academicYearId },
+      select: { id: true },
+    });
+    if (!term) {
+      throw new BadRequestException(
+        'Choose a term from the selected academic session',
+      );
+    }
   }
 
   private assertPrincipal(actor: Actor) {
@@ -1019,14 +1186,29 @@ export class ExamResultsService {
     if (!studentIds.length) return this.noCardData();
     const exams = await this.prisma.examination.findMany({
       where: {
-        ...where,
-        schoolId,
-        status: 'PUBLISHED',
-        subjects: {
-          some: { results: { some: { studentId: { in: studentIds } } } },
-        },
+        AND: [
+          where,
+          { schoolId, status: 'PUBLISHED' },
+          {
+            OR: [
+              {
+                subjects: {
+                  some: {
+                    results: { some: { studentId: { in: studentIds } } },
+                  },
+                },
+              },
+              // Unfinished examinations already being marked count too, so a student skipped
+              // at mark entry keeps the paper on their card — as missing, never as zero.
+              {
+                resultStatus: { not: 'FINALIZED' },
+                subjects: { some: { results: { some: {} } } },
+              },
+            ],
+          },
+        ],
       },
-      orderBy: [{ publishedAt: 'asc' }, { createdAt: 'asc' }],
+      orderBy: [{ publishedAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
       select: cardExamSelect,
     });
     const subjectIds = exams.flatMap((e) => e.subjects.map((s) => s.id));
@@ -1092,6 +1274,7 @@ export class ExamResultsService {
     student: CardStudent,
     placement: CardPlacement | null,
     data: CardData,
+    openSections: ReadonlySet<string> = new Set(),
   ) {
     const identity = {
       id: student.id,
@@ -1099,8 +1282,12 @@ export class ExamResultsService {
       rollNo: student.rollNo,
       admissionNo: student.admissionNo,
     };
-    const sat = data.exams.filter((e) =>
-      e.subjects.some((s) => data.marks.has(markKey(s.id, student.id))),
+    // A finalized examination lists exactly who sat it. An unfinished one also belongs to every
+    // student placed in its section, so an unmarked student reads as incomplete, not complete.
+    const sat = data.exams.filter(
+      (e) =>
+        e.subjects.some((s) => data.marks.has(markKey(s.id, student.id))) ||
+        (e.resultStatus !== 'FINALIZED' && openSections.has(e.sectionId)),
     );
     if (!sat.length) {
       return {
@@ -1145,6 +1332,7 @@ export class ExamResultsService {
           const out = outcome.subjects[i];
           const m = mark(s.id);
           return {
+            key: s.sectionSubject.subject.id,
             label: out.label,
             maxScore: out.maxScore,
             passingMarks: s.passingMarks,
@@ -1171,17 +1359,35 @@ export class ExamResultsService {
       };
     });
 
-    const totalObtained = cards.reduce(
-      (sum, c) => sum + (c.totals.totalObtained ?? 0),
-      0,
+    // The term is graded by the scheme its examinations share; mixed schemes fall back to the
+    // school default and are flagged, rather than silently grading with one of them.
+    const schemeIds = new Set(sat.map((e) => e.gradingSchemeId));
+    const mixedGradingSchemes = schemeIds.size > 1;
+    const termBands = mixedGradingSchemes
+      ? defaultBands
+      : (data.bandsByScheme.get([...schemeIds][0]) ?? defaultBands);
+    const term = termOutcome(
+      cards.map(
+        (c): TermExamInput => ({
+          examId: c.id,
+          // Finalized exams carry their frozen totals; a live one is complete once graded.
+          complete: c.totals.percentage != null,
+          totalObtained: c.totals.totalObtained ?? 0,
+          totalMax: c.totals.totalMax ?? 0,
+          passed: c.totals.passed,
+          subjects: c.subjects.map((s) => ({
+            key: s.key,
+            label: s.label,
+            obtained: s.obtained,
+            maxScore: s.maxScore,
+            state: s.state,
+            grade: s.grade,
+            passed: s.passed,
+          })),
+        }),
+      ),
+      termBands,
     );
-    const totalMax = cards.reduce(
-      (sum, c) => sum + (c.totals.totalMax ?? 0),
-      0,
-    );
-    const percentage = percentOf(totalObtained, totalMax);
-    const band = percentage == null ? null : gradeFor(percentage, defaultBands);
-    const verdicts = cards.map((c) => c.totals.passed);
     const last = cards[cards.length - 1];
     return {
       school,
@@ -1192,20 +1398,8 @@ export class ExamResultsService {
         academicYear: last.academicYear,
       },
       exams: cards,
-      overall: {
-        examCount: cards.length,
-        totalObtained,
-        totalMax,
-        percentage,
-        grade: band?.label ?? null,
-        remark: band?.remark ?? null,
-        passed: verdicts.includes(false)
-          ? false
-          : verdicts.every((v) => v === true)
-            ? true
-            : null,
-      },
-      gradingBands: defaultBands,
+      overall: { ...term, mixedGradingSchemes },
+      gradingBands: termBands,
       provisional: cards.some((c) => c.provisional),
       generatedAt: new Date(),
     };
@@ -1250,7 +1444,7 @@ export class ExamResultsService {
       },
     });
 
-    const rows: Array<Record<string, unknown>> = [];
+    const rows: FinalizedResultRow[] = [];
     for (const e of exams) {
       const snap = e.studentResults[0];
       let result = snap?.finalizedAt ? snap : null;
@@ -1455,8 +1649,28 @@ export class ExamResultsService {
         ? frozen.position
         : (sheet.positions.get(student.id) ?? null),
       failedSubjects: o.failedSubjects,
+      belowPassMark: o.belowPassMark,
       classTeacherRemarks: stored?.classTeacherRemarks ?? null,
       principalRemarks: stored?.principalRemarks ?? null,
+    };
+  }
+
+  /** One teacher's own columns, with the class-wide outcome fields withheld. */
+  private narrowRow<R extends { subjects: { examId: string }[] }>(
+    row: R,
+    own: Set<string>,
+  ) {
+    return {
+      ...row,
+      subjects: row.subjects.filter((s) => own.has(s.examId)),
+      totalObtained: null,
+      totalMax: null,
+      percentage: null,
+      grade: null,
+      passed: null,
+      position: null,
+      classTeacherRemarks: null,
+      principalRemarks: null,
     };
   }
 

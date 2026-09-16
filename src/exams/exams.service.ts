@@ -34,6 +34,7 @@ import {
   TeacherSectionScope,
 } from './exam-access.service';
 import { ExamSettingsService } from './exam-settings.service';
+import { percentOf } from './result-calculator';
 import {
   adminCanEdit,
   canDelete,
@@ -45,6 +46,7 @@ import {
   ReviewAction,
   submissionProblems,
   teacherCanEdit,
+  TERM_REQUIRED_MESSAGE,
 } from './exam-status';
 import {
   audienceExaminationSelect,
@@ -109,8 +111,14 @@ function assertSubjectNumbers(v: {
   startMin?: number | null;
   endMin?: number | null;
 }) {
-  if (v.maxScore != null && v.passingMarks != null && v.passingMarks > v.maxScore) {
-    throw new BadRequestException('Passing marks cannot be more than total marks');
+  if (
+    v.maxScore != null &&
+    v.passingMarks != null &&
+    v.passingMarks > v.maxScore
+  ) {
+    throw new BadRequestException(
+      'Passing marks cannot be more than total marks',
+    );
   }
   if (v.startMin != null && v.endMin != null && v.endMin <= v.startMin) {
     throw new BadRequestException('End time must be after start time');
@@ -134,7 +142,8 @@ export class ExamsService extends BaseSchoolScopedService {
 
   async create(dto: CreateExaminationDto, actor: Actor) {
     const schoolId = this.access.schoolOf(actor);
-    const teacherId = actor.role === Role.TEACHER ? await this.access.teacherId(actor) : null;
+    const teacherId =
+      actor.role === Role.TEACHER ? await this.access.teacherId(actor) : null;
     const placement = await this.resolvePlacement(
       schoolId,
       dto.academicYearId,
@@ -144,11 +153,21 @@ export class ExamsService extends BaseSchoolScopedService {
     const scope = teacherId
       ? await this.assertTeacherInSection(teacherId, dto.sectionId)
       : null;
-    const termId = await this.resolveTerm(schoolId, dto.academicYearId, dto.termId);
+    const termId = await this.resolveTerm(
+      schoolId,
+      dto.academicYearId,
+      dto.termId,
+    );
+    // A teacher may park a proposal without one; a principal picks the term up front.
+    if (!teacherId) await this.assertTermChosen(dto.academicYearId, termId);
     const gradingSchemeId = dto.gradingSchemeId
       ? await this.resolveScheme(schoolId, dto.gradingSchemeId)
       : await this.settings.ensureDefaultScheme(schoolId);
-    const subjects = await this.resolveNewSubjects(dto.subjects ?? [], dto.sectionId, scope);
+    const subjects = await this.resolveNewSubjects(
+      dto.subjects ?? [],
+      dto.sectionId,
+      scope,
+    );
 
     const created = await this.prisma.$transaction(async (tx) => {
       const exam = await tx.examination.create({
@@ -170,7 +189,14 @@ export class ExamsService extends BaseSchoolScopedService {
       });
       for (const s of subjects) {
         await tx.exam.create({
-          data: this.newSubjectData(exam.id, schoolId, dto.academicYearId, teacherId, s.input, s.label),
+          data: this.newSubjectData(
+            exam.id,
+            schoolId,
+            dto.academicYearId,
+            teacherId,
+            s.input,
+            s.label,
+          ),
         });
       }
       await this.event(tx, exam.id, actor, 'CREATED', {
@@ -195,13 +221,20 @@ export class ExamsService extends BaseSchoolScopedService {
     }
 
     const schoolId =
-      actor.role === Role.SUPER_ADMIN ? query.schoolId : this.access.schoolOf(actor);
+      actor.role === Role.SUPER_ADMIN
+        ? query.schoolId
+        : this.access.schoolOf(actor);
     if (!schoolId) throw new BadRequestException('schoolId is required');
 
     const and: Prisma.ExaminationWhereInput[] = [{ schoolId }];
     if (actor.role === Role.TEACHER) {
-      and.push(this.access.teacherVisibility(await this.access.teacherId(actor)));
-    } else if (actor.role !== Role.SCHOOL_ADMIN && actor.role !== Role.SUPER_ADMIN) {
+      and.push(
+        this.access.teacherVisibility(await this.access.teacherId(actor)),
+      );
+    } else if (
+      actor.role !== Role.SCHOOL_ADMIN &&
+      actor.role !== Role.SUPER_ADMIN
+    ) {
       throw new ForbiddenException('Not allowed');
     }
     and.push(...this.commonFilters(query));
@@ -211,7 +244,11 @@ export class ExamsService extends BaseSchoolScopedService {
       and.push({
         OR: [
           { createdByTeacherId: query.teacherId },
-          { subjects: { some: { sectionSubject: { teacherId: query.teacherId } } } },
+          {
+            subjects: {
+              some: { sectionSubject: { teacherId: query.teacherId } },
+            },
+          },
         ],
       });
     }
@@ -225,7 +262,13 @@ export class ExamsService extends BaseSchoolScopedService {
 
     const { page, pageSize, skip, take } = resolvePagination(query);
     const [rows, total, counts] = await Promise.all([
-      this.prisma.examination.findMany({ where, orderBy, skip, take, select: staffListSelect }),
+      this.prisma.examination.findMany({
+        where,
+        orderBy,
+        skip,
+        take,
+        select: staffListSelect,
+      }),
       this.prisma.examination.count({ where }),
       this.prisma.examination.groupBy({
         by: ['status'],
@@ -238,7 +281,9 @@ export class ExamsService extends BaseSchoolScopedService {
       total,
       page,
       pageSize,
-      statusCounts: Object.fromEntries(counts.map((c) => [c.status, c._count._all])),
+      statusCounts: Object.fromEntries(
+        counts.map((c) => [c.status, c._count._all]),
+      ),
     };
   }
 
@@ -271,7 +316,13 @@ export class ExamsService extends BaseSchoolScopedService {
         details: true,
         createdAt: true,
         // Teacher accounts often keep their name only on the profile.
-        actor: { select: { fullName: true, role: true, teacherProfile: { select: { fullName: true } } } },
+        actor: {
+          select: {
+            fullName: true,
+            role: true,
+            teacherProfile: { select: { fullName: true } },
+          },
+        },
       },
     });
   }
@@ -299,7 +350,10 @@ export class ExamsService extends BaseSchoolScopedService {
       data.title = dto.title.trim();
       changed.push('title');
     }
-    if (dto.instructions !== undefined && cleanText(dto.instructions) !== current.instructions) {
+    if (
+      dto.instructions !== undefined &&
+      cleanText(dto.instructions) !== current.instructions
+    ) {
       data.instructions = cleanText(dto.instructions);
       changed.push('instructions');
     }
@@ -313,9 +367,16 @@ export class ExamsService extends BaseSchoolScopedService {
       sectionId !== core.sectionId;
     if (placementChanged) {
       if (current._count.subjects > 0) {
-        throw new ConflictException('Remove the subjects before changing the class, section or session');
+        throw new ConflictException(
+          'Remove the subjects before changing the class, section or session',
+        );
       }
-      const placement = await this.resolvePlacement(core.schoolId, yearId, classGradeId, sectionId);
+      const placement = await this.resolvePlacement(
+        core.schoolId,
+        yearId,
+        classGradeId,
+        sectionId,
+      );
       if (teacherId) await this.assertTeacherInSection(teacherId, sectionId);
       Object.assign(data, {
         academicYearId: yearId,
@@ -335,6 +396,7 @@ export class ExamsService extends BaseSchoolScopedService {
       }
     } else if (yearId !== core.academicYearId && current.termId) {
       data.termId = null; // a term belongs to one session
+      changed.push('term'); // or the early return below would drop the clearing
     }
 
     if (dto.gradingSchemeId !== undefined) {
@@ -350,18 +412,24 @@ export class ExamsService extends BaseSchoolScopedService {
     if (!changed.length) return this.getStaff(id, actor, teacherId);
 
     const type: ExaminationEventType =
-      asAdmin && core.createdByUserId !== actor.userId ? 'ADMIN_EDITED' : 'UPDATED';
+      asAdmin && core.createdByUserId !== actor.userId
+        ? 'ADMIN_EDITED'
+        : 'UPDATED';
     await this.prisma.$transaction(async (tx) => {
       await this.guardStatus(tx, id, core.status, data);
       await this.event(tx, id, actor, type, { details: { fields: changed } });
     });
 
-    void this.audit.record(actor.userId, type === 'ADMIN_EDITED' ? 'EXAM_ADMIN_EDIT' : 'EXAM_UPDATE', {
-      schoolId: core.schoolId,
-      entityType: 'Examination',
-      entityId: id,
-      metadata: { fields: changed },
-    });
+    void this.audit.record(
+      actor.userId,
+      type === 'ADMIN_EDITED' ? 'EXAM_ADMIN_EDIT' : 'EXAM_UPDATE',
+      {
+        schoolId: core.schoolId,
+        entityType: 'Examination',
+        entityId: id,
+        metadata: { fields: changed },
+      },
+    );
     return this.getStaff(id, actor, teacherId);
   }
 
@@ -371,18 +439,25 @@ export class ExamsService extends BaseSchoolScopedService {
     if (actor.role === Role.TEACHER) {
       const teacherId = await this.access.teacherId(actor);
       if (!this.access.isCreator(actor, core, teacherId)) {
-        throw new ForbiddenException('Only the teacher who created this examination can delete it');
+        throw new ForbiddenException(
+          'Only the teacher who created this examination can delete it',
+        );
       }
     }
     const hasMarks =
-      (await this.prisma.examResult.count({ where: { exam: { examinationId: id } } })) > 0;
+      (await this.prisma.examResult.count({
+        where: { exam: { examinationId: id } },
+      })) > 0;
     if (!canDelete(core.status, hasMarks)) {
       throw new ConflictException('Only a draft with no marks can be deleted');
     }
     const deleted = await this.prisma.examination.deleteMany({
       where: { id, status: 'DRAFT' },
     });
-    if (!deleted.count) throw new ConflictException('This examination changed. Reload and try again.');
+    if (!deleted.count)
+      throw new ConflictException(
+        'This examination changed. Reload and try again.',
+      );
 
     void this.audit.record(actor.userId, 'EXAM_DELETE', {
       schoolId: core.schoolId,
@@ -396,20 +471,38 @@ export class ExamsService extends BaseSchoolScopedService {
   async addSubject(id: string, dto: CreateExamSubjectDto, actor: Actor) {
     const core = await this.access.loadCore(id);
     const { teacherId } = await this.assertCanEditDetails(actor, core);
-    const scope = teacherId ? await this.access.teacherSectionScope(teacherId, core.sectionId) : null;
-    const [subject] = await this.resolveNewSubjects([dto], core.sectionId, scope);
+    const scope = teacherId
+      ? await this.access.teacherSectionScope(teacherId, core.sectionId)
+      : null;
+    const [subject] = await this.resolveNewSubjects(
+      [dto],
+      core.sectionId,
+      scope,
+    );
     const duplicate = await this.prisma.exam.findFirst({
       where: { examinationId: id, sectionSubjectId: dto.sectionSubjectId },
       select: { id: true },
     });
-    if (duplicate) throw new ConflictException(`${subject.label} is already on this examination`);
+    if (duplicate)
+      throw new ConflictException(
+        `${subject.label} is already on this examination`,
+      );
 
     await this.prisma.$transaction(async (tx) => {
       await this.guardStatus(tx, id, core.status);
       await tx.exam.create({
-        data: this.newSubjectData(id, core.schoolId, core.academicYearId, teacherId, dto, subject.label),
+        data: this.newSubjectData(
+          id,
+          core.schoolId,
+          core.academicYearId,
+          teacherId,
+          dto,
+          subject.label,
+        ),
       });
-      await this.event(tx, id, actor, 'SUBJECT_ADDED', { details: { subject: subject.label } });
+      await this.event(tx, id, actor, 'SUBJECT_ADDED', {
+        details: { subject: subject.label },
+      });
     });
     void this.audit.record(actor.userId, 'EXAM_SUBJECT_ADD', {
       schoolId: core.schoolId,
@@ -420,7 +513,12 @@ export class ExamsService extends BaseSchoolScopedService {
     return this.getStaff(id, actor, teacherId);
   }
 
-  async updateSubject(id: string, subjectId: string, dto: UpdateExamSubjectDto, actor: Actor) {
+  async updateSubject(
+    id: string,
+    subjectId: string,
+    dto: UpdateExamSubjectDto,
+    actor: Actor,
+  ) {
     const core = await this.access.loadCore(id);
     const { teacherId } = await this.assertCanEditDetails(actor, core);
     const subject = await this.prisma.exam.findFirst({
@@ -431,19 +529,33 @@ export class ExamsService extends BaseSchoolScopedService {
         passingMarks: true,
         startMin: true,
         endMin: true,
-        sectionSubject: { select: { id: true, subject: { select: { name: true } } } },
+        sectionSubject: {
+          select: { id: true, subject: { select: { name: true } } },
+        },
       },
     });
-    if (!subject) throw new NotFoundException('Subject not found on this examination');
+    if (!subject)
+      throw new NotFoundException('Subject not found on this examination');
     if (teacherId) {
-      const scope = await this.access.teacherSectionScope(teacherId, core.sectionId);
-      if (!scope.classTeacher && !scope.sectionSubjectIds.has(subject.sectionSubject.id)) {
-        throw new ForbiddenException(`You do not teach ${subject.sectionSubject.subject.name} in this section`);
+      const scope = await this.access.teacherSectionScope(
+        teacherId,
+        core.sectionId,
+      );
+      if (
+        !scope.classTeacher &&
+        !scope.sectionSubjectIds.has(subject.sectionSubject.id)
+      ) {
+        throw new ForbiddenException(
+          `You do not teach ${subject.sectionSubject.subject.name} in this section`,
+        );
       }
     }
     const merged = {
       maxScore: dto.maxScore !== undefined ? dto.maxScore : subject.maxScore,
-      passingMarks: dto.passingMarks !== undefined ? dto.passingMarks : subject.passingMarks,
+      passingMarks:
+        dto.passingMarks !== undefined
+          ? dto.passingMarks
+          : subject.passingMarks,
       startMin: dto.startMin !== undefined ? dto.startMin : subject.startMin,
       endMin: dto.endMin !== undefined ? dto.endMin : subject.endMin,
     };
@@ -475,16 +587,30 @@ export class ExamsService extends BaseSchoolScopedService {
       where: { id: subjectId, examinationId: id },
       select: {
         id: true,
-        sectionSubject: { select: { id: true, subject: { select: { name: true } } } },
+        sectionSubject: {
+          select: { id: true, subject: { select: { name: true } } },
+        },
         _count: { select: { results: true } },
       },
     });
-    if (!subject) throw new NotFoundException('Subject not found on this examination');
-    if (subject._count.results) throw new ConflictException('This subject already has marks and cannot be removed');
+    if (!subject)
+      throw new NotFoundException('Subject not found on this examination');
+    if (subject._count.results)
+      throw new ConflictException(
+        'This subject already has marks and cannot be removed',
+      );
     if (teacherId) {
-      const scope = await this.access.teacherSectionScope(teacherId, core.sectionId);
-      if (!scope.classTeacher && !scope.sectionSubjectIds.has(subject.sectionSubject.id)) {
-        throw new ForbiddenException(`You do not teach ${subject.sectionSubject.subject.name} in this section`);
+      const scope = await this.access.teacherSectionScope(
+        teacherId,
+        core.sectionId,
+      );
+      if (
+        !scope.classTeacher &&
+        !scope.sectionSubjectIds.has(subject.sectionSubject.id)
+      ) {
+        throw new ForbiddenException(
+          `You do not teach ${subject.sectionSubject.subject.name} in this section`,
+        );
       }
     }
     await this.prisma.$transaction(async (tx) => {
@@ -510,16 +636,31 @@ export class ExamsService extends BaseSchoolScopedService {
     this.access.assertSameSchool(actor, core.schoolId);
     const teacherId = await this.access.teacherId(actor);
     if (!this.access.isCreator(actor, core, teacherId)) {
-      throw new ForbiddenException('Only the teacher who created this examination can send it for review');
+      throw new ForbiddenException(
+        'Only the teacher who created this examination can send it for review',
+      );
     }
     const to = nextStatus(core.status, 'SUBMIT', { teacherAuthored: true });
-    if (!to) throw new ConflictException(this.transitionMessage(core.status, 'SUBMIT'));
-    await this.assertComplete(id);
+    if (!to)
+      throw new ConflictException(
+        this.transitionMessage(core.status, 'SUBMIT'),
+      );
+    // A teacher must choose only once the session actually has terms to choose from.
+    await this.assertComplete(id, {
+      requireTerm: await this.hasTerms(core.academicYearId),
+    });
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      await this.guardStatus(tx, id, core.status, { status: to, submittedAt: now, reviewNote: null });
-      await this.event(tx, id, actor, 'SUBMITTED', { fromStatus: core.status, toStatus: to });
+      await this.guardStatus(tx, id, core.status, {
+        status: to,
+        submittedAt: now,
+        reviewNote: null,
+      });
+      await this.event(tx, id, actor, 'SUBMITTED', {
+        fromStatus: core.status,
+        toStatus: to,
+      });
     });
 
     await this.notifyReviewers(core, actor);
@@ -542,9 +683,16 @@ export class ExamsService extends BaseSchoolScopedService {
   async publish(id: string, actor: Actor) {
     const core = await this.access.loadCore(id);
     this.access.assertSameSchool(actor, core.schoolId);
-    const to = nextStatus(core.status, 'PUBLISH', { teacherAuthored: !!core.createdByTeacherId });
-    if (!to) throw new ConflictException(this.transitionMessage(core.status, 'PUBLISH'));
-    await this.assertComplete(id);
+    const to = nextStatus(core.status, 'PUBLISH', {
+      teacherAuthored: !!core.createdByTeacherId,
+    });
+    if (!to)
+      throw new ConflictException(
+        this.transitionMessage(core.status, 'PUBLISH'),
+      );
+    // The principal owns the term decision, so it is demanded, never inferred.
+    await this.assertTermChosen(core.academicYearId, core.termId);
+    await this.assertComplete(id, { requireTerm: true });
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
@@ -555,7 +703,10 @@ export class ExamsService extends BaseSchoolScopedService {
         reviewedByUserId: actor.userId,
         reviewNote: null,
       });
-      await this.event(tx, id, actor, 'PUBLISHED', { fromStatus: core.status, toStatus: to });
+      await this.event(tx, id, actor, 'PUBLISHED', {
+        fromStatus: core.status,
+        toStatus: to,
+      });
     });
 
     // Notifications only after the commit, so nobody hears about an exam that rolled back.
@@ -584,8 +735,11 @@ export class ExamsService extends BaseSchoolScopedService {
     }
     const core = await this.access.loadCore(id);
     this.access.assertSameSchool(actor, core.schoolId);
-    const to = nextStatus(core.status, action, { teacherAuthored: !!core.createdByTeacherId });
-    if (!to) throw new ConflictException(this.transitionMessage(core.status, action));
+    const to = nextStatus(core.status, action, {
+      teacherAuthored: !!core.createdByTeacherId,
+    });
+    if (!to)
+      throw new ConflictException(this.transitionMessage(core.status, action));
 
     await this.prisma.$transaction(async (tx) => {
       await this.guardStatus(tx, id, core.status, {
@@ -594,18 +748,25 @@ export class ExamsService extends BaseSchoolScopedService {
         reviewedAt: new Date(),
         reviewedByUserId: actor.userId,
       });
-      await this.event(tx, id, actor, action === 'REJECT' ? 'REJECTED' : 'CHANGES_REQUESTED', {
-        fromStatus: core.status,
-        toStatus: to,
-        reason: trimmed,
-      });
+      await this.event(
+        tx,
+        id,
+        actor,
+        action === 'REJECT' ? 'REJECTED' : 'CHANGES_REQUESTED',
+        {
+          fromStatus: core.status,
+          toStatus: to,
+          reason: trimmed,
+        },
+      );
     });
 
     if (core.createdByUserId && core.createdByUserId !== actor.userId) {
       this.eventEmitter.emit(NOTIFICATION_CREATE, {
         userIds: [core.createdByUserId],
         type: action === 'REJECT' ? 'EXAM_REJECTED' : 'EXAM_CHANGES_REQUESTED',
-        title: action === 'REJECT' ? 'Examination rejected' : 'Changes requested',
+        title:
+          action === 'REJECT' ? 'Examination rejected' : 'Changes requested',
         body: `"${core.title}": ${trimmed}`,
         link: `/examinations/${id}`,
         entityType: 'Examination',
@@ -613,11 +774,15 @@ export class ExamsService extends BaseSchoolScopedService {
         notifyPreferenceKey: 'notifyGrades',
       } as NotificationCreateEvent);
     }
-    void this.audit.record(actor.userId, action === 'REJECT' ? 'EXAM_REJECT' : 'EXAM_CHANGES_REQUESTED', {
-      schoolId: core.schoolId,
-      entityType: 'Examination',
-      entityId: id,
-    });
+    void this.audit.record(
+      actor.userId,
+      action === 'REJECT' ? 'EXAM_REJECT' : 'EXAM_CHANGES_REQUESTED',
+      {
+        schoolId: core.schoolId,
+        entityType: 'Examination',
+        entityId: id,
+      },
+    );
     return this.getStaff(id, actor, null);
   }
 
@@ -628,7 +793,8 @@ export class ExamsService extends BaseSchoolScopedService {
     if (actor.role !== Role.SUPER_ADMIN && actor.role !== Role.SCHOOL_ADMIN) {
       throw new ForbiddenException('Not allowed');
     }
-    const schoolId = actor.role === Role.SUPER_ADMIN ? opts?.schoolId : actor.schoolId;
+    const schoolId =
+      actor.role === Role.SUPER_ADMIN ? opts?.schoolId : actor.schoolId;
     if (!schoolId) throw new BadRequestException('schoolId is required');
     return this.cache!.wrap(`exams:school-stats:${schoolId}`, 60, () =>
       this.computeSchoolStats(schoolId),
@@ -637,21 +803,30 @@ export class ExamsService extends BaseSchoolScopedService {
 
   private async computeSchoolStats(schoolId: string) {
     const [row] = await this.prisma.$queryRaw<
-      Array<{ gradedResults: number; avgPct: number | null }>
+      Array<{
+        gradedResults: number;
+        obtained: number | null;
+        total: number | null;
+      }>
     >`
       SELECT COUNT(*)::int AS "gradedResults",
-             AVG(er.score::float / e."maxScore") * 100 AS "avgPct"
+             SUM(CASE WHEN er."isAbsent" THEN 0 ELSE er.score END)::int AS obtained,
+             SUM(e."maxScore")::int AS total
       FROM "ExamResult" er
       JOIN "Exam" e ON e.id = er."examId"
       JOIN "Examination" x ON x.id = e."examinationId"
       WHERE e."schoolId" = ${schoolId}
         AND x."resultStatus" = 'FINALIZED'
-        AND er.score IS NOT NULL
+        AND (er.score IS NOT NULL OR er."isAbsent")
         AND e."maxScore" > 0
     `;
     const gradedResults = row?.gradedResults ?? 0;
+    // Σobtained / Σtotal through the engine: a mean of paper percentages would let a 20-mark
+    // quiz weigh as much as a 100-mark paper, and dropped absences inflated it.
     const averageScorePercent =
-      gradedResults === 0 || row?.avgPct == null ? null : Math.round(row.avgPct * 100) / 100;
+      gradedResults === 0 || row?.total == null
+        ? null
+        : percentOf(row.obtained ?? 0, row.total);
     const examCount = await this.prisma.examination.count({
       where: { schoolId, status: 'PUBLISHED' },
     });
@@ -672,7 +847,11 @@ export class ExamsService extends BaseSchoolScopedService {
   }
 
   /** UI hints only — every action re-checks these on the server. */
-  private async permissionsFor(actor: Actor, row: StaffExaminationRow, teacherId: string | null) {
+  private async permissionsFor(
+    actor: Actor,
+    row: StaffExaminationRow,
+    teacherId: string | null,
+  ) {
     const isAdmin = actor.role === Role.SCHOOL_ADMIN;
     const creator = this.access.isCreator(actor, row, teacherId);
     const teacherAuthored = !!row.createdByTeacherId;
@@ -681,21 +860,38 @@ export class ExamsService extends BaseSchoolScopedService {
       !!teacherId &&
       (row.createdByTeacherId === teacherId ||
         row.subjects.some(
-          (s) => s.sectionSubject.teacherId === teacherId || s.createdByTeacherId === teacherId,
+          (s) =>
+            s.sectionSubject.teacherId === teacherId ||
+            s.createdByTeacherId === teacherId,
         ));
-    const classTeacher = teacherId ? await this.access.isClassTeacher(teacherId, row.sectionId) : false;
+    const classTeacher = teacherId
+      ? await this.access.isClassTeacher(teacherId, row.sectionId)
+      : false;
     const staffTeacher = actor.role === Role.TEACHER;
     return {
-      canEdit: isAdmin ? adminCanEdit(row.status) : staffTeacher && creator && teacherCanEdit(row.status),
-      canDelete: (isAdmin || (staffTeacher && creator)) && canDelete(row.status, hasMarks),
-      canManagePaper: (isAdmin || staffTeacher) && creator && paperIsEditable(row.status),
+      canEdit: isAdmin
+        ? adminCanEdit(row.status)
+        : staffTeacher && creator && teacherCanEdit(row.status),
+      canDelete:
+        (isAdmin || (staffTeacher && creator)) &&
+        canDelete(row.status, hasMarks),
+      canManagePaper:
+        (isAdmin || staffTeacher) && creator && paperIsEditable(row.status),
       canViewPaper: isAdmin || (staffTeacher && creator),
-      canSubmit: staffTeacher && creator && nextStatus(row.status, 'SUBMIT', { teacherAuthored: true }) !== null,
+      canSubmit:
+        staffTeacher &&
+        creator &&
+        nextStatus(row.status, 'SUBMIT', { teacherAuthored: true }) !== null,
       canReview: isAdmin && row.status === 'PENDING_REVIEW',
-      canPublish: isAdmin && nextStatus(row.status, 'PUBLISH', { teacherAuthored }) !== null,
-      canEnterMarks: canEnterMarks(row.status, row.resultStatus) && (isAdmin || teachesAny),
+      canPublish:
+        isAdmin &&
+        nextStatus(row.status, 'PUBLISH', { teacherAuthored }) !== null,
+      canEnterMarks:
+        canEnterMarks(row.status, row.resultStatus) && (isAdmin || teachesAny),
       canEditRemarks:
-        row.status === 'PUBLISHED' && row.resultStatus !== 'FINALIZED' && (isAdmin || classTeacher),
+        row.status === 'PUBLISHED' &&
+        row.resultStatus !== 'FINALIZED' &&
+        (isAdmin || classTeacher),
       canFinalize: isAdmin && canFinalize(row.status, row.resultStatus),
       canReopen: isAdmin && canReopen(row.resultStatus),
     };
@@ -705,14 +901,18 @@ export class ExamsService extends BaseSchoolScopedService {
     this.access.assertSameSchool(actor, core.schoolId);
     if (actor.role === Role.SCHOOL_ADMIN) {
       if (!adminCanEdit(core.status)) {
-        throw new ConflictException('A published or rejected examination can no longer be edited');
+        throw new ConflictException(
+          'A published or rejected examination can no longer be edited',
+        );
       }
       return { teacherId: null, asAdmin: true };
     }
     if (actor.role === Role.TEACHER) {
       const teacherId = await this.access.teacherId(actor);
       if (!this.access.isCreator(actor, core, teacherId)) {
-        throw new ForbiddenException('Only the teacher who created this examination can edit it');
+        throw new ForbiddenException(
+          'Only the teacher who created this examination can edit it',
+        );
       }
       if (!teacherCanEdit(core.status)) {
         throw new ConflictException(
@@ -738,7 +938,9 @@ export class ExamsService extends BaseSchoolScopedService {
       data: { ...data, updatedAt: new Date() },
     });
     if (!result.count) {
-      throw new ConflictException('This examination changed while you were working. Reload and try again.');
+      throw new ConflictException(
+        'This examination changed while you were working. Reload and try again.',
+      );
     }
   }
 
@@ -759,7 +961,7 @@ export class ExamsService extends BaseSchoolScopedService {
     });
   }
 
-  private async assertComplete(id: string) {
+  private async assertComplete(id: string, opts: { requireTerm: boolean }) {
     const exam = await this.prisma.examination.findUniqueOrThrow({
       where: { id },
       select: {
@@ -767,6 +969,7 @@ export class ExamsService extends BaseSchoolScopedService {
         academicYearId: true,
         classGradeId: true,
         sectionId: true,
+        termId: true,
         subjects: {
           select: {
             heldAt: true,
@@ -780,21 +983,25 @@ export class ExamsService extends BaseSchoolScopedService {
         },
       },
     });
-    const problems = submissionProblems({
-      title: exam.title,
-      academicYearId: exam.academicYearId,
-      classGradeId: exam.classGradeId,
-      sectionId: exam.sectionId,
-      subjects: exam.subjects.map((s) => ({
-        label: s.sectionSubject.subject.name,
-        heldAt: s.heldAt,
-        startMin: s.startMin,
-        endMin: s.endMin,
-        maxScore: s.maxScore,
-        passingMarks: s.passingMarks,
-        hasPaper: !!s.paper,
-      })),
-    });
+    const problems = submissionProblems(
+      {
+        title: exam.title,
+        academicYearId: exam.academicYearId,
+        classGradeId: exam.classGradeId,
+        sectionId: exam.sectionId,
+        termId: exam.termId,
+        subjects: exam.subjects.map((s) => ({
+          label: s.sectionSubject.subject.name,
+          heldAt: s.heldAt,
+          startMin: s.startMin,
+          endMin: s.endMin,
+          maxScore: s.maxScore,
+          passingMarks: s.passingMarks,
+          hasPaper: !!s.paper,
+        })),
+      },
+      opts,
+    );
     if (problems.length) {
       throw new BadRequestException({
         statusCode: 400,
@@ -804,7 +1011,10 @@ export class ExamsService extends BaseSchoolScopedService {
     }
   }
 
-  private transitionMessage(status: ExaminationStatus, action: ReviewAction): string {
+  private transitionMessage(
+    status: ExaminationStatus,
+    action: ReviewAction,
+  ): string {
     if (action === 'SUBMIT') {
       return status === 'PENDING_REVIEW'
         ? 'This examination is already waiting for review'
@@ -831,17 +1041,26 @@ export class ExamsService extends BaseSchoolScopedService {
       }),
       this.prisma.section.findUnique({
         where: { id: sectionId },
-        select: { schoolId: true, name: true, classGradeId: true, classGrade: { select: { name: true } } },
+        select: {
+          schoolId: true,
+          name: true,
+          classGradeId: true,
+          classGrade: { select: { name: true } },
+        },
       }),
     ]);
     if (!year || year.schoolId !== schoolId) {
-      throw new BadRequestException('Choose an academic session from your school');
+      throw new BadRequestException(
+        'Choose an academic session from your school',
+      );
     }
     if (!section || section.schoolId !== schoolId) {
       throw new BadRequestException('Choose a section from your school');
     }
     if (section.classGradeId !== classGradeId) {
-      throw new BadRequestException('That section does not belong to the selected class');
+      throw new BadRequestException(
+        'That section does not belong to the selected class',
+      );
     }
     return { className: section.classGrade.name, sectionName: section.name };
   }
@@ -854,16 +1073,49 @@ export class ExamsService extends BaseSchoolScopedService {
     return scope;
   }
 
-  private async resolveTerm(schoolId: string, academicYearId: string, termId?: string | null) {
+  private async resolveTerm(
+    schoolId: string,
+    academicYearId: string,
+    termId?: string | null,
+  ) {
     if (!termId) return null;
     const term = await this.prisma.academicTerm.findUnique({
       where: { id: termId },
       select: { schoolId: true, academicYearId: true },
     });
-    if (!term || term.schoolId !== schoolId || term.academicYearId !== academicYearId) {
-      throw new BadRequestException('Choose a term from the selected academic session');
+    if (
+      !term ||
+      term.schoolId !== schoolId ||
+      term.academicYearId !== academicYearId
+    ) {
+      throw new BadRequestException(
+        'Choose a term from the selected academic session',
+      );
     }
     return termId;
+  }
+
+  /** Whether the session has any term at all, i.e. whether a choice even exists. */
+  private async hasTerms(academicYearId: string): Promise<boolean> {
+    return (
+      (await this.prisma.academicTerm.count({ where: { academicYearId } })) > 0
+    );
+  }
+
+  /**
+   * Refuses a missing term instead of picking one — never the current, latest or first.
+   * Says something different when the session has no term to choose yet.
+   */
+  private async assertTermChosen(
+    academicYearId: string,
+    termId: string | null,
+  ): Promise<void> {
+    if (termId) return;
+    throw new BadRequestException(
+      (await this.hasTerms(academicYearId))
+        ? TERM_REQUIRED_MESSAGE
+        : 'This academic session has no terms yet. Add one under Terms & grading first.',
+    );
   }
 
   private async resolveScheme(schoolId: string, schemeId: string) {
@@ -889,16 +1141,24 @@ export class ExamsService extends BaseSchoolScopedService {
     if (!ids.length) return [];
     const rows = await this.prisma.sectionSubject.findMany({
       where: { id: { in: ids } },
-      select: { id: true, sectionId: true, subject: { select: { name: true } } },
+      select: {
+        id: true,
+        sectionId: true,
+        subject: { select: { name: true } },
+      },
     });
     const byId = new Map(rows.map((r) => [r.id, r]));
     return inputs.map((input) => {
       const ss = byId.get(input.sectionSubjectId);
       if (!ss || ss.sectionId !== sectionId) {
-        throw new BadRequestException('That subject is not taught in this section');
+        throw new BadRequestException(
+          'That subject is not taught in this section',
+        );
       }
       if (scope && !scope.classTeacher && !scope.sectionSubjectIds.has(ss.id)) {
-        throw new ForbiddenException(`You do not teach ${ss.subject.name} in this section`);
+        throw new ForbiddenException(
+          `You do not teach ${ss.subject.name} in this section`,
+        );
       }
       assertSubjectNumbers(input);
       return { input, label: ss.subject.name };
@@ -926,20 +1186,27 @@ export class ExamsService extends BaseSchoolScopedService {
 
   private subjectFieldData(input: ExamSubjectFieldsDto) {
     const data: Prisma.ExamUncheckedUpdateInput = {};
-    if (input.heldAt !== undefined) data.heldAt = input.heldAt ? new Date(input.heldAt) : null;
+    if (input.heldAt !== undefined)
+      data.heldAt = input.heldAt ? new Date(input.heldAt) : null;
     if (input.startMin !== undefined) data.startMin = input.startMin;
     if (input.endMin !== undefined) data.endMin = input.endMin;
     if (input.venue !== undefined) data.venue = cleanText(input.venue);
     if (input.maxScore !== undefined) data.maxScore = input.maxScore;
-    if (input.passingMarks !== undefined) data.passingMarks = input.passingMarks;
-    if (input.description !== undefined) data.description = cleanText(input.description);
+    if (input.passingMarks !== undefined)
+      data.passingMarks = input.passingMarks;
+    if (input.description !== undefined)
+      data.description = cleanText(input.description);
     return data as Record<string, never>;
   }
 
-  private commonFilters(query: ListExaminationsQueryDto): Prisma.ExaminationWhereInput[] {
+  private commonFilters(
+    query: ListExaminationsQueryDto,
+  ): Prisma.ExaminationWhereInput[] {
     const and: Prisma.ExaminationWhereInput[] = [];
-    if (query.q?.trim()) and.push({ title: { contains: query.q.trim(), mode: 'insensitive' } });
-    if (query.academicYearId) and.push({ academicYearId: query.academicYearId });
+    if (query.q?.trim())
+      and.push({ title: { contains: query.q.trim(), mode: 'insensitive' } });
+    if (query.academicYearId)
+      and.push({ academicYearId: query.academicYearId });
     if (query.classGradeId) and.push({ classGradeId: query.classGradeId });
     if (query.sectionId) and.push({ sectionId: query.sectionId });
     if (query.termId) and.push({ termId: query.termId });
@@ -959,7 +1226,10 @@ export class ExamsService extends BaseSchoolScopedService {
   }
 
   private async listForAudience(actor: Actor, query: ListExaminationsQueryDto) {
-    const studentId = await this.access.resolveAudienceStudent(actor, query.studentId);
+    const studentId = await this.access.resolveAudienceStudent(
+      actor,
+      query.studentId,
+    );
     const placements = await this.prisma.enrollment.findMany({
       where: { studentId, status: { in: HISTORY_ENROLLMENT } },
       select: { sectionId: true, academicYearId: true },
@@ -993,7 +1263,9 @@ export class ExamsService extends BaseSchoolScopedService {
     return { items: rows.map(toAudienceExamination), total, page, pageSize };
   }
 
-  private toStaffListRow(r: Prisma.ExaminationGetPayload<{ select: typeof staffListSelect }>) {
+  private toStaffListRow(
+    r: Prisma.ExaminationGetPayload<{ select: typeof staffListSelect }>,
+  ) {
     const dates = r.subjects.map((s) => s.heldAt).filter((d): d is Date => !!d);
     return {
       id: r.id,
@@ -1009,7 +1281,8 @@ export class ExamsService extends BaseSchoolScopedService {
       academicYear: r.academicYear,
       term: r.term,
       teacher: r.createdByTeacher,
-      createdByName: r.createdByTeacher?.fullName ?? r.createdByUser?.fullName ?? null,
+      createdByName:
+        r.createdByTeacher?.fullName ?? r.createdByUser?.fullName ?? null,
       submittedAt: r.submittedAt,
       publishedAt: r.publishedAt,
       finalizedAt: r.finalizedAt,
@@ -1028,7 +1301,10 @@ export class ExamsService extends BaseSchoolScopedService {
     if (!admins.length) return;
     const teacher = await this.prisma.user.findUnique({
       where: { id: actor.userId },
-      select: { fullName: true, teacherProfile: { select: { fullName: true } } },
+      select: {
+        fullName: true,
+        teacherProfile: { select: { fullName: true } },
+      },
     });
     const by = teacher?.teacherProfile?.fullName ?? teacher?.fullName;
     this.eventEmitter.emit(NOTIFICATION_CREATE, {
@@ -1073,12 +1349,22 @@ export class ExamsService extends BaseSchoolScopedService {
         s.startMin != null
           ? `${formatMinutes(s.startMin)}${s.endMin != null ? `–${formatMinutes(s.endMin)}` : ''}`
           : null;
-      return [s.sectionSubject.subject.name, formatDate(s.heldAt), time, s.venue]
+      return [
+        s.sectionSubject.subject.name,
+        formatDate(s.heldAt),
+        time,
+        s.venue,
+      ]
         .filter(Boolean)
         .join(' · ');
     });
-    const more = exam.subjects.length > 3 ? `; +${exam.subjects.length - 3} more` : '';
-    const studentIds = await sectionYearStudentIds(this.prisma, exam.sectionId, exam.academicYearId);
+    const more =
+      exam.subjects.length > 3 ? `; +${exam.subjects.length - 3} more` : '';
+    const studentIds = await sectionYearStudentIds(
+      this.prisma,
+      exam.sectionId,
+      exam.academicYearId,
+    );
     const userIds = await studentUserIds(this.prisma, studentIds);
     if (userIds.length) {
       this.eventEmitter.emit(NOTIFICATION_CREATE, {

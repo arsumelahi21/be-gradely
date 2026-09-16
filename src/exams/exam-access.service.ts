@@ -23,6 +23,7 @@ export const examCoreSelect = {
   academicYearId: true,
   classGradeId: true,
   sectionId: true,
+  termId: true,
   title: true,
   className: true,
   sectionName: true,
@@ -69,11 +70,30 @@ export class ExamAccessService {
 
   async teacherId(actor: Actor): Promise<string> {
     const teacher = await this.prisma.teacherProfile.findFirst({
-      where: { userId: actor.userId, schoolId: this.schoolOf(actor), isActive: true },
+      where: {
+        userId: actor.userId,
+        schoolId: this.schoolOf(actor),
+        isActive: true,
+      },
       select: { id: true },
     });
     if (!teacher) throw new ForbiddenException('Teacher profile not found');
     return teacher.id;
+  }
+
+  /**
+   * Refuses a deactivated account or a suspended school, as login and refresh now do, so an
+   * access token issued before the switch-off cannot reach confidential material.
+   */
+  async assertActiveAccount(actor: Actor): Promise<void> {
+    const account = await this.prisma.user.findUnique({
+      where: { id: actor.userId },
+      select: { isActive: true, school: { select: { isActive: true } } },
+    });
+    // Super admins have no school, so only an explicit `false` locks a user out.
+    if (!account?.isActive || account.school?.isActive === false) {
+      throw new ForbiddenException('Account is inactive');
+    }
   }
 
   isCreator(
@@ -104,17 +124,23 @@ export class ExamAccessService {
   }
 
   /** Staff read access. Returns the caller's teacher profile id when they are a teacher. */
-  async assertStaffCanView(actor: Actor, exam: ExamCore): Promise<string | null> {
+  async assertStaffCanView(
+    actor: Actor,
+    exam: ExamCore,
+  ): Promise<string | null> {
     if (actor.role === Role.SUPER_ADMIN) return null;
     this.assertSameSchool(actor, exam.schoolId);
     if (actor.role === Role.SCHOOL_ADMIN) return null;
-    if (actor.role !== Role.TEACHER) throw new ForbiddenException('Not allowed');
+    if (actor.role !== Role.TEACHER)
+      throw new ForbiddenException('Not allowed');
     const teacherId = await this.teacherId(actor);
     const visible = await this.prisma.examination.count({
       where: { id: exam.id, ...this.teacherVisibility(teacherId) },
     });
     if (!visible) {
-      throw new ForbiddenException('You do not have access to this examination');
+      throw new ForbiddenException(
+        'You do not have access to this examination',
+      );
     }
     return teacherId;
   }
@@ -147,14 +173,18 @@ export class ExamAccessService {
     return !!row;
   }
 
-  async resolveAudienceStudent(actor: Actor, studentId?: string): Promise<string> {
+  async resolveAudienceStudent(
+    actor: Actor,
+    studentId?: string,
+  ): Promise<string> {
     if (actor.role === Role.STUDENT) {
       const own = await this.prisma.studentProfile.findFirst({
         where: { userId: actor.userId, schoolId: this.schoolOf(actor) },
         select: { id: true },
       });
       if (!own) throw new ForbiddenException('Student profile not found');
-      if (studentId && studentId !== own.id) throw new ForbiddenException('Not allowed');
+      if (studentId && studentId !== own.id)
+        throw new ForbiddenException('Not allowed');
       return own.id;
     }
     if (actor.role === Role.PARENT) {
@@ -163,7 +193,8 @@ export class ExamAccessService {
         where: { studentId, parent: { userId: actor.userId } },
         select: { studentId: true },
       });
-      if (!link) throw new ForbiddenException('Student is not linked to this parent');
+      if (!link)
+        throw new ForbiddenException('Student is not linked to this parent');
       return studentId;
     }
     throw new ForbiddenException('Not allowed');
@@ -175,7 +206,8 @@ export class ExamAccessService {
     exam: ExamCore,
     studentId?: string,
   ): Promise<string> {
-    if (actor.role === Role.STUDENT) this.assertSameSchool(actor, exam.schoolId);
+    if (actor.role === Role.STUDENT)
+      this.assertSameSchool(actor, exam.schoolId);
     const sid = await this.resolveAudienceStudent(actor, studentId);
     if (exam.status !== ExaminationStatus.PUBLISHED) {
       throw new ForbiddenException('This examination is not available');
@@ -189,7 +221,8 @@ export class ExamAccessService {
       },
       select: { id: true },
     });
-    if (!placed) throw new ForbiddenException('This examination is not available');
+    if (!placed)
+      throw new ForbiddenException('This examination is not available');
     return sid;
   }
 
@@ -211,11 +244,15 @@ export class ExamAccessService {
       select: { studentId: true, status: true },
     });
     const active = new Set(
-      placements.filter((p) => p.status === EnrollmentStatus.ACTIVE).map((p) => p.studentId),
+      placements
+        .filter((p) => p.status === EnrollmentStatus.ACTIVE)
+        .map((p) => p.studentId),
     );
     const closed = [
       ...new Set(
-        placements.filter((p) => !active.has(p.studentId)).map((p) => p.studentId),
+        placements
+          .filter((p) => !active.has(p.studentId))
+          .map((p) => p.studentId),
       ),
     ];
     let movedOut = new Set<string>();

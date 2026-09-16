@@ -68,7 +68,10 @@ export class ExamSettingsService {
     } catch (err) {
       // A concurrent request created it first.
       const again = await this.prisma.gradingScheme.findFirst({
-        where: { schoolId, OR: [{ isDefault: true }, { name: DEFAULT_SCHEME_NAME }] },
+        where: {
+          schoolId,
+          OR: [{ isDefault: true }, { name: DEFAULT_SCHEME_NAME }],
+        },
         select: { id: true },
       });
       if (again) return again.id;
@@ -99,7 +102,11 @@ export class ExamSettingsService {
     const schoolId = this.access.schoolOf(actor);
     return this.prisma.academicTerm.findMany({
       where: { schoolId, ...(academicYearId ? { academicYearId } : {}) },
-      orderBy: [{ academicYearId: 'asc' }, { sortOrder: 'asc' }, { name: 'asc' }],
+      orderBy: [
+        { academicYearId: 'asc' },
+        { sortOrder: 'asc' },
+        { name: 'asc' },
+      ],
       select: {
         id: true,
         academicYearId: true,
@@ -120,7 +127,9 @@ export class ExamSettingsService {
       select: { schoolId: true },
     });
     if (!year || year.schoolId !== schoolId) {
-      throw new BadRequestException('Choose an academic session from your school');
+      throw new BadRequestException(
+        'Choose an academic session from your school',
+      );
     }
     const name = dto.name.trim();
     await this.assertTermNameFree(dto.academicYearId, name);
@@ -140,9 +149,14 @@ export class ExamSettingsService {
   async updateTerm(id: string, dto: UpdateTermDto, actor: Actor) {
     const term = await this.loadTerm(id, actor);
     const name = dto.name?.trim();
-    if (name && name !== term.name) await this.assertTermNameFree(term.academicYearId, name);
-    const startDate = dto.startDate !== undefined ? dto.startDate : term.startDate?.toISOString();
-    const endDate = dto.endDate !== undefined ? dto.endDate : term.endDate?.toISOString();
+    if (name && name !== term.name)
+      await this.assertTermNameFree(term.academicYearId, name);
+    const startDate =
+      dto.startDate !== undefined
+        ? dto.startDate
+        : term.startDate?.toISOString();
+    const endDate =
+      dto.endDate !== undefined ? dto.endDate : term.endDate?.toISOString();
     this.assertDateOrder(startDate, endDate);
     return this.prisma.academicTerm.update({
       where: { id },
@@ -178,12 +192,17 @@ export class ExamSettingsService {
       where: { academicYearId, name: { equals: name, mode: 'insensitive' } },
       select: { id: true },
     });
-    if (clash) throw new ConflictException(`This session already has a term named "${name}"`);
+    if (clash)
+      throw new ConflictException(
+        `This session already has a term named "${name}"`,
+      );
   }
 
   private assertDateOrder(start?: string | null, end?: string | null) {
     if (start && end && new Date(end) < new Date(start)) {
-      throw new BadRequestException('Term end date must be on or after its start date');
+      throw new BadRequestException(
+        'Term end date must be on or after its start date',
+      );
     }
   }
 
@@ -192,18 +211,36 @@ export class ExamSettingsService {
   async listSchemes(actor: Actor) {
     const schoolId = this.access.schoolOf(actor);
     await this.ensureDefaultScheme(schoolId);
-    return this.prisma.gradingScheme.findMany({
-      where: { schoolId },
-      orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
-      select: {
-        id: true,
-        name: true,
-        isDefault: true,
-        updatedAt: true,
-        bands: { orderBy: { minPercent: 'desc' }, select: bandSelect },
-        _count: { select: { examinations: true } },
-      },
-    });
+    const [schemes, finalized] = await Promise.all([
+      this.prisma.gradingScheme.findMany({
+        where: { schoolId },
+        orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
+        select: {
+          id: true,
+          name: true,
+          isDefault: true,
+          updatedAt: true,
+          bands: { orderBy: { minPercent: 'desc' }, select: bandSelect },
+          _count: { select: { examinations: true } },
+        },
+      }),
+      this.prisma.examination.groupBy({
+        by: ['gradingSchemeId'],
+        where: { schoolId, resultStatus: 'FINALIZED' },
+        _count: { _all: true },
+      }),
+    ]);
+    const lockedBy = new Map(
+      finalized.map((g) => [g.gradingSchemeId, g._count._all]),
+    );
+    return schemes.map((s) => ({
+      ...s,
+      // A scheme saved before today's checks may be incoherent; say so rather than hide it.
+      problems: validateBands(s.bands),
+      finalizedResults:
+        (lockedBy.get(s.id) ?? 0) +
+        (s.isDefault ? (lockedBy.get(null) ?? 0) : 0),
+    }));
   }
 
   async createScheme(dto: CreateGradingSchemeDto, actor: Actor) {
@@ -213,7 +250,10 @@ export class ExamSettingsService {
     await this.assertSchemeNameFree(schoolId, name);
     return this.prisma.$transaction(async (tx) => {
       if (dto.isDefault) {
-        await tx.gradingScheme.updateMany({ where: { schoolId }, data: { isDefault: false } });
+        await tx.gradingScheme.updateMany({
+          where: { schoolId },
+          data: { isDefault: false },
+        });
       }
       return tx.gradingScheme.create({
         data: {
@@ -222,19 +262,30 @@ export class ExamSettingsService {
           isDefault: !!dto.isDefault,
           bands: { create: dto.bands.map((b) => this.bandData(b)) },
         },
-        select: { id: true, name: true, isDefault: true, bands: { orderBy: { minPercent: 'desc' }, select: bandSelect } },
+        select: {
+          id: true,
+          name: true,
+          isDefault: true,
+          bands: { orderBy: { minPercent: 'desc' }, select: bandSelect },
+        },
       });
     });
   }
 
-  /** Finalized results are snapshotted, so editing bands never rewrites a locked result. */
+  /** Name and default can always change; grades only until the scheme grades a finalized result. */
   async updateScheme(id: string, dto: UpdateGradingSchemeDto, actor: Actor) {
     const scheme = await this.loadScheme(id, actor);
     const name = dto.name?.trim();
-    if (name && name !== scheme.name) await this.assertSchemeNameFree(scheme.schoolId, name);
-    if (dto.bands) this.assertValidBands(dto.bands);
+    if (name && name !== scheme.name)
+      await this.assertSchemeNameFree(scheme.schoolId, name);
+    if (dto.bands) {
+      this.assertValidBands(dto.bands);
+      await this.assertBandsEditable(scheme, dto.bands);
+    }
     if (dto.isDefault === false && scheme.isDefault) {
-      throw new ConflictException('Make another scheme the default instead of unsetting this one');
+      throw new ConflictException(
+        'Make another scheme the default instead of unsetting this one',
+      );
     }
     return this.prisma.$transaction(async (tx) => {
       if (dto.isDefault && !scheme.isDefault) {
@@ -255,7 +306,12 @@ export class ExamSettingsService {
           ...(name ? { name } : {}),
           ...(dto.isDefault ? { isDefault: true } : {}),
         },
-        select: { id: true, name: true, isDefault: true, bands: { orderBy: { minPercent: 'desc' }, select: bandSelect } },
+        select: {
+          id: true,
+          name: true,
+          isDefault: true,
+          bands: { orderBy: { minPercent: 'desc' }, select: bandSelect },
+        },
       });
     });
   }
@@ -263,9 +319,13 @@ export class ExamSettingsService {
   async deleteScheme(id: string, actor: Actor) {
     const scheme = await this.loadScheme(id, actor);
     if (scheme.isDefault) {
-      throw new ConflictException('The default grading scheme cannot be deleted');
+      throw new ConflictException(
+        'The default grading scheme cannot be deleted',
+      );
     }
-    const inUse = await this.prisma.examination.count({ where: { gradingSchemeId: id } });
+    const inUse = await this.prisma.examination.count({
+      where: { gradingSchemeId: id },
+    });
     if (inUse) {
       throw new ConflictException(
         `This scheme is used by ${inUse} examination${inUse === 1 ? '' : 's'} and cannot be deleted`,
@@ -275,8 +335,47 @@ export class ExamSettingsService {
     return { deleted: true };
   }
 
+  /**
+   * Term results are graded live while exam grades stay frozen, so once a scheme has graded
+   * a finalized result its bands are fixed — a new scheme is how grading changes.
+   */
+  private async assertBandsEditable(
+    scheme: { id: string; schoolId: string; isDefault: boolean },
+    next: GradeBandInput[],
+  ) {
+    const current = await this.prisma.gradeBand.findMany({
+      where: { schemeId: scheme.id },
+      select: { label: true, minPercent: true, isPassing: true },
+    });
+    const shape = (bands: GradeBandInput[]) =>
+      [...bands]
+        .sort((a, b) => a.minPercent - b.minPercent)
+        .map((b) => `${b.label.trim()}|${b.minPercent}|${b.isPassing}`)
+        .join(';');
+    if (shape(current) === shape(next)) return;
+    const finalized = await this.prisma.examination.count({
+      where: {
+        resultStatus: 'FINALIZED',
+        OR: [
+          { gradingSchemeId: scheme.id },
+          // Legacy examinations with no scheme were graded by the school default.
+          ...(scheme.isDefault
+            ? [{ gradingSchemeId: null, schoolId: scheme.schoolId }]
+            : []),
+        ],
+      },
+    });
+    if (finalized) {
+      throw new ConflictException(
+        `This scheme has graded ${finalized} finalized examination${finalized === 1 ? '' : 's'}, so its grades can't change. Create a new scheme and make it the default instead.`,
+      );
+    }
+  }
+
   private async loadScheme(id: string, actor: Actor) {
-    const scheme = await this.prisma.gradingScheme.findUnique({ where: { id } });
+    const scheme = await this.prisma.gradingScheme.findUnique({
+      where: { id },
+    });
     if (!scheme) throw new NotFoundException('Grading scheme not found');
     this.access.assertSameSchool(actor, scheme.schoolId);
     return scheme;
@@ -287,7 +386,10 @@ export class ExamSettingsService {
       where: { schoolId, name: { equals: name, mode: 'insensitive' } },
       select: { id: true },
     });
-    if (clash) throw new ConflictException(`A grading scheme named "${name}" already exists`);
+    if (clash)
+      throw new ConflictException(
+        `A grading scheme named "${name}" already exists`,
+      );
   }
 
   private assertValidBands(bands: GradeBandInput[]) {

@@ -33,7 +33,10 @@ import {
   StudentQueryDto,
   UpdateExaminationDto,
 } from './dto/examination.dto';
-import { CreateExamSubjectDto, UpdateExamSubjectDto } from './dto/exam-subject.dto';
+import {
+  CreateExamSubjectDto,
+  UpdateExamSubjectDto,
+} from './dto/exam-subject.dto';
 
 const uuid = new ParseUUIDPipe({ version: '4' });
 
@@ -52,7 +55,13 @@ export class ExamsController {
     return this.exams.create(dto, req.user);
   }
 
-  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN, Role.TEACHER, Role.STUDENT, Role.PARENT)
+  @Roles(
+    Role.SUPER_ADMIN,
+    Role.SCHOOL_ADMIN,
+    Role.TEACHER,
+    Role.STUDENT,
+    Role.PARENT,
+  )
   @Get()
   list(@Query() query: ListExaminationsQueryDto, @Req() req: any) {
     return this.exams.list(req.user, query);
@@ -63,6 +72,21 @@ export class ExamsController {
   @Get('school/stats')
   schoolStats(@Req() req: any, @Query('schoolId') schoolId?: string) {
     return this.exams.getSchoolStats(req.user, { schoolId });
+  }
+
+  @Roles(Role.STUDENT, Role.PARENT)
+  @Get('results/me/summary')
+  myResultsSummary(@Query() query: StudentQueryDto, @Req() req: any) {
+    return this.results.myResultsSummary(req.user, query.studentId);
+  }
+
+  @Roles(Role.SCHOOL_ADMIN)
+  @Get('results/student/:studentId/summary')
+  studentResultsSummary(
+    @Param('studentId', uuid) studentId: string,
+    @Req() req: any,
+  ) {
+    return this.results.resultsSummaryForStudent(req.user, studentId);
   }
 
   @Roles(Role.STUDENT, Role.PARENT)
@@ -77,15 +101,29 @@ export class ExamsController {
     return this.results.resultsForStudent(req.user, studentId);
   }
 
-  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN, Role.TEACHER, Role.STUDENT, Role.PARENT)
+  @Roles(
+    Role.SUPER_ADMIN,
+    Role.SCHOOL_ADMIN,
+    Role.TEACHER,
+    Role.STUDENT,
+    Role.PARENT,
+  )
   @Get(':id')
-  get(@Param('id', uuid) id: string, @Query() query: StudentQueryDto, @Req() req: any) {
+  get(
+    @Param('id', uuid) id: string,
+    @Query() query: StudentQueryDto,
+    @Req() req: any,
+  ) {
     return this.exams.get(id, req.user, query.studentId);
   }
 
   @Roles(Role.SCHOOL_ADMIN, Role.TEACHER)
   @Patch(':id')
-  update(@Param('id', uuid) id: string, @Body() dto: UpdateExaminationDto, @Req() req: any) {
+  update(
+    @Param('id', uuid) id: string,
+    @Body() dto: UpdateExaminationDto,
+    @Req() req: any,
+  ) {
     return this.exams.update(id, dto, req.user);
   }
 
@@ -105,7 +143,11 @@ export class ExamsController {
 
   @Roles(Role.SCHOOL_ADMIN, Role.TEACHER)
   @Post(':id/subjects')
-  addSubject(@Param('id', uuid) id: string, @Body() dto: CreateExamSubjectDto, @Req() req: any) {
+  addSubject(
+    @Param('id', uuid) id: string,
+    @Body() dto: CreateExamSubjectDto,
+    @Req() req: any,
+  ) {
     return this.exams.addSubject(id, dto, req.user);
   }
 
@@ -188,13 +230,21 @@ export class ExamsController {
 
   @Roles(Role.SCHOOL_ADMIN)
   @Post(':id/request-changes')
-  requestChanges(@Param('id', uuid) id: string, @Body() dto: ReviewReasonDto, @Req() req: any) {
+  requestChanges(
+    @Param('id', uuid) id: string,
+    @Body() dto: ReviewReasonDto,
+    @Req() req: any,
+  ) {
     return this.exams.requestChanges(id, dto.reason, req.user);
   }
 
   @Roles(Role.SCHOOL_ADMIN)
   @Post(':id/reject')
-  reject(@Param('id', uuid) id: string, @Body() dto: ReviewReasonDto, @Req() req: any) {
+  reject(
+    @Param('id', uuid) id: string,
+    @Body() dto: ReviewReasonDto,
+    @Req() req: any,
+  ) {
     return this.exams.reject(id, dto.reason, req.user);
   }
 

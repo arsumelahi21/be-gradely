@@ -39,6 +39,7 @@ describe('Examination history across promotion (e2e)', () => {
     sectionSubjectId: string;
     score: number;
     studentId: string;
+    termId: string;
   }) {
     const created = await api()
       .post('/api/exams')
@@ -48,7 +49,15 @@ describe('Examination history across promotion (e2e)', () => {
         academicYearId: opts.academicYearId,
         classGradeId: opts.classGradeId,
         sectionId: opts.sectionId,
-        subjects: [{ sectionSubjectId: opts.sectionSubjectId, heldAt: '2026-06-01', maxScore: 100, passingMarks: 40 }],
+        termId: opts.termId,
+        subjects: [
+          {
+            sectionSubjectId: opts.sectionSubjectId,
+            heldAt: '2026-06-01',
+            maxScore: 100,
+            passingMarks: 40,
+          },
+        ],
       })
       .expect(201);
     const id: string = created.body.id;
@@ -56,27 +65,54 @@ describe('Examination history across promotion (e2e)', () => {
     await api()
       .put(`/api/exams/${id}/subjects/${subjectId}/paper`)
       .set(bearer(opts.token))
-      .attach('paper', pdf, { filename: 'paper.pdf', contentType: 'application/pdf' })
+      .attach('paper', pdf, {
+        filename: 'paper.pdf',
+        contentType: 'application/pdf',
+      })
       .expect(200);
-    await api().post(`/api/exams/${id}/publish`).set(bearer(opts.token)).expect(201);
+    await api()
+      .post(`/api/exams/${id}/publish`)
+      .set(bearer(opts.token))
+      .expect(201);
     await api()
       .put(`/api/exams/${id}/subjects/${subjectId}/marks`)
       .set(bearer(opts.token))
       .send({ entries: [{ studentId: opts.studentId, score: opts.score }] })
       .expect(200);
-    await api().post(`/api/exams/${id}/results/finalize`).set(bearer(opts.token)).expect(201);
+    await api()
+      .post(`/api/exams/${id}/results/finalize`)
+      .set(bearer(opts.token))
+      .expect(201);
     return id;
   }
 
   it('keeps last session’s results intact and visible after promotion', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const student = cls.students[0];
-    const admin = await createTestUser({ role: Role.SCHOOL_ADMIN, schoolId: cls.school.id });
+    const admin = await createTestUser({
+      role: Role.SCHOOL_ADMIN,
+      schoolId: cls.school.id,
+    });
     const adminToken = await tokenFor(app, admin);
-    const parentUser = await createTestUser({ role: Role.PARENT, schoolId: cls.school.id });
-    const parent = await prisma.parentProfile.create({ data: { userId: parentUser.id, fullName: 'Parent' } });
-    await prisma.parentStudent.create({ data: { parentId: parent.id, studentId: student.profile.id } });
+    const parentUser = await createTestUser({
+      role: Role.PARENT,
+      schoolId: cls.school.id,
+    });
+    const parent = await prisma.parentProfile.create({
+      data: { userId: parentUser.id, fullName: 'Parent' },
+    });
+    await prisma.parentStudent.create({
+      data: { parentId: parent.id, studentId: student.profile.id },
+    });
 
+    // Each session carries its own term: publishing demands one.
+    const oldTerm = await prisma.academicTerm.create({
+      data: {
+        schoolId: cls.school.id,
+        academicYearId: cls.academicYear.id,
+        name: 'First Term',
+      },
+    });
     const oldExamId = await finalizedExam({
       token: adminToken,
       title: 'Annual Examination',
@@ -86,8 +122,11 @@ describe('Examination history across promotion (e2e)', () => {
       sectionSubjectId: cls.sectionSubject.id,
       score: 72,
       studentId: student.profile.id,
+      termId: oldTerm.id,
     });
-    const before = await prisma.examinationResult.findFirstOrThrow({ where: { examinationId: oldExamId } });
+    const before = await prisma.examinationResult.findFirstOrThrow({
+      where: { examinationId: oldExamId },
+    });
 
     // Next session, next class — then promote through the real endpoint.
     const nextYear = await prisma.academicYear.create({
@@ -99,7 +138,9 @@ describe('Examination history across promotion (e2e)', () => {
         endDate: new Date('2027-12-31'),
       },
     });
-    const nextClass = await prisma.classGrade.create({ data: { schoolId: cls.school.id, name: `Next-${Date.now()}` } });
+    const nextClass = await prisma.classGrade.create({
+      data: { schoolId: cls.school.id, name: `Next-${Date.now()}` },
+    });
     const nextSection = await prisma.section.create({
       data: { schoolId: cls.school.id, classGradeId: nextClass.id, name: 'A' },
     });
@@ -110,21 +151,41 @@ describe('Examination history across promotion (e2e)', () => {
         sourceAcademicYearId: cls.academicYear.id,
         targetAcademicYearId: nextYear.id,
         students: [
-          { studentId: student.profile.id, destinationClassGradeId: nextClass.id, destinationSectionId: nextSection.id },
+          {
+            studentId: student.profile.id,
+            destinationClassGradeId: nextClass.id,
+            destinationSectionId: nextSection.id,
+          },
         ],
       })
       .expect(201);
 
-    const placements = await prisma.enrollment.findMany({ where: { studentId: student.profile.id }, orderBy: { createdAt: 'asc' } });
+    const placements = await prisma.enrollment.findMany({
+      where: { studentId: student.profile.id },
+      orderBy: { createdAt: 'asc' },
+    });
     expect(placements.map((p) => [p.academicYearId, p.status])).toEqual([
       [cls.academicYear.id, 'COMPLETED'],
       [nextYear.id, 'ACTIVE'],
     ]);
 
     // A new-session exam in the new class does not touch the old one.
-    const nextSubject = await prisma.subject.create({ data: { schoolId: cls.school.id, name: `NextSub-${Date.now()}` } });
+    const nextSubject = await prisma.subject.create({
+      data: { schoolId: cls.school.id, name: `NextSub-${Date.now()}` },
+    });
     const nextSectionSubject = await prisma.sectionSubject.create({
-      data: { sectionId: nextSection.id, subjectId: nextSubject.id, teacherId: cls.teacherProfile.id },
+      data: {
+        sectionId: nextSection.id,
+        subjectId: nextSubject.id,
+        teacherId: cls.teacherProfile.id,
+      },
+    });
+    const nextTerm = await prisma.academicTerm.create({
+      data: {
+        schoolId: cls.school.id,
+        academicYearId: nextYear.id,
+        name: 'First Term',
+      },
     });
     const newExamId = await finalizedExam({
       token: adminToken,
@@ -135,28 +196,65 @@ describe('Examination history across promotion (e2e)', () => {
       sectionSubjectId: nextSectionSubject.id,
       score: 91,
       studentId: student.profile.id,
+      termId: nextTerm.id,
     });
 
-    const oldExam = await prisma.examination.findUniqueOrThrow({ where: { id: oldExamId } });
-    expect(oldExam).toMatchObject({ academicYearId: cls.academicYear.id, sectionId: cls.section.id, className: cls.classGrade.name });
-    const after = await prisma.examinationResult.findFirstOrThrow({ where: { examinationId: oldExamId } });
-    expect(after).toMatchObject({ totalObtained: before.totalObtained, percentage: before.percentage, grade: before.grade, position: before.position });
+    const oldExam = await prisma.examination.findUniqueOrThrow({
+      where: { id: oldExamId },
+    });
+    expect(oldExam).toMatchObject({
+      academicYearId: cls.academicYear.id,
+      sectionId: cls.section.id,
+      className: cls.classGrade.name,
+    });
+    const after = await prisma.examinationResult.findFirstOrThrow({
+      where: { examinationId: oldExamId },
+    });
+    expect(after).toMatchObject({
+      totalObtained: before.totalObtained,
+      percentage: before.percentage,
+      grade: before.grade,
+      position: before.position,
+    });
 
     // The student and parent still see both, each under its own session.
     const studentToken = await tokenFor(app, student.user);
     const parentToken = await tokenFor(app, parentUser);
-    for (const [token, query] of [[studentToken, ''], [parentToken, `?studentId=${student.profile.id}`]] as const) {
-      const mine = await api().get(`/api/exams/results/me${query}`).set(bearer(token)).expect(200);
+    for (const [token, query] of [
+      [studentToken, ''],
+      [parentToken, `?studentId=${student.profile.id}`],
+    ] as const) {
+      const mine = await api()
+        .get(`/api/exams/results/me${query}`)
+        .set(bearer(token))
+        .expect(200);
       const byExam = new Map(mine.body.map((r: any) => [r.examination.id, r]));
-      expect(byExam.get(oldExamId)).toMatchObject({ percentage: 72, examination: { academicYear: { name: cls.academicYear.name } } });
-      expect(byExam.get(newExamId)).toMatchObject({ percentage: 91, examination: { academicYear: { name: 'Next Session' } } });
+      expect(byExam.get(oldExamId)).toMatchObject({
+        percentage: 72,
+        examination: { academicYear: { name: cls.academicYear.name } },
+      });
+      expect(byExam.get(newExamId)).toMatchObject({
+        percentage: 91,
+        examination: { academicYear: { name: 'Next Session' } },
+      });
 
-      await api().get(`/api/exams/${oldExamId}${query}`).set(bearer(token)).expect(200);
-      const card = await api().get(`/api/exams/${oldExamId}/report-cards${query}`).set(bearer(token)).expect(200);
-      expect(card.body.examination.academicYear.name).toBe(cls.academicYear.name);
+      await api()
+        .get(`/api/exams/${oldExamId}${query}`)
+        .set(bearer(token))
+        .expect(200);
+      const card = await api()
+        .get(`/api/exams/${oldExamId}/report-cards${query}`)
+        .set(bearer(token))
+        .expect(200);
+      expect(card.body.examination.academicYear.name).toBe(
+        cls.academicYear.name,
+      );
     }
 
     // And the old session can't be deleted out from under that history.
-    await api().delete(`/api/academic-years/${cls.academicYear.id}`).set(bearer(adminToken)).expect(409);
+    await api()
+      .delete(`/api/academic-years/${cls.academicYear.id}`)
+      .set(bearer(adminToken))
+      .expect(409);
   });
 });

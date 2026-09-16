@@ -5,12 +5,10 @@ import { CacheService } from '../common/services/cache.service';
 import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
 import { ExamsService } from '../exams/exams.service';
+import { ExamSettingsService } from '../exams/exam-settings.service';
+import { gradeForMarks, passMarkPercent } from '../exams/result-calculator';
 import { AssignmentsService } from '../assignments/assignments.service';
 import { AttendanceService } from '../attendance/attendance.service';
-
-// No configurable pass mark exists yet, so "below pass" needs a default.
-// ponytail: constant now; promote to a UserSettings/School field when schools want to configure it.
-const PASS_PERCENT = 40;
 
 // A student is "at risk" below this schoolwide attendance rate (PRESENT+LATE).
 const AT_RISK_RATE = 0.75;
@@ -21,6 +19,7 @@ export class DashboardService extends BaseSchoolScopedService {
     prisma: PrismaService,
     cache: CacheService,
     private readonly exams: ExamsService,
+    private readonly settings: ExamSettingsService,
     private readonly assignments: AssignmentsService,
     private readonly attendance: AttendanceService,
   ) {
@@ -190,6 +189,7 @@ export class DashboardService extends BaseSchoolScopedService {
       attendanceGroups,
       activeEnrollments,
       sectionCount,
+      bands,
     ] = await Promise.all([
       this.prisma.studentProfile.groupBy({
         by: ['gender'],
@@ -200,17 +200,20 @@ export class DashboardService extends BaseSchoolScopedService {
       this.prisma.studentProfile.count({
         where: { schoolId, isActive: true, dateOfJoining: { gte: yearStart } },
       }),
-      // Aggregate in SQL since groupBy can't reach Exam.maxScore across the relation.
-      // Finalized results only: provisional marks must not flag a student as low-performing.
-      this.prisma.$queryRaw<Array<{ studentId: string; avg: number }>>`
+      // Marks summed per student with absence as 0 — how the result engine totals them, not a
+      // mean of paper percentages. Finalized only, so provisional marks can't flag anyone.
+      this.prisma.$queryRaw<
+        Array<{ studentId: string; obtained: number; total: number }>
+      >`
         SELECT er."studentId" AS "studentId",
-               AVG(er.score::float / e."maxScore") * 100 AS avg
+               SUM(CASE WHEN er."isAbsent" THEN 0 ELSE er.score END)::int AS obtained,
+               SUM(e."maxScore")::int AS total
         FROM "ExamResult" er
         JOIN "Exam" e ON e.id = er."examId"
         JOIN "Examination" x ON x.id = e."examinationId"
         WHERE e."schoolId" = ${schoolId}
           AND x."resultStatus" = 'FINALIZED'
-          AND er.score IS NOT NULL
+          AND (er.score IS NOT NULL OR er."isAbsent")
           AND e."maxScore" > 0
         GROUP BY er."studentId"
       `,
@@ -224,6 +227,7 @@ export class DashboardService extends BaseSchoolScopedService {
         where: { status: 'ACTIVE', section: { schoolId } },
       }),
       this.prisma.section.count({ where: { schoolId, isActive: true } }),
+      this.settings.bandsFor(this.prisma, schoolId, null),
     ]);
 
     // Gender split — OTHER/PREFER_NOT_TO_SAY/null all roll into "unspecified"
@@ -237,12 +241,16 @@ export class DashboardService extends BaseSchoolScopedService {
       else gender.unspecified += c; // PREFER_NOT_TO_SAY or null
     }
 
-    // High/low performers by each student's mean exam % (aggregated in SQL above).
+    // Performers by the school's own default scheme on exact marks: top band = high achiever,
+    // a failing band = low performer. No thresholds are hard-coded here.
+    const topBand = [...bands].sort((a, b) => b.minPercent - a.minPercent)[0];
     let highAchievers = 0;
     let lowPerformers = 0;
-    for (const { avg } of examByStudent) {
-      if (avg >= 90) highAchievers += 1;
-      else if (avg < PASS_PERCENT) lowPerformers += 1;
+    for (const { obtained, total } of examByStudent) {
+      const band = gradeForMarks(obtained, total, bands);
+      if (!band) continue;
+      if (band === topBand) highAchievers += 1;
+      else if (!band.isPassing) lowPerformers += 1;
     }
     const gradedStudents = examByStudent.length;
 
@@ -270,7 +278,7 @@ export class DashboardService extends BaseSchoolScopedService {
       highAchievers,
       lowPerformers,
       gradedStudents,
-      passPercent: PASS_PERCENT,
+      passPercent: passMarkPercent(bands),
       atRiskAttendance,
       newAdmissions,
       avgClassSize,

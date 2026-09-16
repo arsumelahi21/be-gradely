@@ -68,7 +68,10 @@ export function paperIsEditable(status: ExaminationStatus): boolean {
 }
 
 /** Only an unsubmitted draft with no marks can be deleted. */
-export function canDelete(status: ExaminationStatus, hasMarks: boolean): boolean {
+export function canDelete(
+  status: ExaminationStatus,
+  hasMarks: boolean,
+): boolean {
   return status === S.DRAFT && !hasMarks;
 }
 
@@ -107,19 +110,29 @@ export interface ExaminationDraft {
   academicYearId: string | null;
   classGradeId: string | null;
   sectionId: string | null;
+  termId: string | null;
   subjects: SubjectPaperDraft[];
 }
+
+/** The one wording the API and the UI both use when a term is missing. */
+export const TERM_REQUIRED_MESSAGE =
+  'Please select a term before publishing the exam.';
 
 /**
  * Everything that blocks "Send for Review" (and admin publish). Drafts may be saved
  * incomplete; this is the gate for leaving draft.
  */
-export function submissionProblems(exam: ExaminationDraft): string[] {
+export function submissionProblems(
+  exam: ExaminationDraft,
+  // A principal publishing always needs a term; a teacher only once the session has one.
+  opts: { requireTerm?: boolean } = {},
+): string[] {
   const problems: string[] = [];
   if (!exam.title?.trim()) problems.push('Examination title is required');
   if (!exam.academicYearId) problems.push('Academic session is required');
   if (!exam.classGradeId) problems.push('Class is required');
   if (!exam.sectionId) problems.push('Section is required');
+  if (opts.requireTerm && !exam.termId) problems.push(TERM_REQUIRED_MESSAGE);
   if (exam.subjects.length === 0) problems.push('Add at least one subject');
 
   for (const s of exam.subjects) {
@@ -127,7 +140,11 @@ export function submissionProblems(exam: ExaminationDraft): string[] {
     if (!s.heldAt) problems.push(`${p}: exam date is required`);
     if (s.maxScore == null || s.maxScore <= 0)
       problems.push(`${p}: total marks must be greater than 0`);
-    if (s.passingMarks != null && s.maxScore != null && s.passingMarks > s.maxScore)
+    if (
+      s.passingMarks != null &&
+      s.maxScore != null &&
+      s.passingMarks > s.maxScore
+    )
       problems.push(`${p}: passing marks cannot exceed total marks`);
     if (s.startMin != null && s.endMin != null && s.endMin <= s.startMin)
       problems.push(`${p}: end time must be after start time`);

@@ -12,6 +12,7 @@ import {
   teacherCanEdit,
   ExaminationDraft,
   SubjectPaperDraft,
+  TERM_REQUIRED_MESSAGE,
 } from './exam-status';
 
 const teacher = { teacherAuthored: true };
@@ -20,7 +21,9 @@ const admin = { teacherAuthored: false };
 describe('nextStatus', () => {
   it('sends a draft or a returned proposal for review', () => {
     expect(nextStatus(S.DRAFT, 'SUBMIT', teacher)).toBe(S.PENDING_REVIEW);
-    expect(nextStatus(S.CHANGES_REQUESTED, 'SUBMIT', teacher)).toBe(S.PENDING_REVIEW);
+    expect(nextStatus(S.CHANGES_REQUESTED, 'SUBMIT', teacher)).toBe(
+      S.PENDING_REVIEW,
+    );
   });
 
   it('supports repeated review cycles', () => {
@@ -33,7 +36,12 @@ describe('nextStatus', () => {
   });
 
   it('only reviews a pending proposal', () => {
-    for (const from of [S.DRAFT, S.CHANGES_REQUESTED, S.PUBLISHED, S.REJECTED]) {
+    for (const from of [
+      S.DRAFT,
+      S.CHANGES_REQUESTED,
+      S.PUBLISHED,
+      S.REJECTED,
+    ]) {
       expect(nextStatus(from, 'REQUEST_CHANGES', admin)).toBeNull();
       expect(nextStatus(from, 'REJECT', admin)).toBeNull();
     }
@@ -46,7 +54,12 @@ describe('nextStatus', () => {
   });
 
   it('treats published and rejected as terminal', () => {
-    for (const action of ['SUBMIT', 'REQUEST_CHANGES', 'REJECT', 'PUBLISH'] as const) {
+    for (const action of [
+      'SUBMIT',
+      'REQUEST_CHANGES',
+      'REJECT',
+      'PUBLISH',
+    ] as const) {
       expect(nextStatus(S.PUBLISHED, action, admin)).toBeNull();
       expect(nextStatus(S.REJECTED, action, admin)).toBeNull();
     }
@@ -92,7 +105,9 @@ describe('result gates', () => {
 });
 
 describe('submissionProblems', () => {
-  const subject = (over: Partial<SubjectPaperDraft> = {}): SubjectPaperDraft => ({
+  const subject = (
+    over: Partial<SubjectPaperDraft> = {},
+  ): SubjectPaperDraft => ({
     label: 'Mathematics',
     heldAt: new Date('2026-10-12'),
     startMin: 540,
@@ -107,6 +122,7 @@ describe('submissionProblems', () => {
     academicYearId: 'y1',
     classGradeId: 'c1',
     sectionId: 's1',
+    termId: 't1',
     subjects: [subject()],
     ...over,
   });
@@ -117,7 +133,13 @@ describe('submissionProblems', () => {
 
   it('requires title, session, class, section and a subject', () => {
     const problems = submissionProblems(
-      exam({ title: '  ', academicYearId: null, classGradeId: null, sectionId: null, subjects: [] }),
+      exam({
+        title: '  ',
+        academicYearId: null,
+        classGradeId: null,
+        sectionId: null,
+        subjects: [],
+      }),
     );
     expect(problems).toEqual([
       'Examination title is required',
@@ -128,11 +150,26 @@ describe('submissionProblems', () => {
     ]);
   });
 
+  it('asks for a term only when the caller must have one', () => {
+    // A teacher draft in a session with no terms stays valid; publishing never is.
+    expect(submissionProblems(exam({ termId: null }))).toEqual([]);
+    expect(
+      submissionProblems(exam({ termId: null }), { requireTerm: true }),
+    ).toEqual([TERM_REQUIRED_MESSAGE]);
+    expect(submissionProblems(exam(), { requireTerm: true })).toEqual([]);
+  });
+
   it('requires the paper, date and valid marks per subject', () => {
     const problems = submissionProblems(
       exam({
         subjects: [
-          subject({ hasPaper: false, heldAt: null, maxScore: 0, passingMarks: 5, endMin: 540 }),
+          subject({
+            hasPaper: false,
+            heldAt: null,
+            maxScore: 0,
+            passingMarks: 5,
+            endMin: 540,
+          }),
         ],
       }),
     );

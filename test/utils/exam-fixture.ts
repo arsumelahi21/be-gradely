@@ -19,6 +19,7 @@ export async function seedExamination(opts: {
   maxScore?: number | null;
   passingMarks?: number | null;
   heldAt?: Date | null;
+  termId?: string | null;
 }) {
   const section = await prisma.section.findUniqueOrThrow({
     where: { id: opts.sectionId },
@@ -32,6 +33,7 @@ export async function seedExamination(opts: {
       academicYearId: opts.academicYearId,
       classGradeId: section.classGradeId,
       sectionId: section.id,
+      termId: opts.termId ?? null,
       title: opts.title ?? 'Mid Term Examination',
       status,
       resultStatus,
@@ -55,8 +57,10 @@ export async function seedExamination(opts: {
           createdByTeacherId: opts.createdByTeacherId ?? null,
           title: 'Subject paper',
           maxScore: opts.maxScore === undefined ? 100 : opts.maxScore,
-          passingMarks: opts.passingMarks === undefined ? 40 : opts.passingMarks,
-          heldAt: opts.heldAt === undefined ? new Date('2026-10-12') : opts.heldAt,
+          passingMarks:
+            opts.passingMarks === undefined ? 40 : opts.passingMarks,
+          heldAt:
+            opts.heldAt === undefined ? new Date('2026-10-12') : opts.heldAt,
           startMin: 540,
           endMin: 660,
           venue: 'Hall 1',

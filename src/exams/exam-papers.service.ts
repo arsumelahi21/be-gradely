@@ -43,11 +43,16 @@ export class ExamPapersService {
     file: UploadedPaperFile | undefined,
     actor: Actor,
   ) {
-    if (!file?.buffer?.length) throw new BadRequestException('Choose a PDF file to upload');
+    if (!file?.buffer?.length)
+      throw new BadRequestException('Choose a PDF file to upload');
     if (file.buffer.length > MAX_EXAM_PAPER_BYTES) {
       throw new BadRequestException('The exam paper must be 10 MB or smaller');
     }
-    assertPdfOnly({ mimeType: file.mimetype, fileName: file.originalname, buffer: file.buffer });
+    assertPdfOnly({
+      mimeType: file.mimetype,
+      fileName: file.originalname,
+      buffer: file.buffer,
+    });
 
     const exam = await this.access.loadCore(examinationId);
     await this.assertAuthor(actor, exam);
@@ -63,7 +68,10 @@ export class ExamPapersService {
         where: { id: examinationId, status: exam.status },
         data: { updatedAt: now },
       });
-      if (!guard.count) throw new ConflictException('This examination changed. Reload and try again.');
+      if (!guard.count)
+        throw new ConflictException(
+          'This examination changed. Reload and try again.',
+        );
       const existing = await tx.examPaper.findUnique({
         where: { examId: subjectId },
         select: { examId: true },
@@ -95,19 +103,32 @@ export class ExamPapersService {
           examinationId,
           actorUserId: actor.userId,
           type: 'PAPER_UPLOADED',
-          details: { subjectId, replaced: !!existing, sizeBytes: file.buffer.length },
+          details: {
+            subjectId,
+            replaced: !!existing,
+            sizeBytes: file.buffer.length,
+          },
         },
       });
       return !!existing;
     });
 
-    void this.audit.record(actor.userId, replaced ? 'EXAM_PAPER_REPLACE' : 'EXAM_PAPER_UPLOAD', {
-      schoolId: exam.schoolId,
-      entityType: 'Examination',
-      entityId: examinationId,
-      metadata: { subjectId, sizeBytes: file.buffer.length, sha256 },
-    });
-    return { fileName, sizeBytes: file.buffer.length, uploadedAt: now, replaced };
+    void this.audit.record(
+      actor.userId,
+      replaced ? 'EXAM_PAPER_REPLACE' : 'EXAM_PAPER_UPLOAD',
+      {
+        schoolId: exam.schoolId,
+        entityType: 'Examination',
+        entityId: examinationId,
+        metadata: { subjectId, sizeBytes: file.buffer.length, sha256 },
+      },
+    );
+    return {
+      fileName,
+      sizeBytes: file.buffer.length,
+      uploadedAt: now,
+      replaced,
+    };
   }
 
   async remove(examinationId: string, subjectId: string, actor: Actor) {
@@ -120,16 +141,29 @@ export class ExamPapersService {
         where: { id: examinationId, status: exam.status },
         data: { updatedAt: new Date() },
       });
-      if (!guard.count) throw new ConflictException('This examination changed. Reload and try again.');
-      const result = await tx.examPaper.deleteMany({ where: { examId: subjectId } });
+      if (!guard.count)
+        throw new ConflictException(
+          'This examination changed. Reload and try again.',
+        );
+      const result = await tx.examPaper.deleteMany({
+        where: { examId: subjectId },
+      });
       if (result.count) {
         await tx.examinationEvent.create({
-          data: { examinationId, actorUserId: actor.userId, type: 'PAPER_REMOVED', details: { subjectId } },
+          data: {
+            examinationId,
+            actorUserId: actor.userId,
+            type: 'PAPER_REMOVED',
+            details: { subjectId },
+          },
         });
       }
       return result.count > 0;
     });
-    if (!removed) throw new NotFoundException('No exam paper has been uploaded for this subject');
+    if (!removed)
+      throw new NotFoundException(
+        'No exam paper has been uploaded for this subject',
+      );
 
     void this.audit.record(actor.userId, 'EXAM_PAPER_REMOVE', {
       schoolId: exam.schoolId,
@@ -143,29 +177,36 @@ export class ExamPapersService {
   /** Every read re-checks role, tenant, account state and authorship before touching the bytes. */
   async read(examinationId: string, subjectId: string, actor: Actor) {
     if (actor.role !== Role.SCHOOL_ADMIN && actor.role !== Role.TEACHER) {
-      throw new ForbiddenException('Exam papers are only available to authorized staff');
+      throw new ForbiddenException(
+        'Exam papers are only available to authorized staff',
+      );
     }
     const exam = await this.access.loadCore(examinationId);
     this.access.assertSameSchool(actor, exam.schoolId);
 
-    const account = await this.prisma.user.findUnique({
-      where: { id: actor.userId },
-      select: { isActive: true },
-    });
-    if (!account?.isActive) throw new ForbiddenException('Account is inactive');
+    await this.access.assertActiveAccount(actor);
 
     if (actor.role === Role.TEACHER) {
       const teacherId = await this.access.teacherId(actor);
       if (!this.access.isCreator(actor, exam, teacherId)) {
-        throw new ForbiddenException('Only the teacher who created this examination can open its paper');
+        throw new ForbiddenException(
+          'Only the teacher who created this examination can open its paper',
+        );
       }
     }
 
     const paper = await this.prisma.examPaper.findFirst({
-      where: { examId: subjectId, schoolId: exam.schoolId, exam: { examinationId } },
+      where: {
+        examId: subjectId,
+        schoolId: exam.schoolId,
+        exam: { examinationId },
+      },
       select: { data: true, fileName: true, sizeBytes: true, sha256: true },
     });
-    if (!paper) throw new NotFoundException('No exam paper has been uploaded for this subject');
+    if (!paper)
+      throw new NotFoundException(
+        'No exam paper has been uploaded for this subject',
+      );
 
     void this.audit.record(actor.userId, 'EXAM_PAPER_VIEW', {
       schoolId: exam.schoolId,
@@ -179,7 +220,9 @@ export class ExamPapersService {
   /** Papers are managed by the examination's author while it is still theirs to change. */
   private async assertAuthor(actor: Actor, exam: ExamCore) {
     this.access.assertSameSchool(actor, exam.schoolId);
-    const teacherId = actor.role === Role.TEACHER ? await this.access.teacherId(actor) : null;
+    await this.access.assertActiveAccount(actor);
+    const teacherId =
+      actor.role === Role.TEACHER ? await this.access.teacherId(actor) : null;
     if (!this.access.isCreator(actor, exam, teacherId)) {
       throw new ForbiddenException(
         actor.role === Role.SCHOOL_ADMIN
@@ -201,7 +244,8 @@ export class ExamPapersService {
       where: { id: subjectId, examinationId },
       select: { id: true },
     });
-    if (!subject) throw new NotFoundException('Subject not found on this examination');
+    if (!subject)
+      throw new NotFoundException('Subject not found on this examination');
     return subject;
   }
 }

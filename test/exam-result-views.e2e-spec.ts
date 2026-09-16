@@ -75,6 +75,15 @@ describe('Result views (e2e)', () => {
       student: await tokenFor(app, cls.students[0].user),
     };
 
+    // Results are always extracted by term, so the session has one from the start.
+    const term = await prisma.academicTerm.create({
+      data: {
+        schoolId: cls.school.id,
+        academicYearId: cls.academicYear.id,
+        name: 'First Term',
+      },
+    });
+
     // The principal owns an examination spanning both teachers subjects.
     const created = await api()
       .post('/api/exams')
@@ -84,6 +93,7 @@ describe('Result views (e2e)', () => {
         academicYearId: cls.academicYear.id,
         classGradeId: cls.classGrade.id,
         sectionId: cls.section.id,
+        termId: term.id,
         subjects: [
           {
             sectionSubjectId: cls.sectionSubject.id,
@@ -146,7 +156,7 @@ describe('Result views (e2e)', () => {
       })
       .expect(200);
 
-    return { cls, second, b, tokens, examId, maths, science, byRoll };
+    return { cls, second, b, term, tokens, examId, maths, science, byRoll };
   }
 
   const register = (examId: string, subjectId: string) =>
@@ -328,7 +338,12 @@ describe('Result views (e2e)', () => {
       const w = await world();
       const student = w.byRoll('0001');
       const res = await api()
-        .get(card(student.id, `?academicYearId=${w.cls.academicYear.id}`))
+        .get(
+          card(
+            student.id,
+            `?academicYearId=${w.cls.academicYear.id}&termId=${w.term.id}`,
+          ),
+        )
         .set(bearer(w.tokens.admin))
         .expect(200);
 
@@ -374,12 +389,26 @@ describe('Result views (e2e)', () => {
       const w = await world();
       const untested = await api()
         .get(
-          card(w.byRoll('0004').id, `?academicYearId=${w.cls.academicYear.id}`),
+          card(
+            w.byRoll('0004').id,
+            `?academicYearId=${w.cls.academicYear.id}&termId=${w.term.id}`,
+          ),
         )
         .set(bearer(w.tokens.admin))
         .expect(200);
-      expect(untested.body.exams).toEqual([]);
-      expect(untested.body.overall).toBeNull();
+      // The exam is still being marked, so it stays on the card with every paper missing:
+      // nothing is invented, and there is no percentage, grade or verdict.
+      expect(untested.body.exams).toHaveLength(1);
+      expect(
+        untested.body.exams[0].subjects.map((s: any) => s.obtained),
+      ).toEqual([null, null]);
+      expect(untested.body.overall).toMatchObject({
+        complete: false,
+        totalObtained: 0,
+        percentage: null,
+        grade: null,
+        passed: null,
+      });
 
       // A session the student was never enrolled in returns nothing of theirs.
       const otherYear = await prisma.academicYear.create({
@@ -391,8 +420,20 @@ describe('Result views (e2e)', () => {
           endDate: new Date('2027-12-31'),
         },
       });
+      const elsewhereTerm = await prisma.academicTerm.create({
+        data: {
+          schoolId: w.cls.school.id,
+          academicYearId: otherYear.id,
+          name: 'First Term',
+        },
+      });
       const elsewhere = await api()
-        .get(card(w.byRoll('0001').id, `?academicYearId=${otherYear.id}`))
+        .get(
+          card(
+            w.byRoll('0001').id,
+            `?academicYearId=${otherYear.id}&termId=${elsewhereTerm.id}`,
+          ),
+        )
         .set(bearer(w.tokens.admin))
         .expect(200);
       expect(elsewhere.body.exams).toEqual([]);
@@ -401,27 +442,29 @@ describe('Result views (e2e)', () => {
     it('is principal-only and tenant-scoped', async () => {
       const w = await world();
       const student = w.byRoll('0001');
+      // A complete, valid scope: what is refused below is the caller, not the query.
+      const q = `?academicYearId=${w.cls.academicYear.id}&termId=${w.term.id}`;
       await api()
-        .get(card(student.id))
+        .get(card(student.id, q))
         .set(bearer(w.tokens.bAdmin))
         .expect(403);
       await api()
-        .get(card(w.b.students[0].profile.id))
+        .get(card(w.b.students[0].profile.id, q))
         .set(bearer(w.tokens.admin))
         .expect(403);
       await api()
-        .get(card(student.id))
+        .get(card(student.id, q))
         .set(bearer(w.tokens.teacher))
         .expect(403);
       await api()
-        .get(card(student.id))
+        .get(card(student.id, q))
         .set(bearer(w.tokens.student))
         .expect(403);
       await api()
-        .get(card(randomUUID()))
+        .get(card(randomUUID(), q))
         .set(bearer(w.tokens.admin))
         .expect(404);
-      await api().get(card(student.id)).expect(401);
+      await api().get(card(student.id, q)).expect(401);
     });
   });
 
@@ -432,7 +475,12 @@ describe('Result views (e2e)', () => {
     it('returns one card per student in the section, in roll order, each with only their own marks', async () => {
       const w = await world();
       const res = await api()
-        .get(all(w.cls.section.id, `?academicYearId=${w.cls.academicYear.id}`))
+        .get(
+          all(
+            w.cls.section.id,
+            `?academicYearId=${w.cls.academicYear.id}&termId=${w.term.id}`,
+          ),
+        )
         .set(bearer(w.tokens.admin))
         .expect(200);
 
@@ -461,15 +509,20 @@ describe('Result views (e2e)', () => {
         76, 20,
       ]);
       expect(second.overall.passed).toBe(false);
-      // Absent in maths is still an exam they sat; no marks at all means no exam on the card.
+      // Absent in maths is still an exam they sat. The exam is unfinished, so a student with no
+      // marks yet keeps it too — incomplete, never scored as zero.
       expect(absentee.exams).toHaveLength(1);
-      expect(untested.exams).toEqual([]);
-      expect(untested.overall).toBeNull();
+      expect(untested.exams).toHaveLength(1);
+      expect(untested.overall).toMatchObject({
+        complete: false,
+        percentage: null,
+        passed: null,
+      });
     });
 
     it('matches the single-student card exactly', async () => {
       const w = await world();
-      const query = `?academicYearId=${w.cls.academicYear.id}`;
+      const query = `?academicYearId=${w.cls.academicYear.id}&termId=${w.term.id}`;
       const [bulk, single] = await Promise.all([
         api().get(all(w.cls.section.id, query)).set(bearer(w.tokens.admin)),
         api()
@@ -485,7 +538,7 @@ describe('Result views (e2e)', () => {
 
     it("needs a session, and stays inside the principal's own school", async () => {
       const w = await world();
-      const query = `?academicYearId=${w.cls.academicYear.id}`;
+      const query = `?academicYearId=${w.cls.academicYear.id}&termId=${w.term.id}`;
       await api()
         .get(all(w.cls.section.id, ''))
         .set(bearer(w.tokens.admin))
@@ -504,7 +557,12 @@ describe('Result views (e2e)', () => {
         .expect(403);
       // Another school's session cannot be borrowed for this section.
       await api()
-        .get(all(w.cls.section.id, `?academicYearId=${w.b.academicYear.id}`))
+        .get(
+          all(
+            w.cls.section.id,
+            `?academicYearId=${w.b.academicYear.id}&termId=${w.term.id}`,
+          ),
+        )
         .set(bearer(w.tokens.admin))
         .expect(404);
       await api()
