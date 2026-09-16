@@ -113,7 +113,9 @@ describe('PrismaExceptionFilter', () => {
         ),
       );
       expect(res.status).toBe(HttpStatus.CONFLICT);
-      expect(res.body.message).not.toMatch(/Exam_sectionSubjectId_fkey|SectionSubject/);
+      expect(res.body.message).not.toMatch(
+        /Exam_sectionSubjectId_fkey|SectionSubject/,
+      );
     });
 
     it('other unknown request errors stay a generic 500', () => {

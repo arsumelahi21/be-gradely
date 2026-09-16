@@ -486,7 +486,10 @@ async function main() {
   let resCounter = 0;
   const subjectsBySection = new Map<string, typeof sectionSubjects>();
   for (const ss of sectionSubjects) {
-    subjectsBySection.set(ss.sectionId, [...(subjectsBySection.get(ss.sectionId) ?? []), ss]);
+    subjectsBySection.set(ss.sectionId, [
+      ...(subjectsBySection.get(ss.sectionId) ?? []),
+      ss,
+    ]);
   }
   for (const [sectionId, sectionSubs] of subjectsBySection) {
     const section = await prisma.section.findUniqueOrThrow({

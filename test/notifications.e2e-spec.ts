@@ -318,7 +318,9 @@ describe('Notifications (e2e)', () => {
       { entries: [{ studentId: s0.profile.id, score: 88 }] },
       teacherActor,
     );
-    expect(notifEvents(spy).find((e) => e.type === 'EXAM_RESULT')).toBeUndefined();
+    expect(
+      notifEvents(spy).find((e) => e.type === 'EXAM_RESULT'),
+    ).toBeUndefined();
 
     await results.finalize(examination.id, {
       userId: admin.id,

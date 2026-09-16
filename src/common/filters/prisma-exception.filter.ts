@@ -128,7 +128,9 @@ export class PrismaExceptionFilter implements ExceptionFilter {
     // unknown error, not P2003 — exam history does this. Same meaning, same 409.
     if (
       exception instanceof Prisma.PrismaClientUnknownRequestError &&
-      /\b23001\b|violates RESTRICT setting of foreign key constraint/.test(exception.message)
+      /\b23001\b|violates RESTRICT setting of foreign key constraint/.test(
+        exception.message,
+      )
     ) {
       return {
         status: HttpStatus.CONFLICT,

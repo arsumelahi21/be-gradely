@@ -45,7 +45,11 @@ export class ExamSettingsController {
 
   @Roles(Role.SCHOOL_ADMIN)
   @Patch('terms/:id')
-  updateTerm(@Param('id', uuid) id: string, @Body() dto: UpdateTermDto, @Req() req: any) {
+  updateTerm(
+    @Param('id', uuid) id: string,
+    @Body() dto: UpdateTermDto,
+    @Req() req: any,
+  ) {
     return this.settings.updateTerm(id, dto, req.user);
   }
 

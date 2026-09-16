@@ -70,7 +70,12 @@ export class RemindersScheduler {
         venue: true,
         sectionSubject: { select: { subject: { select: { name: true } } } },
         examination: {
-          select: { id: true, title: true, sectionId: true, academicYearId: true },
+          select: {
+            id: true,
+            title: true,
+            sectionId: true,
+            academicYearId: true,
+          },
         },
       },
     });

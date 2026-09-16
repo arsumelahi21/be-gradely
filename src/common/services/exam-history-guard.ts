@@ -32,14 +32,18 @@ export async function assertNoExaminationHistory(
       break;
     case 'classGrade':
       count = await prisma.examination.count({
-        where: { OR: [{ classGradeId: id }, { section: { classGradeId: id } }] },
+        where: {
+          OR: [{ classGradeId: id }, { section: { classGradeId: id } }],
+        },
       });
       break;
     case 'section':
       count = await prisma.examination.count({ where: { sectionId: id } });
       break;
     case 'subject':
-      count = await prisma.exam.count({ where: { sectionSubject: { subjectId: id } } });
+      count = await prisma.exam.count({
+        where: { sectionSubject: { subjectId: id } },
+      });
       break;
     case 'sectionSubject':
       count = await prisma.exam.count({ where: { sectionSubjectId: id } });

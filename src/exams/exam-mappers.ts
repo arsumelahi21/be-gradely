@@ -4,7 +4,9 @@ import { Prisma } from '@prisma/client';
 // mappers, so paper metadata can't reach a student even if a select grows.
 
 export const staffExaminationInclude = {
-  academicYear: { select: { id: true, name: true, startDate: true, endDate: true } },
+  academicYear: {
+    select: { id: true, name: true, startDate: true, endDate: true },
+  },
   term: { select: { id: true, name: true } },
   gradingScheme: { select: { id: true, name: true } },
   createdByTeacher: { select: { id: true, fullName: true } },
@@ -63,11 +65,16 @@ export function toStaffExamination(row: StaffExaminationRow) {
     gradingScheme: row.gradingScheme,
     createdBy: {
       teacherId: row.createdByTeacherId,
-      name: row.createdByTeacher?.fullName ?? row.createdByUser?.fullName ?? null,
+      name:
+        row.createdByTeacher?.fullName ?? row.createdByUser?.fullName ?? null,
       role: row.createdByUser?.role ?? null,
     },
-    reviewedBy: row.reviewedByUser ? { name: row.reviewedByUser.fullName } : null,
-    finalizedBy: row.finalizedByUser ? { name: row.finalizedByUser.fullName } : null,
+    reviewedBy: row.reviewedByUser
+      ? { name: row.reviewedByUser.fullName }
+      : null,
+    finalizedBy: row.finalizedByUser
+      ? { name: row.finalizedByUser.fullName }
+      : null,
     submittedAt: row.submittedAt,
     reviewedAt: row.reviewedAt,
     publishedAt: row.publishedAt,
@@ -88,7 +95,11 @@ export function toStaffExamination(row: StaffExaminationRow) {
       description: s.description,
       hasPaper: !!s.paper,
       paper: s.paper
-        ? { fileName: s.paper.fileName, sizeBytes: s.paper.sizeBytes, uploadedAt: s.paper.uploadedAt }
+        ? {
+            fileName: s.paper.fileName,
+            sizeBytes: s.paper.sizeBytes,
+            uploadedAt: s.paper.uploadedAt,
+          }
         : null,
       marksEntered: s._count.results,
     })),
@@ -117,7 +128,9 @@ export const audienceExaminationSelect = {
       venue: true,
       maxScore: true,
       passingMarks: true,
-      sectionSubject: { select: { subject: { select: { id: true, name: true } } } },
+      sectionSubject: {
+        select: { subject: { select: { id: true, name: true } } },
+      },
     },
   },
 } satisfies Prisma.ExaminationSelect;
@@ -172,7 +185,20 @@ export function formatMinutes(min: number | null | undefined): string | null {
   return `${h}:${m}`;
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
 
 /** Exam dates are stored as UTC midnight, so format in UTC to avoid off-by-one days. */
 export function formatDate(date: Date | null | undefined): string | null {
@@ -183,6 +209,10 @@ export function formatDate(date: Date | null | undefined): string | null {
 /** Strips path parts and header-breaking characters; always ends in .pdf. */
 export function safePaperFileName(original: string | null | undefined): string {
   const base = (original ?? '').split(/[\\/]/).pop() ?? '';
-  const stem = base.replace(/\.pdf$/i, '').replace(/[^\w .()-]/g, '_').trim().slice(0, 100);
+  const stem = base
+    .replace(/\.pdf$/i, '')
+    .replace(/[^\w .()-]/g, '_')
+    .trim()
+    .slice(0, 100);
   return `${stem || 'exam-paper'}.pdf`;
 }

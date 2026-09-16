@@ -32,8 +32,16 @@ const pollutedRow = {
       venue: 'Hall 2',
       maxScore: 100,
       passingMarks: 40,
-      sectionSubject: { subject: { id: 's1', name: 'Mathematics' }, teacherId: 'tp1' },
-      paper: { data: Buffer.from('%PDF-1.7 secret'), fileName: 'answers.pdf', sha256: 'abc', examId: 'e1' },
+      sectionSubject: {
+        subject: { id: 's1', name: 'Mathematics' },
+        teacherId: 'tp1',
+      },
+      paper: {
+        data: Buffer.from('%PDF-1.7 secret'),
+        fileName: 'answers.pdf',
+        sha256: 'abc',
+        examId: 'e1',
+      },
       paperId: 'e1',
       storageKey: 'school/papers/e1.pdf',
     },
@@ -45,13 +53,27 @@ describe('toAudienceExamination (student/parent response)', () => {
   const json = JSON.stringify(out);
 
   it('never carries paper bytes, names, hashes, keys or ids', () => {
-    for (const leak of ['paper', 'fileName', 'sha256', 'storageKey', 'secret', 'answers.pdf', '%PDF']) {
+    for (const leak of [
+      'paper',
+      'fileName',
+      'sha256',
+      'storageKey',
+      'secret',
+      'answers.pdf',
+      '%PDF',
+    ]) {
       expect(json).not.toContain(leak);
     }
   });
 
   it('drops internal staff fields', () => {
-    for (const leak of ['schoolId', 'createdByUserId', 'reviewNote', 'internal note', 'teacherId']) {
+    for (const leak of [
+      'schoolId',
+      'createdByUserId',
+      'reviewNote',
+      'internal note',
+      'teacherId',
+    ]) {
       expect(json).not.toContain(leak);
     }
   });
@@ -63,7 +85,15 @@ describe('toAudienceExamination (student/parent response)', () => {
       sectionName: 'A',
       academicYear: { name: '2026-27' },
       resultAvailable: false,
-      subjects: [{ subject: { name: 'Mathematics' }, startMin: 540, endMin: 660, venue: 'Hall 2', maxScore: 100 }],
+      subjects: [
+        {
+          subject: { name: 'Mathematics' },
+          startMin: 540,
+          endMin: 660,
+          venue: 'Hall 2',
+          maxScore: 100,
+        },
+      ],
     });
   });
 
@@ -92,9 +122,13 @@ describe('formatting helpers', () => {
   });
 
   it('makes uploaded file names safe for a header', () => {
-    expect(safePaperFileName('C:\\fakepath\\Math "Final".PDF')).toBe('Math _Final_.pdf');
+    expect(safePaperFileName('C:\\fakepath\\Math "Final".PDF')).toBe(
+      'Math _Final_.pdf',
+    );
     expect(safePaperFileName('../../etc/passwd')).toBe('passwd.pdf');
     expect(safePaperFileName('')).toBe('exam-paper.pdf');
-    expect(safePaperFileName('paper\r\nX-Evil: 1.pdf')).toBe('paper__X-Evil_ 1.pdf');
+    expect(safePaperFileName('paper\r\nX-Evil: 1.pdf')).toBe(
+      'paper__X-Evil_ 1.pdf',
+    );
   });
 });

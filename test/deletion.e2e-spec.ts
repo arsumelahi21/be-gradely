@@ -296,7 +296,9 @@ describe('Deletion cascades (e2e)', () => {
   }
 
   /** Removing the examination (and its results) is what lets the structural delete through. */
-  async function clearExamHistory(f: Awaited<ReturnType<typeof seedFullGraph>>) {
+  async function clearExamHistory(
+    f: Awaited<ReturnType<typeof seedFullGraph>>,
+  ) {
     await prisma.examination.delete({ where: { id: f.examination.id } });
   }
 
@@ -457,7 +459,9 @@ describe('Deletion cascades (e2e)', () => {
         await prisma.studentProfile.count({ where: { id: f.student.id } }),
       ).toBe(1);
 
-      await prisma.examResult.deleteMany({ where: { studentId: f.student.id } });
+      await prisma.examResult.deleteMany({
+        where: { studentId: f.student.id },
+      });
       await del(`/api/users/${f.studentUser.id}`, f.token).expect(200);
 
       expect(
