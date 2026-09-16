@@ -1,0 +1,3 @@
+# The tree is LF-only and ESLint runs Prettier (LF). Without this, a clone on Windows
+# checks out CRLF and every file lints as `Delete ␍`.
+* text=auto eol=lf
