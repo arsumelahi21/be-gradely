@@ -1,3 +1,4 @@
+import type { Actor } from '../../common/types/actor.type';
 import type { Role } from '../../common/types/role.type';
 import type { ChatMessage } from '../chatbot.types';
 
@@ -23,6 +24,12 @@ export interface ChatbotRequest {
   history: ChatMessage[];
   /** The asker's role — answers differ for what a teacher can actually do. */
   role: Role;
+  /**
+   * The caller themselves. Data-backed answers pass this straight to the same
+   * service methods the REST controllers use, so a chatbot answer can never see
+   * more than the asker's own API would return.
+   */
+  actor: Actor;
 }
 
 export interface ChatbotReply {
@@ -31,6 +38,11 @@ export interface ChatbotReply {
   matched: boolean;
   /** Which intent answered, for debugging and tests. */
   topic?: string;
+  /**
+   * Which data functions produced the answer. Persisted with the turn so a wrong
+   * figure can be traced to the tool that returned it rather than guessed at.
+   */
+  toolCalls?: Array<{ name: string; input: unknown }>;
 }
 
 /** DI token — an interface has no runtime identity to inject by. */
