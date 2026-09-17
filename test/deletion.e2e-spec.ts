@@ -4,17 +4,14 @@ import { createTestApp } from './utils/app';
 import { prisma, resetDb } from './utils/db';
 import { createTestSchool, createTestUser, tokenFor } from './utils/factories';
 import { Role } from '../src/common/types/role.type';
+import { seedExamination } from './utils/exam-fixture';
 
 let seq = 0;
 const uniq = () => `${Date.now()}${seq++}`;
 
 /**
- * A confirmed delete removes the entity and everything that exists only because
- * of it — no refusal because dependent data exists.
- *
- * Each case is run twice: once on a bare entity and once on one loaded with
- * every dependent record we can attach, so a cascade that only works on empty
- * data cannot pass. Independent history (AuditLog holds no FK) must survive.
+ * A delete cascades to everything that exists only because of the entity; history (fee challans, exam
+ * results) is Restrict and 409s until cleared. Seeds are fully loaded so an empty-data-only cascade can't pass.
  */
 describe('Deletion cascades (e2e)', () => {
   let app: INestApplication;
@@ -30,7 +27,6 @@ describe('Deletion cascades (e2e)', () => {
     await resetDb();
   });
 
-  /** A school with a full academic graph and every dependent row hung off it. */
   async function seedFullGraph() {
     const school = await createTestSchool();
     const admin = await createTestUser({
@@ -116,7 +112,6 @@ describe('Deletion cascades (e2e)', () => {
       },
     });
 
-    // Dependent records across every module.
     await prisma.attendance.create({
       data: {
         schoolId: school.id,
@@ -147,15 +142,16 @@ describe('Deletion cascades (e2e)', () => {
         score: 8,
       },
     });
-    const exam = await prisma.exam.create({
-      data: {
-        schoolId: school.id,
-        academicYearId: year.id,
-        sectionSubjectId: sectionSubject.id,
-        createdByTeacherId: teacher.id,
-        title: 'Midterm',
-        status: 'PUBLISHED',
-      },
+    const {
+      examination,
+      subjects: [exam],
+    } = await seedExamination({
+      schoolId: school.id,
+      academicYearId: year.id,
+      sectionId: section.id,
+      sectionSubjectIds: [sectionSubject.id],
+      createdByTeacherId: teacher.id,
+      title: 'Midterm',
     });
     await prisma.examResult.create({
       data: { examId: exam.id, studentId: student.id, score: 70 },
@@ -267,6 +263,7 @@ describe('Deletion cascades (e2e)', () => {
       quiz,
       challan,
       timetable,
+      examination,
       audit,
     };
   }
@@ -275,6 +272,28 @@ describe('Deletion cascades (e2e)', () => {
     request(app.getHttpServer())
       .delete(path)
       .set('Authorization', `Bearer ${token}`);
+
+  /** Exam history is Restrict: the delete is refused and nothing is removed. */
+  async function expectRefusedByExamHistory(
+    path: string,
+    f: Awaited<ReturnType<typeof seedFullGraph>>,
+  ) {
+    const res = await del(path, f.token);
+    expect(res.status).toBe(409);
+    expect(
+      await prisma.examination.count({ where: { id: f.examination.id } }),
+    ).toBe(1);
+    expect(
+      await prisma.examResult.count({ where: { studentId: f.student.id } }),
+    ).toBe(1);
+  }
+
+  /** Removing the examination (and its results) is what lets the structural delete through. */
+  async function clearExamHistory(
+    f: Awaited<ReturnType<typeof seedFullGraph>>,
+  ) {
+    await prisma.examination.delete({ where: { id: f.examination.id } });
+  }
 
   /** Audit history is independent of every entity and must always survive. */
   async function expectAuditSurvives(auditId: string) {
@@ -293,6 +312,8 @@ describe('Deletion cascades (e2e)', () => {
 
     it('deletes along with its section-subjects, attendance and specialties', async () => {
       const f = await seedFullGraph();
+      await expectRefusedByExamHistory(`/api/subjects/${f.subject.id}`, f);
+      await clearExamHistory(f);
       await del(`/api/subjects/${f.subject.id}`, f.token).expect(200);
 
       expect(await prisma.subject.count({ where: { id: f.subject.id } })).toBe(
@@ -325,6 +346,8 @@ describe('Deletion cascades (e2e)', () => {
   describe('Section', () => {
     it('deletes with enrollments, subjects, quizzes and its timetable', async () => {
       const f = await seedFullGraph();
+      await expectRefusedByExamHistory(`/api/sections/${f.section.id}`, f);
+      await clearExamHistory(f);
       await del(`/api/sections/${f.section.id}`, f.token).expect(200);
 
       expect(await prisma.section.count({ where: { id: f.section.id } })).toBe(
@@ -372,6 +395,8 @@ describe('Deletion cascades (e2e)', () => {
   describe('ClassGrade', () => {
     it('deletes the class and every section beneath it', async () => {
       const f = await seedFullGraph();
+      await expectRefusedByExamHistory(`/api/class-grades/${f.grade.id}`, f);
+      await clearExamHistory(f);
       await del(`/api/class-grades/${f.grade.id}`, f.token).expect(200);
 
       expect(await prisma.classGrade.count({ where: { id: f.grade.id } })).toBe(
@@ -418,6 +443,18 @@ describe('Deletion cascades (e2e)', () => {
       const f = await seedFullGraph();
       await prisma.payment.deleteMany({ where: { challanId: f.challan.id } });
       await prisma.challan.deleteMany({ where: { studentId: f.student.id } });
+
+      // Exam results are academic history (Restrict): refused with a clear reason, nothing removed.
+      const refused = await del(`/api/users/${f.studentUser.id}`, f.token);
+      expect(refused.status).toBe(409);
+      expect(refused.body.message).toContain('exam results');
+      expect(
+        await prisma.studentProfile.count({ where: { id: f.student.id } }),
+      ).toBe(1);
+
+      await prisma.examResult.deleteMany({
+        where: { studentId: f.student.id },
+      });
       await del(`/api/users/${f.studentUser.id}`, f.token).expect(200);
 
       expect(
@@ -487,6 +524,14 @@ describe('Deletion cascades (e2e)', () => {
           where: { teacherId: f.teacher.id },
         }),
       ).toBe(0);
+      // Their examinations are history: kept, with the author link cleared (SetNull).
+      const kept = await prisma.examination.findUnique({
+        where: { id: f.examination.id },
+        include: { subjects: true },
+      });
+      expect(kept).not.toBeNull();
+      expect(kept?.createdByTeacherId).toBeNull();
+      expect(kept?.subjects[0].createdByTeacherId).toBeNull();
       // The section-subject survives with no teacher, not deleted (SetNull).
       const ss = await prisma.sectionSubject.findUnique({
         where: { id: f.sectionSubject.id },
@@ -523,6 +568,8 @@ describe('Deletion cascades (e2e)', () => {
       const f = await seedFullGraph();
       await prisma.payment.deleteMany({ where: { challanId: f.challan.id } });
       await prisma.challan.deleteMany({ where: { academicYearId: f.year.id } });
+      await expectRefusedByExamHistory(`/api/academic-years/${f.year.id}`, f);
+      await clearExamHistory(f);
       await del(`/api/academic-years/${f.year.id}`, f.token).expect(200);
 
       expect(
@@ -554,7 +601,12 @@ describe('Deletion cascades (e2e)', () => {
         }),
       ).toBe(1);
 
-      // This used to be refused with "attendance has already been recorded".
+      // Attendance never blocks it; exam results do, because they are history.
+      await expectRefusedByExamHistory(
+        `/api/section-subjects/${f.sectionSubject.id}`,
+        f,
+      );
+      await clearExamHistory(f);
       await del(`/api/section-subjects/${f.sectionSubject.id}`, f.token).expect(
         200,
       );
@@ -608,6 +660,7 @@ describe('Deletion cascades (e2e)', () => {
   describe('no orphans left behind', () => {
     it('leaves nothing pointing at a deleted class', async () => {
       const f = await seedFullGraph();
+      await clearExamHistory(f);
       await del(`/api/class-grades/${f.grade.id}`, f.token).expect(200);
 
       const orphans = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(`

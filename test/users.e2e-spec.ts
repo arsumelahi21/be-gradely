@@ -217,6 +217,41 @@ describe('Users / student creation (e2e)', () => {
     expect(orphan).toBeNull();
   });
 
+  it('clears the cached user list when a user is deactivated', async () => {
+    const school = await createTestSchool();
+    const admin = await createTestUser({
+      role: Role.SCHOOL_ADMIN,
+      schoolId: school.id,
+    });
+    const adminToken = await tokenFor(app, admin);
+    const target = await createTestUser({
+      role: Role.TEACHER,
+      schoolId: school.id,
+    });
+
+    const list = () =>
+      request(app.getHttpServer())
+        .get('/api/users')
+        .query({ role: 'TEACHER' })
+        .set('Authorization', `Bearer ${adminToken}`);
+
+    // Prime the per-school list cache, then flip the flag.
+    const before = await list().expect(200);
+    const rows = before.body.items ?? before.body;
+    expect(rows.some((u: { id: string }) => u.id === target.id)).toBe(true);
+
+    await request(app.getHttpServer())
+      .patch(`/api/users/${target.id}/active`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ isActive: false })
+      .expect(200);
+
+    const after = await list().expect(200);
+    const afterRows = after.body.items ?? after.body;
+    const found = afterRows.find((u: { id: string }) => u.id === target.id);
+    expect(found?.isActive).toBe(false);
+  });
+
   it('rejects user creation without auth (401) and by the wrong role (403)', async () => {
     const anon = await request(app.getHttpServer())
       .post('/api/users')

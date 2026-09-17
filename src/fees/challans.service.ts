@@ -511,8 +511,6 @@ export class ChallansService extends BaseSchoolScopedService {
           status: 'ACTIVE',
           ...(onlyStudentId ? { studentId: onlyStudentId } : {}),
         },
-        // Newest first, so the de-duplication below keeps a student's most
-        // recent placement rather than whichever row the DB happened to return.
         orderBy: { createdAt: 'desc' },
         select: {
           sectionId: true,
@@ -543,7 +541,7 @@ export class ChallansService extends BaseSchoolScopedService {
       }),
     ]);
 
-    const enrolledRows = enrollments
+    const enrolled = enrollments
       // Defence in depth: an enrollment must never bill another tenant's student.
       .filter((e) => e.student.schoolId === schoolId)
       .map((e) => ({
@@ -565,22 +563,6 @@ export class ChallansService extends BaseSchoolScopedService {
               }
             : null,
       }));
-
-    /**
-     * One row per student, not per enrollment.
-     *
-     * A student may hold several ACTIVE enrollments (two sections of the same
-     * class, say), and a class-wide run queries EVERY section of that class —
-     * so the same student comes back once per enrollment. Only one challan per
-     * student/year/period can exist (`@@unique`), so leaving the duplicate in
-     * would double-count the preview's totals and bill counts, and hand the UI
-     * two rows with the same key. Newest placement wins (see orderBy above).
-     */
-    const byStudentId = new Map<string, (typeof enrolledRows)[number]>();
-    for (const row of enrolledRows) {
-      if (!byStudentId.has(row.id)) byStudentId.set(row.id, row);
-    }
-    const enrolled = [...byStudentId.values()];
 
     /**
      * A student on an active plan is billed by installment, never by month —
@@ -1370,6 +1352,9 @@ export class ChallansService extends BaseSchoolScopedService {
         sectionId: query.sectionId,
         academicYearId: query.academicYearId,
         status: 'ACTIVE',
+        // Binds the client-supplied sectionId to the caller's school: studentsWithoutPlan
+        // is derived from this list, and unscoped it reported a foreign roster's size.
+        section: { schoolId },
       },
       select: { studentId: true },
     });

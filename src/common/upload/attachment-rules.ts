@@ -21,14 +21,14 @@ export const ALLOWED_ATTACHMENT_MIME_TYPES = new Set<string>([
   'application/zip',
 ]);
 
-export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MB
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+// Scanned exam papers routinely exceed the 5 MB attachment cap.
+export const MAX_EXAM_PAPER_BYTES = 10 * 1024 * 1024;
 
 /**
- * PDF-only gate for the assignment module (attachments + student submissions).
- * Checks the declared MIME / .pdf extension and, when the bytes are on hand
- * (server-proxied uploads), the real `%PDF-` header — so a renamed non-PDF is
- * rejected too. On the presign path (no bytes) the declared type is trusted and
- * the signed Content-Type keeps S3 honest.
+ * Checks the `%PDF-` header too when bytes are on hand, so a renamed non-PDF is rejected; on the
+ * presign path (no bytes) the declared type is trusted and the signed Content-Type keeps S3 honest.
  */
 export function assertPdfOnly(input: {
   mimeType?: string | null;

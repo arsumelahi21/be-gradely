@@ -8,13 +8,14 @@ import {
 } from '../common/events/notification.events';
 import {
   sectionStudentIds,
+  sectionYearStudentIds,
   studentUserIds,
 } from '../common/notifications/recipients';
+import { formatMinutes } from '../exams/exam-mappers';
 
 /**
- * Daily "due tomorrow" reminders (Reminders category); windowed to tomorrow so each assignment/exam reminds once.
- * ponytail: no per-item dedupe table — a cron double-fire in the same day could
- * double-remind; add a `remindedAt` marker if that ever matters.
+ * Daily "due tomorrow" reminders, windowed to tomorrow so each assignment/exam reminds once.
+ * ponytail: no dedupe table, so a same-day cron double-fire could double-remind; add `remindedAt` if needed.
  */
 @Injectable()
 export class RemindersScheduler {
@@ -56,27 +57,47 @@ export class RemindersScheduler {
     }
   }
 
+  // One reminder per subject paper sitting tomorrow; only published exams, only that session's roster.
   private async remindExams(start: Date, end: Date): Promise<void> {
-    const items = await (this.prisma as any).exam.findMany({
-      where: { status: 'PUBLISHED', heldAt: { gte: start, lt: end } },
+    const items = await this.prisma.exam.findMany({
+      where: {
+        heldAt: { gte: start, lt: end },
+        examination: { status: 'PUBLISHED' },
+      },
       select: {
-        id: true,
-        title: true,
-        sectionSubject: { select: { sectionId: true } },
+        startMin: true,
+        venue: true,
+        sectionSubject: { select: { subject: { select: { name: true } } } },
+        examination: {
+          select: {
+            id: true,
+            title: true,
+            sectionId: true,
+            academicYearId: true,
+          },
+        },
       },
     });
     for (const e of items) {
       const userIds = await studentUserIds(
         this.prisma,
-        await sectionStudentIds(this.prisma, e.sectionSubject.sectionId),
+        await sectionYearStudentIds(
+          this.prisma,
+          e.examination.sectionId,
+          e.examination.academicYearId,
+        ),
       );
       if (!userIds.length) continue;
+      const when = e.startMin != null ? ` at ${formatMinutes(e.startMin)}` : '';
+      const where = e.venue ? ` in ${e.venue}` : '';
       this.eventEmitter.emit(NOTIFICATION_CREATE, {
         userIds,
         type: 'EXAM_UPCOMING',
         title: 'Exam tomorrow',
-        body: `"${e.title}" is tomorrow.`,
-        link: `/exams/${e.id}`,
+        body: `${e.sectionSubject.subject.name} — "${e.examination.title}" is tomorrow${when}${where}.`,
+        link: `/exams/${e.examination.id}`,
+        entityType: 'Examination',
+        entityId: e.examination.id,
         notifyPreferenceKey: 'notifyAttendance',
       } as NotificationCreateEvent);
     }

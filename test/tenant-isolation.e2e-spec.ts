@@ -4,6 +4,7 @@ import { createTestApp } from './utils/app';
 import { prisma, resetDb } from './utils/db';
 import { createTestUser, tokenFor } from './utils/factories';
 import { seedClass } from './utils/class-fixture';
+import { seedExamination } from './utils/exam-fixture';
 import { Role } from '../src/common/types/role.type';
 
 /**
@@ -13,6 +14,7 @@ import { Role } from '../src/common/types/role.type';
 describe('Cross-tenant isolation (e2e)', () => {
   let app: INestApplication;
   let bAdminToken: string;
+  let bStudentToken: string;
   let ids: Record<string, string>;
   let schoolBStudentId: string;
 
@@ -25,15 +27,26 @@ describe('Cross-tenant isolation (e2e)', () => {
     const enrollment = await prisma.enrollment.findFirstOrThrow({
       where: { studentId: a.students[0].profile.id },
     });
-    const exam = await prisma.exam.create({
+    const {
+      examination: exam,
+      subjects: [examSubject],
+    } = await seedExamination({
+      schoolId: a.school.id,
+      academicYearId: a.academicYear.id,
+      sectionId: a.section.id,
+      sectionSubjectIds: [a.sectionSubject.id],
+      createdByTeacherId: a.teacherProfile.id,
+      createdByUserId: a.teacherUser.id,
+      title: 'A-Exam',
+    });
+    await prisma.examPaper.create({
       data: {
+        examId: examSubject.id,
         schoolId: a.school.id,
-        academicYearId: a.academicYear.id,
-        sectionSubjectId: a.sectionSubject.id,
-        createdByTeacherId: a.teacherProfile.id,
-        title: 'A-Exam',
-        status: 'PUBLISHED',
-        maxScore: 100,
+        data: new Uint8Array(Buffer.from('%PDF-1.4 school A paper')),
+        fileName: 'a-paper.pdf',
+        sizeBytes: 23,
+        sha256: 'test',
       },
     });
     const assignment = await prisma.assignment.create({
@@ -89,6 +102,7 @@ describe('Cross-tenant isolation (e2e)', () => {
       sectionSubject: a.sectionSubject.id,
       teacher: a.teacherProfile.id,
       exam: exam.id,
+      examSubject: examSubject.id,
       assignment: assignment.id,
       quiz: quiz.id,
       announcement: announcement.id,
@@ -103,6 +117,7 @@ describe('Cross-tenant isolation (e2e)', () => {
       schoolId: b.school.id,
     });
     bAdminToken = await tokenFor(app, bAdmin);
+    bStudentToken = await tokenFor(app, b.students[0].user);
   });
 
   afterAll(async () => {
@@ -114,7 +129,9 @@ describe('Cross-tenant isolation (e2e)', () => {
 
   // GET/PATCH/DELETE of a School-A resource with School-B's token. GETs run first;
   // mutations last, so a broken DELETE can't mask an earlier GET leak.
-  const cases: Array<[string, 'get' | 'patch' | 'delete', () => string]> = [
+  const cases: Array<
+    [string, 'get' | 'patch' | 'delete' | 'post', () => string]
+  > = [
     ['GET students/:id', 'get', () => `/api/students/${ids.student}`],
     ['GET users/:id', 'get', () => `/api/users/${ids.user}`],
     ['GET sections/:id', 'get', () => `/api/sections/${ids.section}`],
@@ -137,6 +154,29 @@ describe('Cross-tenant isolation (e2e)', () => {
     ],
     ['GET teachers/:id', 'get', () => `/api/teachers/${ids.teacher}`],
     ['GET exams/:id', 'get', () => `/api/exams/${ids.exam}`],
+    ['GET exams/:id/history', 'get', () => `/api/exams/${ids.exam}/history`],
+    [
+      'GET exams/results/student/:id',
+      'get',
+      () => `/api/exams/results/student/${ids.student}`,
+    ],
+    ['GET exams/:id/results', 'get', () => `/api/exams/${ids.exam}/results`],
+    ['GET exams/:id/summary', 'get', () => `/api/exams/${ids.exam}/summary`],
+    [
+      'GET exams/:id/report-cards',
+      'get',
+      () => `/api/exams/${ids.exam}/report-cards`,
+    ],
+    [
+      'GET exams/:id/subjects/:sid/marks',
+      'get',
+      () => `/api/exams/${ids.exam}/subjects/${ids.examSubject}/marks`,
+    ],
+    [
+      'GET exams/:id/subjects/:sid/paper',
+      'get',
+      () => `/api/exams/${ids.exam}/subjects/${ids.examSubject}/paper`,
+    ],
     ['GET assignments/:id', 'get', () => `/api/assignments/${ids.assignment}`],
     ['GET quizzes/:id', 'get', () => `/api/quizzes/${ids.quiz}`],
     [
@@ -162,9 +202,16 @@ describe('Cross-tenant isolation (e2e)', () => {
       'get',
       () => `/api/messaging/threads/${ids.thread}`,
     ],
-    // Mutations last.
     ['PATCH students/:id', 'patch', () => `/api/students/${ids.student}`],
     ['PATCH sections/:id', 'patch', () => `/api/sections/${ids.section}`],
+    ['PATCH exams/:id', 'patch', () => `/api/exams/${ids.exam}`],
+    ['POST exams/:id/publish', 'post', () => `/api/exams/${ids.exam}/publish`],
+    [
+      'POST exams/:id/results/finalize',
+      'post',
+      () => `/api/exams/${ids.exam}/results/finalize`,
+    ],
+    ['DELETE exams/:id', 'delete', () => `/api/exams/${ids.exam}`],
     ['DELETE sections/:id', 'delete', () => `/api/sections/${ids.section}`],
     ['DELETE students/:id', 'delete', () => `/api/students/${ids.student}`],
   ];
@@ -188,6 +235,16 @@ describe('Cross-tenant isolation (e2e)', () => {
     expect(JSON.stringify(res.body)).not.toMatch(
       /passwordHash|refreshTokenHash|resetToken/,
     );
+  });
+
+  it('a School B student cannot read School A exams by passing its sectionId', async () => {
+    // A-Exam is PUBLISHED, so a filter that widened the student's placement scope would return it.
+    const res = await request(app.getHttpServer())
+      .get(`/api/exams?sectionId=${ids.section}`)
+      .set('Authorization', `Bearer ${bStudentToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.items).toEqual([]);
+    expect(res.body.total).toBe(0);
   });
 
   it("audit log is tenant-pinned: School B admin never sees School A's entries", async () => {

@@ -1,9 +1,20 @@
 // Runs via jest `setupFiles` before app code is imported, so services pick up these values at construction.
 // Points the app at the SEPARATE test database — never dev/prod.
 
-process.env.DATABASE_URL =
-  process.env.TEST_DATABASE_URL ||
-  'postgresql://postgres:postgres@localhost:5433/gradely_test?schema=public';
+import { WORKER_COUNT, workerDatabaseUrl } from './utils/worker-db';
+
+// One database per Jest worker: resetDb() TRUNCATEs every table between tests, so two
+// workers sharing a database would wipe each other's fixtures mid-test.
+const worker = Number(process.env.JEST_WORKER_ID ?? '1');
+if (worker > WORKER_COUNT) {
+  // Raising maxWorkers without E2E_WORKERS would otherwise surface as "database
+  // gradely_test_w3 does not exist" from whichever query happened to run first.
+  throw new Error(
+    `Jest worker ${worker} has no database: global-setup.ts created ${WORKER_COUNT}. ` +
+      `Set E2E_WORKERS=${worker} to match maxWorkers in jest-e2e.json.`,
+  );
+}
+process.env.DATABASE_URL = workerDatabaseUrl(worker);
 
 // When a Redis is configured, pin the suite to database index 1 so it never
 // reads or flushes the dev cache on index 0. Set here, before anything else

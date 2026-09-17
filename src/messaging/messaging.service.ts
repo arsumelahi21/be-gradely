@@ -573,7 +573,16 @@ export class MessagingService extends BaseSchoolScopedService {
       throw new BadRequestException('You cannot report yourself');
     }
     const reported = await this.loadUserContext(dto.reportedUserId);
-    if (!reported) throw new NotFoundException('User not found');
+    // Same 404 assertCanReach uses: a 201/404 split on a foreign id would confirm it exists,
+    // and the report itself carried that user's name into another school's notifications.
+    if (
+      !reported ||
+      (actor.role !== Role.SUPER_ADMIN &&
+        reported.role !== Role.SUPER_ADMIN &&
+        reported.schoolId !== actor.schoolId)
+    ) {
+      throw new NotFoundException('User not found');
+    }
 
     const escalatingAdmin =
       actor.role === Role.SCHOOL_ADMIN || actor.role === Role.SUPER_ADMIN;
@@ -651,10 +660,17 @@ export class MessagingService extends BaseSchoolScopedService {
       teacherProfile: { fullName: string } | null;
       parentProfile: { fullName: string } | null;
     };
+    // Students and parents pick recipients by name; handing them every staff and
+    // classmate address turned the picker into a directory export. '' not undefined —
+    // the frontend calls .toLowerCase() on it.
+    const staff =
+      actor.role === Role.SUPER_ADMIN ||
+      actor.role === Role.SCHOOL_ADMIN ||
+      actor.role === Role.TEACHER;
     const toRecipient = (u: Row) => ({
       id: u.id,
       fullName: resolveUserName(u),
-      email: u.email,
+      email: staff ? u.email : '',
       role: u.role as Role,
       rollNo: u.studentProfile?.rollNo ?? null,
       studentProfileId: u.studentProfile?.id ?? null,

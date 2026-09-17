@@ -7,13 +7,8 @@ import { seedClass } from './utils/class-fixture';
 import { Role } from '../src/common/types/role.type';
 
 /**
- * Duplicate names in the class module must come back as a 409 the form can
- * show, not a 500.
- *
- * Every case here used to reach Nest's default handler as a raw P2002, so the
- * admin saw "Internal server error" while creating a section whose only problem
- * was a name already in use. These tests pin both halves: the status, and a
- * message that names the thing that clashed.
+ * Duplicate names must return a 409 whose message names what clashed, not a 500 —
+ * every case here used to escape as a raw P2002 "Internal server error".
  */
 describe('Class module duplicate names (e2e)', () => {
   let app: INestApplication;
@@ -204,6 +199,5 @@ describe('Class module duplicate names (e2e)', () => {
         await prisma.section.findUnique({ where: { id: empty.id } }),
       ).toBeNull();
     });
-
   });
 });

@@ -12,6 +12,7 @@ import { UpdateAcademicYearDto } from './dto/update-academic-year.dto';
 import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { resolvePagination } from '../../common/dto/pagination-query.dto';
+import { assertNoExaminationHistory } from '../../common/services/exam-history-guard';
 
 type UpdateAcademicYearInput = UpdateAcademicYearDto &
   Partial<CreateAcademicYearDto>;
@@ -24,11 +25,8 @@ export class AcademicYearsService extends BaseSchoolScopedService {
   }
 
   /**
-   * The duplicate message, naming what the admin typed rather than a column.
-   *
-   * Without it the global Prisma filter renders `meta.target` verbatim — which
-   * for the composite key reads "That schoolId + code is already taken", leaking
-   * an internal column name and pointing at a field that isn't on the form.
+   * Names what the admin typed; otherwise the global Prisma filter renders `meta.target`
+   * ("That schoolId + code is already taken"), leaking a column name that isn't on the form.
    */
   private duplicateCode(label: string) {
     return uniqueConflict(
@@ -89,7 +87,6 @@ export class AcademicYearsService extends BaseSchoolScopedService {
         }
         scopedSchoolId = actor.schoolId;
       } else {
-        // No query param provided, use actor's schoolId
         scopedSchoolId = actor.schoolId;
       }
     } else {
@@ -157,6 +154,7 @@ export class AcademicYearsService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     await this.getOrThrow(id, actor);
+    await assertNoExaminationHistory(this.prisma, 'academicYear', id);
     return this.prisma.academicYear.delete({ where: { id } });
   }
 

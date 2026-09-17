@@ -10,6 +10,7 @@ import { Role } from '../common/types/role.type';
 import { resolvePagination } from '../common/dto/pagination-query.dto';
 import { compressImage } from '../common/upload/image-compress';
 import { assertPdfOnly } from '../common/upload/attachment-rules';
+import { TEACHER_PUBLIC } from '../common/utils/teacher-select';
 import { CreateAssignmentDto } from './dto/create-assignment.dto';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto';
 import { RequestUploadDto } from './dto/request-upload.dto';
@@ -548,6 +549,23 @@ export class AssignmentsService {
     if (!enrolled)
       throw new ForbiddenException('Student not enrolled for this assignment');
 
+    const existing = await (this.prisma as any).assignmentSubmission.findUnique(
+      {
+        where: {
+          assignmentId_studentId: {
+            assignmentId: assignment.id,
+            studentId: student.id,
+          },
+        },
+        select: { status: true },
+      },
+    );
+    // The upsert below would overwrite the graded file and reset the status to UPLOADING,
+    // losing the mark. A CLOSED assignment still accepts late uploads (decision #10).
+    if (existing?.status === 'MARKED') {
+      throw new BadRequestException('Submission already marked');
+    }
+
     const safeName = (dto.fileName ?? 'submission').replace(
       /[^a-zA-Z0-9._-]/g,
       '_',
@@ -590,34 +608,6 @@ export class AssignmentsService {
       key,
       contentType: dto.mimeType,
     });
-
-    // Log: Student requested upload URL
-    console.log('\n📤 [ASSIGNMENT UPLOAD REQUEST]');
-    console.log(
-      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-    );
-    console.log(`⏰ Timestamp: ${new Date().toISOString()}`);
-    console.log(`👤 Student ID: ${student.id}`);
-    console.log(`👤 Student Name: ${student.fullName || 'N/A'}`);
-    console.log(`📝 Assignment ID: ${assignment.id}`);
-    console.log(`📝 Assignment Title: ${assignment.title}`);
-    console.log(
-      `📁 Section: ${assignment.sectionSubject.section?.name || 'N/A'}`,
-    );
-    console.log(
-      `📚 Subject: ${assignment.sectionSubject.subject?.name || 'N/A'}`,
-    );
-    console.log(`📄 Submission ID: ${submission.id}`);
-    console.log(`📎 File Name: ${dto.fileName || 'N/A'}`);
-    console.log(
-      `📦 File Size: ${dto.sizeBytes ? `${(dto.sizeBytes / 1024).toFixed(2)} KB` : 'N/A'}`,
-    );
-    console.log(`🔖 MIME Type: ${dto.mimeType || 'N/A'}`);
-    console.log(`☁️  S3 Key: ${key}`);
-    console.log(`📊 Status: UPLOADING`);
-    console.log(
-      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n',
-    );
 
     return { submissionId: submission.id, s3Key: key, uploadUrl };
   }
@@ -764,7 +754,7 @@ export class AssignmentsService {
                 },
               },
               academicYear: true,
-              createdByTeacher: true,
+              createdByTeacher: TEACHER_PUBLIC,
             },
           },
           student: true,
@@ -790,7 +780,7 @@ export class AssignmentsService {
                 },
               },
               academicYear: true,
-              createdByTeacher: true,
+              createdByTeacher: TEACHER_PUBLIC,
             },
           },
           student: true,
@@ -850,7 +840,7 @@ export class AssignmentsService {
             },
           },
           academicYear: true,
-          createdByTeacher: true,
+          createdByTeacher: TEACHER_PUBLIC,
         },
       });
 
@@ -871,7 +861,7 @@ export class AssignmentsService {
                 },
               },
               academicYear: true,
-              createdByTeacher: true,
+              createdByTeacher: TEACHER_PUBLIC,
             },
           },
           student: true,
@@ -973,7 +963,7 @@ export class AssignmentsService {
               },
             },
             academicYear: true,
-            createdByTeacher: true,
+            createdByTeacher: TEACHER_PUBLIC,
           },
         },
         student: true,
@@ -995,51 +985,6 @@ export class AssignmentsService {
         );
       }
     }
-
-    // Log: Student submitted assignment
-    console.log('\n✅ [ASSIGNMENT SUBMITTED]');
-    console.log(
-      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-    );
-    console.log(`⏰ Timestamp: ${new Date().toISOString()}`);
-    console.log(`👤 Student ID: ${student.id}`);
-    console.log(
-      `👤 Student Name: ${updatedSubmission.student?.fullName || student.fullName || 'N/A'}`,
-    );
-    console.log(`📝 Assignment ID: ${assignmentId}`);
-    console.log(
-      `📝 Assignment Title: ${updatedSubmission.assignment?.title || submission.assignment.title}`,
-    );
-    console.log(
-      `📁 Section: ${updatedSubmission.assignment?.sectionSubject?.section?.name || submission.assignment.sectionSubject.section?.name || 'N/A'}`,
-    );
-    console.log(
-      `📚 Subject: ${updatedSubmission.assignment?.sectionSubject?.subject?.name || submission.assignment.sectionSubject.subject?.name || 'N/A'}`,
-    );
-    console.log(
-      `📅 Academic Year: ${updatedSubmission.assignment?.academicYear?.name || submission.assignment.academicYear?.name || 'N/A'}`,
-    );
-    console.log(
-      `👨‍🏫 Teacher: ${updatedSubmission.assignment?.createdByTeacher?.fullName || submission.assignment.createdByTeacher?.fullName || 'N/A'}`,
-    );
-    console.log(`📄 Submission ID: ${submissionId}`);
-    console.log(
-      `📎 File Name: ${updatedSubmission.fileName || submission.fileName || 'N/A'}`,
-    );
-    console.log(
-      `📦 File Size: ${updatedSubmission.sizeBytes ? `${(updatedSubmission.sizeBytes / 1024).toFixed(2)} KB` : submission.sizeBytes ? `${(submission.sizeBytes / 1024).toFixed(2)} KB` : 'N/A'}`,
-    );
-    console.log(
-      `🔖 MIME Type: ${updatedSubmission.mimeType || submission.mimeType || 'N/A'}`,
-    );
-    console.log(`☁️  S3 Key: ${updatedSubmission.s3Key || submission.s3Key}`);
-    console.log(`📊 Status: SUBMITTED`);
-    console.log(
-      `🕐 Submitted At: ${updatedSubmission.submittedAt?.toISOString() || new Date().toISOString()}`,
-    );
-    console.log(
-      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n',
-    );
 
     // Notify the creator teacher that the student submitted.
     const teacherUserId =
@@ -1102,7 +1047,7 @@ export class AssignmentsService {
               },
             },
             academicYear: true,
-            createdByTeacher: true,
+            createdByTeacher: TEACHER_PUBLIC,
           },
         },
         student: true,
@@ -1171,7 +1116,7 @@ export class AssignmentsService {
               },
             },
             academicYear: true,
-            createdByTeacher: true,
+            createdByTeacher: TEACHER_PUBLIC,
           },
         },
         student: true,
@@ -1270,11 +1215,7 @@ export class AssignmentsService {
       } as any,
     });
     if (!enrolled) {
-      throw new ForbiddenException(
-        `Student not enrolled in section ${assignment.sectionSubject.section?.name || assignment.sectionSubject.sectionId} ` +
-          `for academic year ${assignment.academicYear?.name || assignment.academicYearId}. ` +
-          `Please ensure the student is enrolled in the correct section and academic year with ACTIVE status.`,
-      );
+      throw new ForbiddenException('Student not enrolled for this assignment');
     }
 
     const submission = await (
@@ -1351,11 +1292,11 @@ export class AssignmentsService {
         include: {
           section: { include: { classGrade: true } },
           subject: true,
-          teacher: true,
+          teacher: TEACHER_PUBLIC,
         },
       },
       academicYear: true,
-      createdByTeacher: true,
+      createdByTeacher: TEACHER_PUBLIC,
       attachments: {
         where: { status: AssignmentAttachmentStatus.READY },
         orderBy: { createdAt: Prisma.SortOrder.asc },
@@ -1592,9 +1533,7 @@ export class AssignmentsService {
       });
       if (!enrolled) {
         throw new ForbiddenException(
-          `Student not enrolled in section ${assignment.sectionSubject.section?.name || assignment.sectionSubject.sectionId} ` +
-            `for academic year ${assignment.academicYear?.name || assignment.academicYearId}. ` +
-            `Please ensure you are enrolled in the correct section and academic year.`,
+          'Student not enrolled for this assignment',
         );
       }
       return;

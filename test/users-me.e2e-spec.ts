@@ -62,6 +62,30 @@ describe('Self profile update (e2e)', () => {
     expect(p?.gender).toBe('MALE');
   });
 
+  it('ignores guardian fields on self-update — they are derived from the parent', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const token = await tokenFor(app, cls.students[0].user);
+    const before = await prisma.studentProfile.findUniqueOrThrow({
+      where: { id: cls.students[0].profile.id },
+    });
+
+    // The frontend sends these two on every student save, so they must be dropped
+    // silently rather than rejected — a 400 would break every profile edit.
+    const res = await patchMe(token, {
+      city: 'Porto',
+      guardianName: 'Not My Parent',
+      guardianPhone: '0300-0000000',
+    });
+    expect(res.status).toBe(200);
+
+    const after = await prisma.studentProfile.findUniqueOrThrow({
+      where: { id: cls.students[0].profile.id },
+    });
+    expect(after.city).toBe('Porto');
+    expect(after.guardianName).toBe(before.guardianName);
+    expect(after.guardianPhone).toBe(before.guardianPhone);
+  });
+
   it('rejects immutable identifiers on self-update (DTO whitelist)', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await tokenFor(app, cls.students[0].user);

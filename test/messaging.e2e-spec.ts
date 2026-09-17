@@ -743,6 +743,32 @@ describe('Messaging (e2e)', () => {
     expect(self.status).toBe(400);
   });
 
+  it('does not let a user report someone from another school', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const other = await seedClass({ studentCount: 1 });
+    const studentToken = await tokenFor(app, cls.students[0].user);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/messaging/report')
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({ reportedUserId: other.teacherUser.id, reason: 'x' });
+    // 404 like assertCanReach: a 201/403 split would confirm the id exists.
+    expect(res.status).toBe(404);
+  });
+
+  it('does not expose staff emails to a student listing recipients', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const studentToken = await tokenFor(app, cls.students[0].user);
+
+    const res = await request(app.getHttpServer())
+      .get('/api/messaging/recipients')
+      .set('Authorization', `Bearer ${studentToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeGreaterThan(0);
+    // '' rather than undefined — the frontend calls .toLowerCase() on it.
+    expect(res.body.every((r: { email: string }) => r.email === '')).toBe(true);
+  });
+
   it('rejects an unauthenticated request', async () => {
     const res = await request(app.getHttpServer()).get(
       '/api/messaging/threads',

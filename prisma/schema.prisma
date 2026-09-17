@@ -45,6 +45,9 @@ model School {
   socialLinks                   SocialLink[]
   assignments                   Assignment[]
   exams                         Exam[]
+  examinations                  Examination[]
+  academicTerms                 AcademicTerm[]
+  gradingSchemes                GradingScheme[]
   attendances                   Attendance[]
   quizzes                       Quiz[]
   messageThreads                MessageThread[]
@@ -111,6 +114,10 @@ model User {
   feePlansCreated       FeeInstallmentPlan[] @relation("FeePlanCreatedBy")
   submissionsSubmitted  PaymentSubmission[]  @relation("SubmissionSubmittedBy")
   submissionsReviewed   PaymentSubmission[]  @relation("SubmissionReviewedBy")
+  examinationsCreated   Examination[]        @relation("ExaminationCreatedBy")
+  examinationsReviewed  Examination[]        @relation("ExaminationReviewedBy")
+  examinationsFinalized Examination[]        @relation("ExaminationFinalizedBy")
+  examinationEvents     ExaminationEvent[]   @relation("ExaminationEventActor")
 
   @@unique([schoolId, userCode])
   // Composite serves the hot "users of this school, by role" list AND plain
@@ -170,6 +177,7 @@ model TeacherProfile {
   assignmentsCreated            Assignment[]
   assignmentAttachmentsUploaded AssignmentAttachment[]
   examsCreated                  Exam[]
+  examinationsCreated           Examination[]
   timetableEntries              TimetableEntry[]
 
   @@unique([schoolId, employeeCode])
@@ -253,6 +261,7 @@ model StudentProfile {
   photo                  StudentPhoto?
   assignmentSubmissions  AssignmentSubmission[]
   examResults            ExamResult[]
+  examinationResults     ExaminationResult[]
   attendances            Attendance[]
   quizAttempts           QuizAttempt[]
   discount               Discount?                @relation(fields: [discountId], references: [id], onDelete: SetNull)
@@ -318,6 +327,8 @@ model AcademicYear {
   enrollments      Enrollment[]
   assignments      Assignment[]
   exams            Exam[]
+  examinations     Examination[]
+  terms            AcademicTerm[]
   challans         Challan[]
   installmentPlans FeeInstallmentPlan[]
   timetables       Timetable[]
@@ -346,6 +357,7 @@ model ClassGrade {
   school            School    @relation(fields: [schoolId], references: [id])
   sections          Section[]
   challans          Challan[]
+  examinations      Examination[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -372,6 +384,7 @@ model Section {
   challans         Challan[]
   timetables       Timetable[]
   timetableEntries TimetableEntry[]
+  examinations     Examination[]
 
   @@unique([classGradeId, name])
   @@index([schoolId])
@@ -608,50 +621,218 @@ model AssignmentSubmission {
   @@index([studentId])
 }
 
-model Exam {
-  id                 String     @id @default(uuid())
+// The unit a teacher proposes, the principal reviews and results are finalized on.
+// Approval (status) and result state (resultStatus) are deliberately separate lifecycles.
+model Examination {
+  id                 String                  @id @default(uuid())
   schoolId           String
   academicYearId     String
+  classGradeId       String
+  sectionId          String
+  termId             String?
+  gradingSchemeId    String?
+  title              String
+  instructions       String?
+  status             ExaminationStatus       @default(DRAFT)
+  resultStatus       ExaminationResultStatus @default(NOT_STARTED)
+  reviewNote         String? // latest request-changes / rejection reason shown to the teacher
+  className          String // snapshot: a section can be moved to another class later
+  sectionName        String
+  createdByUserId    String?
+  createdByTeacherId String?
+  reviewedByUserId   String?
+  finalizedByUserId  String?
+  submittedAt        DateTime?
+  reviewedAt         DateTime?
+  publishedAt        DateTime?
+  finalizedAt        DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  school           School              @relation(fields: [schoolId], references: [id])
+  academicYear     AcademicYear        @relation(fields: [academicYearId], references: [id], onDelete: Restrict)
+  classGrade       ClassGrade          @relation(fields: [classGradeId], references: [id], onDelete: Restrict)
+  section          Section             @relation(fields: [sectionId], references: [id], onDelete: Restrict)
+  term             AcademicTerm?       @relation(fields: [termId], references: [id], onDelete: SetNull)
+  gradingScheme    GradingScheme?      @relation(fields: [gradingSchemeId], references: [id], onDelete: Restrict)
+  createdByUser    User?               @relation("ExaminationCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdByTeacher TeacherProfile?     @relation(fields: [createdByTeacherId], references: [id], onDelete: SetNull)
+  reviewedByUser   User?               @relation("ExaminationReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  finalizedByUser  User?               @relation("ExaminationFinalizedBy", fields: [finalizedByUserId], references: [id], onDelete: SetNull)
+  subjects         Exam[]
+  studentResults   ExaminationResult[]
+  events           ExaminationEvent[]
+
+  @@index([schoolId, academicYearId, status])
+  @@index([schoolId, status, submittedAt])
+  @@index([sectionId, academicYearId, status])
+  @@index([createdByTeacherId, status])
+  @@index([termId])
+}
+
+// One subject paper inside an Examination. Predates Examination, so ExamResult ids and the
+// dashboard SQL stay valid. Restrict/SetNull keep results when allocations or teachers go.
+model Exam {
+  id                 String    @id @default(uuid())
+  schoolId           String
+  academicYearId     String
+  examinationId      String
   sectionSubjectId   String
-  createdByTeacherId String
+  createdByTeacherId String?
   title              String
   description        String?
   heldAt             DateTime?
-  maxScore           Int?
-  status             ExamStatus @default(DRAFT)
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
+  startMin           Int? // wall-clock minutes from midnight, like TimetablePeriod
+  endMin             Int?
+  venue              String?
+  maxScore           Int? // total marks
+  passingMarks       Int?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  school           School         @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  academicYear     AcademicYear   @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
-  sectionSubject   SectionSubject @relation(fields: [sectionSubjectId], references: [id], onDelete: Cascade)
-  createdByTeacher TeacherProfile @relation(fields: [createdByTeacherId], references: [id], onDelete: Cascade)
+  school           School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  academicYear     AcademicYear    @relation(fields: [academicYearId], references: [id], onDelete: Restrict)
+  examination      Examination     @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+  sectionSubject   SectionSubject  @relation(fields: [sectionSubjectId], references: [id], onDelete: Restrict)
+  createdByTeacher TeacherProfile? @relation(fields: [createdByTeacherId], references: [id], onDelete: SetNull)
+  paper            ExamPaper?
   results          ExamResult[]
 
+  @@unique([examinationId, sectionSubjectId])
   @@index([schoolId])
   @@index([academicYearId])
   @@index([sectionSubjectId])
   @@index([createdByTeacherId])
+  @@index([heldAt])
+}
+
+// Confidential paper bytes, isolated like SchoolLogo. Only the authorized paper endpoint
+// may select `data`; never include this relation wholesale.
+model ExamPaper {
+  examId           String   @id
+  schoolId         String
+  data             Bytes
+  fileName         String
+  sizeBytes        Int
+  sha256           String
+  uploadedByUserId String?
+  uploadedAt       DateTime @default(now())
+  exam             Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
 }
 
 model ExamResult {
-  id        String    @id @default(uuid())
-  examId    String
-  studentId String
-  score     Int?
-  grade     String?
-  rank      Int?
-  remarks   String?
-  markedAt  DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id              String    @id @default(uuid())
+  examId          String
+  studentId       String
+  score           Int?
+  isAbsent        Boolean   @default(false)
+  grade           String? // written by the system when results are finalized
+  rank            Int? // legacy manual rank; new flows use ExaminationResult.position
+  remarks         String? // subject-teacher remarks
+  enteredByUserId String?
+  markedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   exam    Exam           @relation(fields: [examId], references: [id], onDelete: Cascade)
-  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student StudentProfile @relation(fields: [studentId], references: [id], onDelete: Restrict)
 
   @@unique([examId, studentId])
   @@index([examId])
   @@index([studentId])
+}
+
+// Per-student outcome. Remarks can exist before finalization; totals are frozen at
+// finalization (like ChallanItem) so later grading edits can't rewrite a locked result.
+model ExaminationResult {
+  id                  String         @id @default(uuid())
+  examinationId       String
+  studentId           String
+  totalObtained       Int?
+  totalMax            Int?
+  percentage          Float?
+  grade               String?
+  passed              Boolean?
+  position            Int?
+  classTeacherRemarks String?
+  principalRemarks    String?
+  studentName         String?
+  rollNo              String?
+  finalizedAt         DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  examination         Examination    @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+  student             StudentProfile @relation(fields: [studentId], references: [id], onDelete: Restrict)
+
+  @@unique([examinationId, studentId])
+  @@index([studentId])
+}
+
+// Business history of an examination (review cycles with reasons, marks, finalization).
+// Written in the same transaction as the change; AuditLog still records the security trail.
+model ExaminationEvent {
+  id            String               @id @default(uuid())
+  examinationId String
+  actorUserId   String?
+  type          ExaminationEventType
+  fromStatus    ExaminationStatus?
+  toStatus      ExaminationStatus?
+  reason        String?
+  details       Json? // changed field names / counts; never file bytes or storage references
+  createdAt     DateTime             @default(now())
+  examination   Examination          @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+  actor         User?                @relation("ExaminationEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([examinationId, createdAt])
+}
+
+model AcademicTerm {
+  id             String        @id @default(uuid())
+  schoolId       String
+  academicYearId String
+  name           String
+  sortOrder      Int           @default(0)
+  startDate      DateTime?
+  endDate        DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  school         School        @relation(fields: [schoolId], references: [id])
+  academicYear   AcademicYear  @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  examinations   Examination[]
+
+  @@unique([academicYearId, name])
+  @@index([schoolId, academicYearId])
+}
+
+model GradingScheme {
+  id           String        @id @default(uuid())
+  schoolId     String
+  name         String
+  isDefault    Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  school       School        @relation(fields: [schoolId], references: [id])
+  bands        GradeBand[]
+  examinations Examination[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+}
+
+// A band covers minPercent up to (not including) the next higher band's minPercent.
+model GradeBand {
+  id         String        @id @default(uuid())
+  schemeId   String
+  label      String
+  minPercent Int
+  isPassing  Boolean       @default(true)
+  remark     String?
+  scheme     GradingScheme @relation(fields: [schemeId], references: [id], onDelete: Cascade)
+
+  @@unique([schemeId, minPercent])
+  @@unique([schemeId, label])
 }
 
 model TeacherQualification {
@@ -778,10 +959,37 @@ enum AssignmentAttachmentStatus {
   READY
 }
 
-enum ExamStatus {
+enum ExaminationStatus {
   DRAFT
+  PENDING_REVIEW
+  CHANGES_REQUESTED
   PUBLISHED
-  CLOSED
+  REJECTED
+}
+
+enum ExaminationResultStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  FINALIZED
+}
+
+enum ExaminationEventType {
+  CREATED
+  UPDATED
+  ADMIN_EDITED
+  SUBJECT_ADDED
+  SUBJECT_UPDATED
+  SUBJECT_REMOVED
+  PAPER_UPLOADED
+  PAPER_REMOVED
+  SUBMITTED
+  CHANGES_REQUESTED
+  REJECTED
+  PUBLISHED
+  MARKS_SAVED
+  REMARKS_UPDATED
+  RESULTS_FINALIZED
+  RESULTS_REOPENED
 }
 
 // ---------------------------------------------------------------------------

@@ -7,11 +7,8 @@ import { seedClass } from './utils/class-fixture';
 import { CacheService } from '../src/common/services/cache.service';
 import { Role } from '../src/common/types/role.type';
 
-/**
- * The invariant: SectionTeacher (what the Teachers panel lists and what the class
- * card's `_count.teachers` counts) must mirror SectionSubject.teacherId (who
- * actually teaches a subject in that section).
- */
+// Invariant: SectionTeacher (the Teachers panel and the card's `_count.teachers`) must
+// mirror SectionSubject.teacherId (who actually teaches a subject in that section).
 describe('Section roster mirrors subject teachers (e2e)', () => {
   let app: INestApplication;
   let cache: {
@@ -21,10 +18,8 @@ describe('Section roster mirrors subject teachers (e2e)', () => {
 
   beforeAll(async () => {
     app = await createTestApp();
-    // `.env` points REDIS_URL at a Redis that is not running under e2e and
-    // CacheService fails open, so nothing would be cached at all — pin the
-    // in-memory backend so the invalidation test means the same thing on every
-    // machine, Redis running or not.
+    // `.env`'s Redis isn't running under e2e and CacheService fails open (caches nothing),
+    // so pin the in-memory backend to make the invalidation test meaningful everywhere.
     cache = app.get(CacheService);
     cache.redis?.disconnect();
     cache.redis = null;
@@ -42,9 +37,8 @@ describe('Section roster mirrors subject teachers (e2e)', () => {
 
   const server = () => request(app.getHttpServer());
 
-  /** A school + section + an admin token for it. NOTE: seedClass writes its own
-   *  sectionSubject straight through Prisma, so the section starts with an EMPTY
-   *  roster — the legacy state this fix exists for. */
+  /** NOTE: seedClass writes its sectionSubject straight through Prisma, so the section
+   *  starts with an EMPTY roster — the legacy state this fix exists for. */
   const setup = async () => {
     const cls = await seedClass({ studentCount: 0 });
     const admin = await createTestUser({
@@ -76,7 +70,6 @@ describe('Section roster mirrors subject teachers (e2e)', () => {
   const rosterIds = async (sectionId: string) =>
     (await roster(sectionId)).map((r) => r.teacherId).sort();
 
-  /** The Teachers panel. */
   const panelIds = async (auth: Record<string, string>, sectionId: string) => {
     const res = await server()
       .get(`/api/sections/${sectionId}/teachers`)
@@ -544,9 +537,8 @@ describe('Section roster mirrors subject teachers (e2e)', () => {
         teachers: 0,
       });
 
-      // Written straight through Prisma, so nothing can invalidate: the count
-      // must still read 1, which proves the entry really is cached and the
-      // fresh reads below cannot pass vacuously.
+      // Written straight through Prisma, so nothing invalidates: still reading 1 proves the
+      // entry is cached, so the fresh reads below cannot pass vacuously.
       const bypassSubject = await makeSubject(cls.school.id, 'Bypass');
       const bypass = await prisma.sectionSubject.create({
         data: { sectionId: cls.section.id, subjectId: bypassSubject.id },
@@ -594,44 +586,262 @@ describe('Section roster mirrors subject teachers (e2e)', () => {
     });
   });
 
-  describe('known bug', () => {
-    // update() writes the row to `section.id` but calls both roster helpers with
-    // `current.sectionId`, so a cross-section move breaks the mirror both ways.
-    // Marked `.failing`: it goes green the moment the helpers take the new id.
-    it.failing(
-      'moving a subject to another section moves its roster row with it',
-      async () => {
-        const { cls, auth } = await setup();
-        const sectionB = await prisma.section.create({
-          data: {
-            schoolId: cls.school.id,
-            classGradeId: cls.classGrade.id,
-            name: 'Section B',
-          },
-        });
-        const teacher = await makeTeacher(cls.school.id, 'Mover');
-        const subject = await makeSubject(cls.school.id, 'Moving Subject');
+  describe('moving an allocation between sections', () => {
+    // update() used to run both roster helpers against the OLD section, stranding the teacher there.
+    it('moving a subject to another section moves its roster row with it', async () => {
+      const { cls, auth } = await setup();
+      const sectionB = await prisma.section.create({
+        data: {
+          schoolId: cls.school.id,
+          classGradeId: cls.classGrade.id,
+          name: 'Section B',
+        },
+      });
+      const teacher = await makeTeacher(cls.school.id, 'Mover');
+      const subject = await makeSubject(cls.school.id, 'Moving Subject');
 
-        const created = await allocate(auth, {
-          sectionId: cls.section.id,
-          subjectId: subject.id,
-          teacherId: teacher.id,
-        });
-        expect(created.status).toBe(201);
-        expect(await rosterIds(cls.section.id)).toEqual([teacher.id]);
+      const created = await allocate(auth, {
+        sectionId: cls.section.id,
+        subjectId: subject.id,
+        teacherId: teacher.id,
+      });
+      expect(created.status).toBe(201);
+      expect(await rosterIds(cls.section.id)).toEqual([teacher.id]);
 
-        const patched = await server()
-          .patch(`/api/section-subjects/${created.body.id}`)
+      const patched = await server()
+        .patch(`/api/section-subjects/${created.body.id}`)
+        .set(auth)
+        .send({ sectionId: sectionB.id });
+      expect(patched.status).toBe(200);
+      expect(patched.body.sectionId).toBe(sectionB.id);
+
+      expect(await rosterIds(cls.section.id)).toEqual([]);
+      expect(await rosterIds(sectionB.id)).toEqual([teacher.id]);
+      expect(await panelIds(auth, cls.section.id)).toEqual([]);
+      expect(await panelIds(auth, sectionB.id)).toEqual([teacher.id]);
+    });
+  });
+
+  // Regression: a section read "Subjects 0 · Teachers N" because roster rows outlived their allocations.
+  describe('stale roster rows never outlive what put them there', () => {
+    /** The whole cached card row, including the distinct `teacherCount`. */
+    const card = async (auth: Record<string, string>, sectionId: string) => {
+      const res = await server().get('/api/sections').set(auth);
+      expect(res.status).toBe(200);
+      return (res.body as any[]).find((s) => s.id === sectionId);
+    };
+
+    it('deleting a Subject prunes its teachers from every section and refreshes the cached card', async () => {
+      const { cls, auth } = await setup();
+      const sectionB = await prisma.section.create({
+        data: {
+          schoolId: cls.school.id,
+          classGradeId: cls.classGrade.id,
+          name: 'Section B',
+        },
+      });
+      const teacherA = await makeTeacher(cls.school.id, 'Teaches A');
+      const teacherB = await makeTeacher(cls.school.id, 'Teaches B');
+      const doomed = await makeSubject(cls.school.id, 'Doomed');
+      for (const [sectionId, teacherId] of [
+        [cls.section.id, teacherA.id],
+        [sectionB.id, teacherB.id],
+      ]) {
+        const res = await allocate(auth, {
+          sectionId,
+          subjectId: doomed.id,
+          teacherId,
+        });
+        expect(res.status).toBe(201);
+      }
+      // Prime the cache: the stale entry is exactly what the card used to keep serving.
+      expect(await card(auth, sectionB.id)).toMatchObject({
+        _count: { subjects: 1, teachers: 1 },
+        teacherCount: 1,
+      });
+
+      const res = await server().delete(`/api/subjects/${doomed.id}`).set(auth);
+      expect(res.status).toBe(200);
+
+      expect(await rosterIds(cls.section.id)).toEqual([]);
+      expect(await rosterIds(sectionB.id)).toEqual([]);
+      expect(await panelIds(auth, sectionB.id)).toEqual([]);
+      expect(await detailTeacherIds(auth, sectionB.id)).toEqual([]);
+      expect(await card(auth, sectionB.id)).toMatchObject({
+        _count: { subjects: 0, teachers: 0 },
+        teacherCount: 0,
+      });
+      // Section A keeps seedClass's own subject and its teacher.
+      expect(await card(auth, cls.section.id)).toMatchObject({
+        _count: { subjects: 1, teachers: 0 },
+        teacherCount: 1,
+      });
+    });
+
+    it('turning class teacher off drops a teacher who no longer teaches anything there', async () => {
+      const { cls, auth } = await setup();
+      const teacher = await makeTeacher(cls.school.id, 'Former Homeroom');
+      const subject = await makeSubject(cls.school.id, 'Art');
+      const created = await allocate(auth, {
+        sectionId: cls.section.id,
+        subjectId: subject.id,
+        teacherId: teacher.id,
+      });
+      expect(created.status).toBe(201);
+      const [row] = await roster(cls.section.id);
+
+      const promote = await server()
+        .patch(`/api/sections/${cls.section.id}/teachers/${row.id}`)
+        .set(auth)
+        .send({ isPrimary: true });
+      expect(promote.status).toBe(200);
+      const unstaff = await server()
+        .patch(`/api/section-subjects/${created.body.id}`)
+        .set(auth)
+        .send({ teacherId: null });
+      expect(unstaff.status).toBe(200);
+      // Still the class teacher, so still on the roster.
+      expect(await rosterIds(cls.section.id)).toEqual([teacher.id]);
+
+      const demote = await server()
+        .patch(`/api/sections/${cls.section.id}/teachers/${row.id}`)
+        .set(auth)
+        .send({ isPrimary: false });
+      expect(demote.status).toBe(200);
+
+      expect(await roster(cls.section.id)).toHaveLength(0);
+      expect(await panelIds(auth, cls.section.id)).toEqual([]);
+      expect((await card(auth, cls.section.id)).teacherCount).toBe(1); // seedClass's teacher only
+    });
+
+    it('making someone else class teacher drops the old one if they teach nothing, but keeps a human-titled row', async () => {
+      const { cls, auth } = await setup();
+      const oldHomeroom = await makeTeacher(cls.school.id, 'Old Homeroom');
+      const coTeacher = await makeTeacher(cls.school.id, 'Co-Teacher');
+      const newHomeroom = await makeTeacher(cls.school.id, 'New Homeroom');
+
+      // The setup screen's own "Class Teacher" row, and a deliberate human assignment.
+      for (const body of [
+        {
+          teacherId: oldHomeroom.id,
+          assignmentRole: 'Class Teacher',
+          isPrimary: true,
+        },
+        { teacherId: coTeacher.id, assignmentRole: 'Co-Teacher' },
+      ]) {
+        const res = await server()
+          .post(`/api/sections/${cls.section.id}/teachers`)
           .set(auth)
-          .send({ sectionId: sectionB.id });
-        expect(patched.status).toBe(200);
-        expect(patched.body.sectionId).toBe(sectionB.id);
+          .send(body);
+        expect(res.status).toBe(201);
+      }
 
-        expect(await rosterIds(cls.section.id)).toEqual([]);
-        expect(await rosterIds(sectionB.id)).toEqual([teacher.id]);
-        expect(await panelIds(auth, cls.section.id)).toEqual([]);
-        expect(await panelIds(auth, sectionB.id)).toEqual([teacher.id]);
-      },
-    );
+      const promote = await server()
+        .post(`/api/sections/${cls.section.id}/teachers`)
+        .set(auth)
+        .send({
+          teacherId: newHomeroom.id,
+          assignmentRole: 'Class Teacher',
+          isPrimary: true,
+        });
+      expect(promote.status).toBe(201);
+
+      expect(await rosterIds(cls.section.id)).toEqual(
+        [coTeacher.id, newHomeroom.id].sort(),
+      );
+    });
+
+    it('an orphaned auto row from an earlier write heals on the next roster write for that section', async () => {
+      const { cls, auth } = await setup();
+      const ghost = await makeTeacher(cls.school.id, 'Ghost');
+      const kept = await makeTeacher(cls.school.id, 'Assistant');
+      // The legacy state: rows for teachers who teach nothing here.
+      await prisma.sectionTeacher.createMany({
+        data: [
+          {
+            sectionId: cls.section.id,
+            teacherId: ghost.id,
+            assignmentRole: 'Subject Teacher',
+          },
+          {
+            sectionId: cls.section.id,
+            teacherId: kept.id,
+            assignmentRole: 'Assistant',
+          },
+        ],
+      });
+
+      const hire = await makeTeacher(cls.school.id, 'New Hire');
+      const subject = await makeSubject(cls.school.id, 'Computing');
+      const created = await allocate(auth, {
+        sectionId: cls.section.id,
+        subjectId: subject.id,
+        teacherId: hire.id,
+      });
+      expect(created.status).toBe(201);
+      // create() only rosters; the next update or remove is what prunes.
+      const touched = await server()
+        .patch(`/api/section-subjects/${created.body.id}`)
+        .set(auth)
+        .send({ schedule: 'Tue 10:00' });
+      expect(touched.status).toBe(200);
+
+      expect(await rosterIds(cls.section.id)).toEqual(
+        [hire.id, kept.id].sort(),
+      );
+    });
+
+    it('deleting a teacher account refreshes the cached card', async () => {
+      const { cls, auth } = await setup();
+      const leaver = await makeTeacher(cls.school.id, 'Leaver');
+      const subject = await makeSubject(cls.school.id, 'Drama');
+      expect(
+        (
+          await allocate(auth, {
+            sectionId: cls.section.id,
+            subjectId: subject.id,
+            teacherId: leaver.id,
+          })
+        ).status,
+      ).toBe(201);
+      expect((await card(auth, cls.section.id)).teacherCount).toBe(2); // prime
+
+      const res = await server()
+        .delete(`/api/users/${leaver.userId}`)
+        .set(auth);
+      expect(res.status).toBe(200);
+
+      expect(await card(auth, cls.section.id)).toMatchObject({
+        _count: { teachers: 0 },
+        teacherCount: 1,
+      });
+    });
+
+    it('the card student count, the detail list and the enrolment list all mean ACTIVE students', async () => {
+      const cls = await seedClass({ studentCount: 3 });
+      const admin = await createTestUser({
+        role: Role.SCHOOL_ADMIN,
+        schoolId: cls.school.id,
+      });
+      const auth = { Authorization: `Bearer ${await tokenFor(app, admin)}` };
+      // Promotion closes a placement rather than deleting it.
+      await prisma.enrollment.updateMany({
+        where: {
+          studentId: cls.students[0].profile.id,
+          sectionId: cls.section.id,
+        },
+        data: { status: 'COMPLETED' },
+      });
+
+      const detail = await server()
+        .get(`/api/sections/${cls.section.id}/detail`)
+        .set(auth);
+      const list = await server()
+        .get(`/api/enrollments?sectionId=${cls.section.id}`)
+        .set(auth);
+      expect((await card(auth, cls.section.id))._count.enrollments).toBe(2);
+      expect(detail.body.enrollments).toHaveLength(2);
+      expect(list.body).toHaveLength(2);
+    });
   });
 });

@@ -22,6 +22,7 @@ import { formatMinorUnits } from '../fees/money.util';
 import { CacheService } from '../common/services/cache.service';
 import {
   SCHOOL_CACHE_TTL_SECONDS,
+  SchoolCacheEntity,
   schoolCacheEntityForRole,
   schoolCacheKey,
   schoolCachePrefix,
@@ -49,7 +50,6 @@ export class UsersService {
     private eventEmitter: EventEmitter2,
   ) {}
 
-  /** The school's ISO currency, for money shown inside notification copy. */
   private async schoolCurrency(schoolId: string | null | undefined) {
     if (!schoolId) return 'PKR';
     const school = await this.prisma.school.findUnique({
@@ -63,6 +63,7 @@ export class UsersService {
   private async invalidateRoleCache(
     role: string,
     schoolId: string | null | undefined,
+    extra: SchoolCacheEntity[] = [],
   ) {
     // A cross-school-only user (super-admin, no schoolId): just the admin overview.
     if (!schoolId) {
@@ -71,7 +72,7 @@ export class UsersService {
     }
     // One del (exact keys) + one prefix scan covers everything a user write
     // affects — not 8 separate cache scans.
-    const entity = schoolCacheEntityForRole(role); // 'students' | 'teachers' | null
+    const entity = schoolCacheEntityForRole(role);
     await Promise.all([
       this.cache.del(
         'dashboard:admin-overview',
@@ -81,6 +82,7 @@ export class UsersService {
         ...schoolStatsPrefixes(schoolId),
         schoolCachePrefix(schoolId, 'users'),
         ...(entity ? [schoolCachePrefix(schoolId, entity)] : []),
+        ...extra.map((e) => schoolCachePrefix(schoolId, e)),
       ),
     ]);
   }
@@ -94,7 +96,6 @@ export class UsersService {
   }
 
   async create(dto: CreateUserDto, actor: Actor) {
-    // Permissions
     if (actor.role === Role.SUPER_ADMIN) {
       // SUPER_ADMIN can create anyone, but only SUPER_ADMIN can have null schoolId
       if (dto.role !== Role.SUPER_ADMIN) {
@@ -102,12 +103,10 @@ export class UsersService {
           throw new BadRequestException('schoolId is required');
         await this.ensureSchoolExists(dto.schoolId);
       } else {
-        // creating another SUPER_ADMIN: schoolId must be null/undefined
         if (dto.schoolId)
           throw new BadRequestException('SUPER_ADMIN must not have schoolId');
       }
     } else if (actor.role === Role.SCHOOL_ADMIN) {
-      // School admin can only create stakeholders under their school
       if (!actor.schoolId)
         throw new ForbiddenException('School Admin has no school context');
       if (![Role.TEACHER, Role.PARENT, Role.STUDENT].includes(dto.role)) {
@@ -119,7 +118,6 @@ export class UsersService {
       throw new ForbiddenException('Not allowed');
     }
 
-    // Determine final schoolId
     const finalSchoolId =
       actor.role === Role.SCHOOL_ADMIN
         ? actor.schoolId!
@@ -255,7 +253,6 @@ export class UsersService {
             schoolId: finalSchoolId,
             isActive: true,
             userCode,
-            // For SCHOOL_ADMIN and SUPER_ADMIN, store fullName/phone on User
             ...((dto.role === Role.SCHOOL_ADMIN ||
               dto.role === Role.SUPER_ADMIN) && {
               fullName: dto.fullName,
@@ -309,8 +306,6 @@ export class UsersService {
             } as any,
           });
         } else if (dto.role === Role.STUDENT) {
-          // Admission/roll number: use the admin-supplied value if given
-          // (manual override), else auto-generate a per-school sequential number.
           const admissionNo = dto.admissionNo?.trim()
             ? dto.admissionNo.trim()
             : await this.generateAdmissionNo(tx, finalSchoolId!);
@@ -414,7 +409,6 @@ export class UsersService {
             } as any,
           });
 
-          // Link the guardian ↔ student inside the same transaction.
           await tx.parentStudent.create({
             data: {
               parentId: parentProfileId,
@@ -479,7 +473,6 @@ export class UsersService {
     });
     await this.invalidateRoleCache(dto.role, finalSchoolId);
 
-    // Notify the school's admins that a new student/teacher was added.
     if (
       finalSchoolId &&
       (dto.role === Role.STUDENT || dto.role === Role.TEACHER)
@@ -667,12 +660,10 @@ export class UsersService {
     const where: any = {};
 
     if (actor.role === Role.SUPER_ADMIN) {
-      // SUPER_ADMIN can see all users
       if (roleFilter) {
         where.role = roleFilter;
       }
     } else if (actor.role === Role.SCHOOL_ADMIN) {
-      // SCHOOL_ADMIN can only see users in their school
       if (!actor.schoolId) throw new ForbiddenException('No school context');
       where.schoolId = actor.schoolId;
       if (roleFilter) {
@@ -682,7 +673,6 @@ export class UsersService {
       throw new ForbiddenException('Not allowed');
     }
 
-    // Class/section filter (students only — nothing else carries an enrollment).
     // Both narrow via the SAME ACTIVE enrollment, so a stale past-year row in
     // the requested class can't pull a student who has since moved on.
     if (opts?.classGradeId || opts?.sectionId) {
@@ -701,10 +691,8 @@ export class UsersService {
       };
     }
 
-    // The inverse: students not placed in ANY class for this session — what an
-    // "Available students" picker means. `none` rather than excluding one
-    // section, which is why the picker previously listed students who were
-    // simply enrolled somewhere else.
+    // Students placed in NO class this session: `none`, not "excluding one section",
+    // which made the picker list students simply enrolled somewhere else.
     if (opts?.unassignedAcademicYearId) {
       where.studentProfile = {
         is: {
@@ -719,7 +707,6 @@ export class UsersService {
       };
     }
 
-    // Optional cross-field search (email + any profile fullName + rollNo).
     if (opts?.search?.trim()) {
       const s = opts.search.trim();
       where.OR = [
@@ -812,7 +799,6 @@ export class UsersService {
           if (parent.user) {
             parentData.userId = parent.user.id;
           }
-          // Remove nested user object to avoid duplication
           delete parentData.user;
           return parentData;
         });
@@ -852,7 +838,6 @@ export class UsersService {
 
     if (!user) throw new NotFoundException('User not found');
 
-    // Teachers, Students, and Parents can only access their own profile
     if ([Role.TEACHER, Role.STUDENT, Role.PARENT].includes(actor.role)) {
       // actor.userId comes from JWT token's 'sub' field
       if (!actor.userId) {
@@ -867,13 +852,11 @@ export class UsersService {
         );
       }
 
-      // Also verify the found user matches (should always be true if above passes)
       if (actor.userId !== user.id) {
         throw new ForbiddenException('User ID mismatch');
       }
     }
 
-    // Scoping: school admin can only view within their school
     if (actor.role === Role.SCHOOL_ADMIN && actor.schoolId !== user.schoolId) {
       throw new ForbiddenException('Cross-school access denied');
     }
@@ -908,7 +891,6 @@ export class UsersService {
         if (parent.user) {
           parentData.userId = parent.user.id;
         }
-        // Remove nested user object to avoid duplication
         delete parentData.user;
         return parentData;
       });
@@ -949,7 +931,7 @@ export class UsersService {
       throw new ForbiddenException('Not allowed');
     }
 
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id },
       // Only deactivation revokes tokens, so a no-op "activate" logs nobody out.
       data: {
@@ -968,6 +950,11 @@ export class UsersService {
         schoolId: true,
       },
     });
+
+    // The users/students/teachers lists are cached per school for 5 minutes and are
+    // filtered on isActive, so without this they served the old flag until the TTL.
+    await this.invalidateRoleCache(user.role, user.schoolId);
+    return updated;
   }
 
   async update(id: string, dto: UpdateUserDto, actor: Actor) {
@@ -982,22 +969,27 @@ export class UsersService {
 
     if (!user) throw new NotFoundException('User not found');
 
-    // Permission checks
     if (actor.role === Role.SCHOOL_ADMIN) {
       if (!actor.schoolId || user.schoolId !== actor.schoolId) {
         throw new ForbiddenException('Cross-school access denied');
       }
-      // School admin cannot modify admins — except their own profile (self).
       if (
         (user.role === Role.SCHOOL_ADMIN || user.role === Role.SUPER_ADMIN) &&
         id !== actor.userId
       ) {
         throw new ForbiddenException('Cannot modify admins');
       }
-      // School admin cannot change schoolId (move users between schools)
       if (dto.schoolId !== undefined && dto.schoolId !== user.schoolId) {
         throw new ForbiddenException('Cannot change user school');
       }
+    }
+
+    // Only a SUPER_ADMIN has no school. Nulling it on anyone else strands the row outside
+    // every tenant filter: invisible to their own school's lists, editable by nobody.
+    if (dto.schoolId === null && user.role !== Role.SUPER_ADMIN) {
+      throw new BadRequestException(
+        'Only a super admin can have no school assigned',
+      );
     }
 
     if (dto.email && dto.email !== user.email) {
@@ -1007,8 +999,6 @@ export class UsersService {
       if (exists) throw new ConflictException('Email already exists');
     }
 
-    // Validate rollNo/admissionNo uniqueness for students only when changing —
-    // an edit can't collide with another student in the school.
     if (user.role === Role.STUDENT && user.studentProfile) {
       const schoolId = user.schoolId!;
       if (dto.rollNo !== undefined) {
@@ -1045,7 +1035,6 @@ export class UsersService {
       }
     }
 
-    // userCode uniqueness for staff/parents/admins, only when actually changing.
     if (
       dto.userCode !== undefined &&
       (user.role === Role.TEACHER ||
@@ -1067,7 +1056,6 @@ export class UsersService {
       if (actor.role !== Role.SUPER_ADMIN) {
         throw new ForbiddenException('Only SUPER_ADMIN can change user school');
       }
-      // SUPER_ADMIN cannot assign schoolId to another SUPER_ADMIN
       if (user.role === Role.SUPER_ADMIN && dto.schoolId !== null) {
         throw new BadRequestException('SUPER_ADMIN must not have schoolId');
       }
@@ -1291,7 +1279,6 @@ export class UsersService {
       user.role === Role.SCHOOL_ADMIN ||
       user.role === Role.SUPER_ADMIN
     ) {
-      // For SCHOOL_ADMIN and SUPER_ADMIN, update fullName and phone directly on User
       const updateData: any = {};
       if (dto.fullName !== undefined) updateData.fullName = dto.fullName;
       if (dto.phone !== undefined) updateData.phone = dto.phone ?? null;
@@ -1322,7 +1309,18 @@ export class UsersService {
    * the actor editing their own id. Immutable fields are rejected by UpdateMeDto's whitelist.
    */
   async updateMe(actor: Actor, dto: UpdateMeDto) {
-    return this.update(actor.userId, dto, actor);
+    // guardianName/guardianPhone are derived from the linked parent, so a self-edit must
+    // not set them. Dropped rather than removed from the DTO: MyProfile.tsx sends both on
+    // every student save, and the global whitelist would 400 the whole request.
+    const {
+      guardianName: _guardianName,
+      guardianPhone: _guardianPhone,
+      ...rest
+    } = dto as UpdateMeDto & {
+      guardianName?: string;
+      guardianPhone?: string;
+    };
+    return this.update(actor.userId, rest, actor);
   }
 
   // Self-service password change: verify current password, set the new hash, and
@@ -1378,7 +1376,6 @@ export class UsersService {
       throw new ForbiddenException('Cross-school linking denied');
     }
 
-    // ✅ Correct way: create/upsert join table row
     await this.prisma.parentStudent.upsert({
       where: {
         parentId_studentId: {
@@ -1464,8 +1461,6 @@ export class UsersService {
     return { success: true };
   }
 
-  // ---- Student photo (stored in the DB, isolated in StudentPhoto) ----
-
   private assertStudentPhotoWrite(
     actor: Actor,
     student: { schoolId: string; userId: string | null },
@@ -1473,7 +1468,6 @@ export class UsersService {
     if (actor.role === Role.SUPER_ADMIN) return;
     if (actor.role === Role.SCHOOL_ADMIN && actor.schoolId === student.schoolId)
       return;
-    // A student may set/update their own photo from their profile.
     if (actor.role === Role.STUDENT && student.userId === actor.userId) return;
     throw new ForbiddenException('Not allowed');
   }
@@ -1521,7 +1515,6 @@ export class UsersService {
     if (!student) throw new NotFoundException('Student not found');
     this.assertStudentPhotoWrite(actor, student);
 
-    // Compress to KBs, then store in S3 under {school}/profile-pictures/{userId}/.
     const { buffer, mimeType } = await compressImage(
       file.buffer,
       file.mimetype,
@@ -1588,8 +1581,6 @@ export class UsersService {
     throw new NotFoundException('No photo');
   }
 
-  // ---- Generic self-service avatar (any role), stored as bytes in UserPhoto ----
-
   async uploadMyPhoto(
     file: { buffer: Buffer; mimetype: string } | undefined,
     actor: Actor,
@@ -1640,7 +1631,6 @@ export class UsersService {
       select: { id: true, schoolId: true, photoMimeType: true },
     });
     if (!target) throw new NotFoundException('User not found');
-    // Avatars are visible to the owner, super-admins, and same-school members.
     const sameSchool = !!actor.schoolId && actor.schoolId === target.schoolId;
     if (
       actor.userId !== target.id &&
@@ -1670,20 +1660,17 @@ export class UsersService {
 
     if (!user) throw new NotFoundException('User not found');
 
-    // Permission checks
     if (actor.role === Role.SCHOOL_ADMIN) {
       if (!actor.schoolId || user.schoolId !== actor.schoolId) {
         throw new ForbiddenException('Cross-school access denied');
       }
-      // School admin cannot delete admins
       if (user.role === Role.SCHOOL_ADMIN || user.role === Role.SUPER_ADMIN) {
         throw new ForbiddenException('Cannot delete admins');
       }
     }
 
-    // Challan.studentId is Restrict: bills and the payments under them outlive
-    // the student record. The DB would refuse this anyway — asking first turns
-    // a generic "still linked to other data" 409 into one that says what to do.
+    // Challan.studentId is Restrict (bills outlive the student); checking first turns
+    // the generic "still linked to other data" 409 into one that says what to do.
     if (user.studentProfile) {
       const challans = await this.prisma.challan.count({
         where: { studentId: user.studentProfile.id },
@@ -1691,6 +1678,15 @@ export class UsersService {
       if (challans) {
         throw new ConflictException(
           `${user.studentProfile.fullName} has ${challans} fee challan${challans === 1 ? '' : 's'} on record, which cannot be deleted. Mark the student inactive instead.`,
+        );
+      }
+      // Exam results are Restrict for the same reason: academic history outlives the profile.
+      const examResults = await this.prisma.examResult.count({
+        where: { studentId: user.studentProfile.id },
+      });
+      if (examResults) {
+        throw new ConflictException(
+          `${user.studentProfile.fullName} has exam results on record, which cannot be deleted. Mark the student inactive instead.`,
         );
       }
     }
@@ -1726,7 +1722,12 @@ export class UsersService {
       entityId: id,
       metadata: { role: user.role },
     });
-    await this.invalidateRoleCache(user.role, user.schoolId);
+    // Their roster rows, allocations and enrolments go with the profile, so section cards change too.
+    await this.invalidateRoleCache(
+      user.role,
+      user.schoolId,
+      user.teacherProfile || user.studentProfile ? ['sections', 'classes'] : [],
+    );
 
     return { success: true, message: 'User deleted successfully' };
   }
@@ -1765,9 +1766,8 @@ export class UsersService {
       studentProfile: {
         include: {
           socialLinks: true,
-          // Current placements for the list's Class/Section column. NOT capped to
-          // one: ~20% of students hold several ACTIVE enrollments, and taking
-          // just the newest would show a class that contradicts the filter.
+          // NOT capped to one: ~20% of students hold several ACTIVE enrollments, and
+          // taking just the newest would show a class that contradicts the filter.
           enrollments: {
             where: { status: EnrollmentStatus.ACTIVE },
             orderBy: { createdAt: 'desc' },

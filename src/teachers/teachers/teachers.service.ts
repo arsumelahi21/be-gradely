@@ -11,6 +11,7 @@ import { UpdateTeacherDto } from './dto/update-teacher.dto';
 import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { CacheService } from '../../common/services/cache.service';
+import { resolvePagination } from '../../common/dto/pagination-query.dto';
 
 type UpdateTeacherInput = UpdateTeacherDto & Partial<CreateTeacherDto>;
 
@@ -152,7 +153,13 @@ export class TeachersService extends BaseSchoolScopedService {
   async remove(id: string, actor: Actor) {
     const teacher = await this.getOrThrow(id, actor);
     const removed = await this.prisma.teacherProfile.delete({ where: { id } });
-    await this.invalidateSchoolCache(teacher.schoolId, 'teachers');
+    // The cascade drops their roster rows and unstaffs their subjects, so section cards change too.
+    await this.invalidateSchoolCache(
+      teacher.schoolId,
+      'teachers',
+      'sections',
+      'classes',
+    );
     return removed;
   }
 
@@ -182,7 +189,11 @@ export class TeachersService extends BaseSchoolScopedService {
     });
   }
 
-  async listStudents(teacherId: string, actor: Actor) {
+  async listStudents(
+    teacherId: string,
+    actor: Actor,
+    pagination: { page?: number; pageSize?: number } = {},
+  ) {
     const teacher = await this.getOrThrow(teacherId, actor);
     const sectionTeachers = (this.prisma as any).sectionTeacher;
     const sectionSubjects = (this.prisma as any).sectionSubject;
@@ -202,7 +213,6 @@ export class TeachersService extends BaseSchoolScopedService {
       },
     });
 
-    // Combine and get unique section IDs
     const sectionIds = [
       ...new Set([
         ...sectionTeacherAssignments.map((st: any) => st.sectionId),
@@ -210,17 +220,44 @@ export class TeachersService extends BaseSchoolScopedService {
       ]),
     ];
 
+    // Backward-compatible: a plain array unless `page` is supplied, matching every other
+    // list endpoint — count/dropdown callers keep working untouched.
+    const paginate = pagination.page != null;
+    const { page, pageSize, skip, take } = resolvePagination(pagination);
+
     if (sectionIds.length === 0) {
-      return [];
+      return paginate ? { items: [], total: 0, page, pageSize } : [];
     }
 
+    const where = {
+      sectionId: { in: sectionIds },
+      status: 'ACTIVE' as const,
+    };
+    const total = paginate
+      ? await this.prisma.enrollment.count({ where })
+      : undefined;
+
     const enrollments = await this.prisma.enrollment.findMany({
-      where: {
-        sectionId: { in: sectionIds },
-      },
+      where,
       orderBy: { createdAt: 'desc' },
+      ...(paginate ? { skip, take } : {}),
       include: {
-        student: true,
+        // A teacher needs the roster, not the file: the profile also carries national id,
+        // guardian phone, address, blood group, fee amount and the photo key.
+        student: {
+          select: {
+            id: true,
+            userId: true,
+            schoolId: true,
+            fullName: true,
+            rollNo: true,
+            admissionNo: true,
+            email: true,
+            gender: true,
+            isActive: true,
+            photoMimeType: true,
+          },
+        },
         section: {
           include: {
             classGrade: true,
@@ -243,12 +280,13 @@ export class TeachersService extends BaseSchoolScopedService {
       });
     });
 
-    // Enrich enrollments with subjects taught by this teacher
-    return enrollments.map((enrollment) => ({
+    const items = enrollments.map((enrollment) => ({
       ...enrollment,
       subjectsTaughtByTeacher:
         sectionSubjectMap.get(enrollment.sectionId) || [],
     }));
+
+    return paginate ? { items, total, page, pageSize } : items;
   }
 
   private async getOrThrow(id: string, actor: Actor) {

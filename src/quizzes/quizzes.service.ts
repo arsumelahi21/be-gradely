@@ -209,6 +209,9 @@ export class QuizzesService extends BaseSchoolScopedService {
   async addQuestion(quizId: string, dto: AddQuestionDto, actor: Actor) {
     const quiz = await this.loadQuizWithSection(quizId);
     await this.assertSectionWriteAccess(actor, quiz.section);
+    // Attempts are scored against the stored questions, so a late addition would rescore
+    // work students already submitted. The other four mutators already guard this.
+    await this.assertEditable(quiz);
     this.validateQuestionShape(dto);
 
     const last = await this.prisma.question.findFirst({
@@ -561,7 +564,9 @@ export class QuizzesService extends BaseSchoolScopedService {
     } else {
       throw new ForbiddenException('Not allowed');
     }
-    if (query.sectionId) where.sectionId = query.sectionId;
+    // AND, never assignment: a TEACHER's `where.sectionId` already lists the sections they
+    // teach, and overwriting it handed them any section's quizzes in the school.
+    if (query.sectionId) where.AND = [{ sectionId: query.sectionId }];
 
     const [total, rows] = await this.prisma.$transaction([
       this.prisma.quiz.count({ where }),
