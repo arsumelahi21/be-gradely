@@ -1205,13 +1205,16 @@ export class AssignmentsService {
       throw new ForbiddenException('Not allowed');
     }
 
-    // Enrollment check (student must belong to this assignment)
+    // Enrollment check (student must belong to this assignment). COMPLETED
+    // counts: promotion closes the placement, and a marked submission has to stay
+    // readable afterwards. Safe to widen because this is pinned to the
+    // assignment's own section AND academic year.
     const enrolled = await this.prisma.enrollment.findFirst({
       where: {
         studentId: targetStudentId,
         sectionId: assignment.sectionSubject.sectionId,
         academicYearId: assignment.academicYearId,
-        status: 'ACTIVE',
+        status: { in: ['ACTIVE', 'COMPLETED'] },
       } as any,
     });
     if (!enrolled) {

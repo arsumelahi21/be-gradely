@@ -4,14 +4,21 @@ import { Redis } from 'ioredis';
 /**
  * Env-driven cache: Redis when `REDIS_URL` is set (prod), else in-memory (dev).
  * Fail-open on errors; callers MUST bake schoolId/userId into keys — no tenant namespacing here.
+ *
+ * Keys carry an environment namespace so two deployments can share one Redis
+ * without serving each other's rows. Applied here rather than through ioredis'
+ * `keyPrefix`, which SCAN returns already-prefixed and `del` would prefix twice.
  */
 @Injectable()
 export class CacheService implements OnModuleDestroy {
   private readonly logger = new Logger(CacheService.name);
   private readonly redis: Redis | null;
   private readonly mem = new Map<string, { value: string; expires: number }>();
+  private readonly ns: string;
 
   constructor() {
+    const env = process.env.CACHE_NAMESPACE ?? process.env.NODE_ENV ?? 'dev';
+    this.ns = `${env}:`;
     const url = process.env.REDIS_URL;
     if (url) {
       // Fail FAST: these options make a dead/slow Redis error quickly instead of
@@ -36,7 +43,7 @@ export class CacheService implements OnModuleDestroy {
   async get<T>(key: string): Promise<T | null> {
     try {
       if (this.redis) {
-        const raw = await this.redis.get(key);
+        const raw = await this.redis.get(this.ns + key);
         return raw ? (JSON.parse(raw) as T) : null;
       }
       const hit = this.mem.get(key);
@@ -58,7 +65,7 @@ export class CacheService implements OnModuleDestroy {
     try {
       const raw = JSON.stringify(value);
       if (this.redis) {
-        await this.redis.set(key, raw, 'EX', ttlSeconds);
+        await this.redis.set(this.ns + key, raw, 'EX', ttlSeconds);
         return;
       }
       this.mem.set(key, {
@@ -76,7 +83,7 @@ export class CacheService implements OnModuleDestroy {
     if (!keys.length) return;
     try {
       if (this.redis) {
-        await this.redis.del(...keys);
+        await this.redis.del(...keys.map((k) => this.ns + k));
         return;
       }
       for (const k of keys) this.mem.delete(k);
@@ -88,17 +95,29 @@ export class CacheService implements OnModuleDestroy {
   /**
    * Delete every key matching ANY of `prefixes` in a SINGLE keyspace pass — not
    * `for (p of prefixes) delByPrefix(p)`, which would scan once per prefix.
+   *
+   * MATCHes this environment's namespace so the pass skips other deployments'
+   * keys in a shared Redis instead of dragging them all through Node.
    */
   async delByPrefixes(...prefixes: string[]): Promise<void> {
     const ps = prefixes.filter(Boolean);
     if (!ps.length) return;
     try {
       if (this.redis) {
+        const full = ps.map((p) => this.ns + p);
         let cursor = '0';
         do {
-          const [next, batch] = await this.redis.scan(cursor, 'COUNT', 200);
+          const [next, batch] = await this.redis.scan(
+            cursor,
+            'MATCH',
+            `${this.ns}*`,
+            'COUNT',
+            200,
+          );
           cursor = next;
-          const matched = batch.filter((k) => ps.some((p) => k.startsWith(p)));
+          const matched = batch.filter((k) =>
+            full.some((p) => k.startsWith(p)),
+          );
           if (matched.length) await this.redis.del(...matched);
         } while (cursor !== '0');
         return;
@@ -121,7 +140,7 @@ export class CacheService implements OnModuleDestroy {
           const [next, found] = await this.redis.scan(
             cursor,
             'MATCH',
-            `${prefix}*`,
+            `${this.ns}${prefix}*`,
             'COUNT',
             200,
           );

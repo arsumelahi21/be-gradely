@@ -62,7 +62,7 @@ export class ChatbotService {
   ):
     | ChatSummary[]
     | { items: ChatSummary[]; total: number; page: number; pageSize: number } {
-    this.store.sweep();
+    this.store.maybeSweep();
     const all = this.store.list(user.userId).map(toSummary);
 
     // Same backward-compatible envelope the rest of the API uses: paginated
@@ -78,7 +78,7 @@ export class ChatbotService {
   }
 
   async createChat(user: ChatbotUser, dto: CreateChatDto): Promise<Chat> {
-    this.store.sweep();
+    this.store.maybeSweep();
     const chat = this.store.create(user.userId);
     if (dto.message?.trim()) {
       await this.sendMessage(user, chat.id, { content: dto.message });
@@ -87,6 +87,7 @@ export class ChatbotService {
   }
 
   getChat(user: ChatbotUser, chatId: string): Chat {
+    this.store.maybeSweep();
     const chat = this.store.findById(user.userId, chatId);
     // 404 rather than 403 for someone else's chat: the id space is private, and
     // distinguishing "exists but not yours" would confirm it exists.
@@ -135,6 +136,7 @@ export class ChatbotService {
   }
 
   deleteChat(user: ChatbotUser, chatId: string): { deleted: true } {
+    this.store.maybeSweep();
     if (!this.store.delete(user.userId, chatId)) {
       throw new NotFoundException('Chat not found');
     }

@@ -22,6 +22,15 @@ export const MAX_CHATS_PER_USER = 20;
 export const MAX_MESSAGES_PER_CHAT = 100;
 /** Idle conversations are swept after this long, so memory can't creep. */
 export const CHAT_TTL_MS = 12 * 60 * 60 * 1000;
+/**
+ * Floor between full sweeps. The sweep walks every user, so running it on each
+ * request made a sidebar load O(all users); never running it (the old code only
+ * swept on list/create) let an idle process hold every user's chats until restart.
+ */
+export const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Shared empty result for users with no chats — never mutated. */
+const EMPTY: Chat[] = [];
 
 const DEFAULT_TITLE = 'New chat';
 /** Long enough to be recognisable in the sidebar, short enough not to wrap. */
@@ -30,6 +39,7 @@ const TITLE_MAX_LENGTH = 48;
 @Injectable()
 export class ChatStore {
   private readonly byUser = new Map<string, Chat[]>();
+  private lastSweep = 0;
 
   create(userId: string, title?: string): Chat {
     const now = new Date().toISOString();
@@ -53,11 +63,11 @@ export class ChatStore {
 
   /** Newest-first. Returns a copy so callers can't mutate the store. */
   list(userId: string): Chat[] {
-    return [...this.own(userId)];
+    return [...this.read(userId)];
   }
 
   findById(userId: string, chatId: string): Chat | null {
-    return this.own(userId).find((c) => c.id === chatId) ?? null;
+    return this.read(userId).find((c) => c.id === chatId) ?? null;
   }
 
   addMessage(
@@ -66,7 +76,7 @@ export class ChatStore {
     role: ChatMessageRole,
     content: string,
   ): ChatMessage | null {
-    const chat = this.findById(userId, chatId);
+    const chat = this.read(userId).find((c) => c.id === chatId) ?? null;
     if (!chat) return null;
 
     const message: ChatMessage = {
@@ -97,12 +107,22 @@ export class ChatStore {
   }
 
   delete(userId: string, chatId: string): boolean {
-    const chats = this.own(userId);
+    const chats = this.read(userId);
     const at = chats.findIndex((c) => c.id === chatId);
     if (at === -1) return false;
     chats.splice(at, 1);
     if (chats.length === 0) this.byUser.delete(userId);
     return true;
+  }
+
+  /**
+   * Sweeps at most every SWEEP_INTERVAL_MS. Called from every entry point, so a
+   * process that only serves sendMessage still reclaims memory.
+   */
+  maybeSweep(now = Date.now()): void {
+    if (now - this.lastSweep < SWEEP_INTERVAL_MS) return;
+    this.lastSweep = now;
+    this.sweep(now);
   }
 
   /**
@@ -118,6 +138,17 @@ export class ChatStore {
       if (live.length === 0) this.byUser.delete(userId);
       else if (live.length !== chats.length) this.byUser.set(userId, live);
     }
+  }
+
+  /** Users currently holding chats — the store's real memory footprint. */
+  userCount(): number {
+    return this.byUser.size;
+  }
+
+  /** Reads never allocate: `own()` used to insert, so a GET from a user who has
+   * never chatted left a permanent Map entry behind. */
+  private read(userId: string): Chat[] {
+    return this.byUser.get(userId) ?? EMPTY;
   }
 
   private own(userId: string): Chat[] {
