@@ -150,13 +150,6 @@ export class TimetableController {
     return this.timetable.setupTimetable(sectionId, dto, req.user);
   }
 
-  @Roles(
-    Role.SUPER_ADMIN,
-    Role.SCHOOL_ADMIN,
-    Role.TEACHER,
-    Role.STUDENT,
-    Role.PARENT,
-  )
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Patch('sections/:sectionId/window')
   updateWindow(
@@ -167,6 +160,7 @@ export class TimetableController {
     return this.timetable.updateWindow(sectionId, dto, req.user);
   }
 
+  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Get('sections/:sectionId/periods')
   listPeriods(
     @Param('sectionId') sectionId: string,
