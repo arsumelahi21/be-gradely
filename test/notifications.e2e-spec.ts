@@ -9,11 +9,11 @@ import { EmailService } from '../src/notifications/email/email.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NOTIFICATION_CREATE } from '../src/common/events/notification.events';
 import { AssignmentsService } from '../src/assignments/assignments.service';
-import { ExamsService } from '../src/exams/exams.service';
+import { ExamResultsService } from '../src/exams/exam-results.service';
 import { AttendanceService } from '../src/attendance/attendance.service';
 import { seedClass } from './utils/class-fixture';
+import { seedExamination } from './utils/exam-fixture';
 
-/** The NOTIFICATION_CREATE events a spied emitter captured. */
 function notifEvents(spy: jest.SpyInstance): any[] {
   return spy.mock.calls
     .filter((c) => c[0] === NOTIFICATION_CREATE)
@@ -50,7 +50,6 @@ describe('Notifications (e2e)', () => {
       notifyPreferenceKey: 'notifyAnnouncements',
     });
 
-    // Row count equals recipient count.
     expect(await prisma.notification.count()).toBe(4);
   });
 
@@ -142,7 +141,6 @@ describe('Notifications (e2e)', () => {
       .set('Authorization', `Bearer ${u1Token}`);
     expect(readTheirs.status).toBe(403);
 
-    // read-all clears the caller's remaining unread.
     await prisma.notification.create({
       data: { userId: u1.id, type: 'NEW_MESSAGE', title: 'd', body: 'd' },
     });
@@ -273,7 +271,7 @@ describe('Notifications (e2e)', () => {
     spy.mockRestore();
   });
 
-  it('notifies the student + parent when exam marks are registered', async () => {
+  it('notifies the student + parent when exam results are finalized, never per mark saved', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const s0 = cls.students[0];
     const parentUser = await createTestUser({
@@ -286,31 +284,46 @@ describe('Notifications (e2e)', () => {
     await prisma.parentStudent.create({
       data: { parentId: parentProfile.id, studentId: s0.profile.id },
     });
-    const exam = await prisma.exam.create({
-      data: {
-        schoolId: cls.school.id,
-        academicYearId: cls.academicYear.id,
-        sectionSubjectId: cls.sectionSubject.id,
-        createdByTeacherId: cls.teacherProfile.id,
-        title: 'Midterm',
-        status: 'PUBLISHED',
-        maxScore: 100,
-      },
+    const admin = await createTestUser({
+      role: Role.SCHOOL_ADMIN,
+      schoolId: cls.school.id,
     });
+    const {
+      examination,
+      subjects: [paper],
+    } = await seedExamination({
+      schoolId: cls.school.id,
+      academicYearId: cls.academicYear.id,
+      sectionId: cls.section.id,
+      sectionSubjectIds: [cls.sectionSubject.id],
+      createdByTeacherId: cls.teacherProfile.id,
+    });
+    const teacherActor = {
+      userId: cls.teacherUser.id,
+      role: Role.TEACHER,
+      schoolId: cls.school.id,
+    } as any;
 
     // Mock (no pass-through) — assert the producer emits; skip the async listener.
     const spy = jest
       .spyOn(app.get(EventEmitter2), 'emit')
       .mockReturnValue(true);
-    await app.get(ExamsService).markResult(
-      exam.id,
-      { studentId: s0.profile.id, score: 88 } as any,
-      {
-        userId: cls.teacherUser.id,
-        role: Role.TEACHER,
-        schoolId: cls.school.id,
-      } as any,
+    const results = app.get(ExamResultsService);
+    await results.saveMarks(
+      examination.id,
+      paper.id,
+      { entries: [{ studentId: s0.profile.id, score: 88 }] },
+      teacherActor,
     );
+    expect(
+      notifEvents(spy).find((e) => e.type === 'EXAM_RESULT'),
+    ).toBeUndefined();
+
+    await results.finalize(examination.id, {
+      userId: admin.id,
+      role: Role.SCHOOL_ADMIN,
+      schoolId: cls.school.id,
+    } as any);
     const ev = notifEvents(spy).find((e) => e.type === 'EXAM_RESULT');
     expect(ev).toBeDefined();
     expect(ev.userIds).toEqual(

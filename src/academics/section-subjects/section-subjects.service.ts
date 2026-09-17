@@ -4,7 +4,6 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CacheService } from '../../common/services/cache.service';
 import { uniqueConflict } from '../../common/utils/prisma-errors';
@@ -13,12 +12,10 @@ import { BaseSchoolScopedService } from '../../common/services/base-school.servi
 import { CreateSectionSubjectDto } from './dto/create-section-subject.dto';
 import { UpdateSectionSubjectDto } from './dto/update-section-subject.dto';
 import { Actor } from '../../common/types/actor.type';
-
-/** Role stamped on roster rows created automatically alongside a subject
- *  allocation. Only these are pruned — a human-set role is left alone. */
-const SUBJECT_TEACHER_ROLE = 'Subject Teacher';
 import { Role } from '../../common/types/role.type';
+import { ensureOnRoster, pruneSectionRoster } from './section-roster';
 import { FindSectionSubjectsQueryDto } from './dto/find-section-subjects-query.dto';
+import { assertNoExaminationHistory } from '../../common/services/exam-history-guard';
 
 type UpdateSectionSubjectInput = UpdateSectionSubjectDto &
   Partial<CreateSectionSubjectDto>;
@@ -54,7 +51,7 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
           },
           include: this.defaultInclude(),
         });
-        if (teacher?.id) await this.ensureOnRoster(tx, section.id, teacher.id);
+        if (teacher?.id) await ensureOnRoster(tx, section.id, teacher.id);
         return row;
       })
       // @@unique([sectionId, subjectId]) — allocating the same subject twice.
@@ -162,7 +159,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       }
       if (query.subjectId) where.subjectId = query.subjectId;
     } else if (actor.role === Role.TEACHER) {
-      // Teachers can only see section-subjects they're assigned to
       if (!actor.schoolId) {
         throw new ForbiddenException('No school context');
       }
@@ -214,7 +210,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       if (query.subjectId) where.subjectId = query.subjectId;
       if (query.teacherId) where.teacherId = query.teacherId;
     } else {
-      // Admin access
       this.ensureAdmin(actor);
       if (query.sectionId) where.sectionId = query.sectionId;
       if (query.subjectId) where.subjectId = query.subjectId;
@@ -258,8 +253,6 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       actor,
     );
     const nextTeacherId = teacherId ? (teacher?.id ?? null) : null;
-    const previousTeacherId = current.teacherId;
-
     const result = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.sectionSubject.update({
         where: { id },
@@ -272,93 +265,32 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
         },
         include: this.defaultInclude(),
       });
-      // Replacing a subject's teacher used to leave the old one on the section
-      // roster forever, inflating the class card's teacher count and keeping the
-      // class on a dashboard for someone who teaches nothing in it.
+      // Roster the teacher where the row now lives (a PATCH may move sections), then prune where it was.
       if (nextTeacherId) {
-        await this.ensureOnRoster(tx, current.sectionId, nextTeacherId);
+        await ensureOnRoster(tx, section.id, nextTeacherId);
       }
-      if (previousTeacherId && previousTeacherId !== nextTeacherId) {
-        await this.pruneRosterIfUnused(
-          tx,
-          current.sectionId,
-          previousTeacherId,
-        );
-      }
+      await pruneSectionRoster(tx, current.sectionId);
       return updated;
     });
     await this.invalidate(current.section.schoolId);
+    if (section.schoolId !== current.section.schoolId) {
+      await this.invalidate(section.schoolId);
+    }
     return result;
   }
 
-  /** Attendance, assignments, exams and timetable entries are anchored to this
-   *  row and go with it via ON DELETE CASCADE; AuditLog holds no FK and stays. */
+  /** Attendance, assignments and timetable entries cascade with this row; exam papers
+   *  Restrict it, so examination history refuses the delete. AuditLog holds no FK. */
   async remove(id: string, actor: Actor) {
     const current = await this.getOrThrow(id, actor);
+    await assertNoExaminationHistory(this.prisma, 'sectionSubject', id);
     const result = await this.prisma.$transaction(async (tx) => {
       const removed = await tx.sectionSubject.delete({ where: { id } });
-      if (current.teacherId) {
-        await this.pruneRosterIfUnused(
-          tx,
-          current.sectionId,
-          current.teacherId,
-        );
-      }
+      await pruneSectionRoster(tx, current.sectionId);
       return removed;
     });
     await this.invalidate(current.section.schoolId);
     return result;
-  }
-
-  /**
-   * Drop a teacher's auto-created SectionTeacher row once they teach no subject
-   * in the section. A CLASS TEACHER (isPrimary) is a deliberate assignment and is
-   * always kept, as is any row a human gave a different role.
-   */
-  /**
-   * Put a teacher on the section's roster when they start teaching one of its
-   * subjects. The roster is what the Teachers panel lists and what the class
-   * card counts, so without this a teacher allocated through any path other
-   * than the setup form is invisible — the form used to create this row on the
-   * client, so the API, seeds and the timetable never did.
-   *
-   * Idempotent on the [sectionId, teacherId] unique key, and it never downgrades
-   * an existing row (a class teacher stays a class teacher).
-   */
-  private async ensureOnRoster(
-    tx: Prisma.TransactionClient,
-    sectionId: string,
-    teacherId: string,
-  ) {
-    await tx.sectionTeacher.upsert({
-      where: { sectionId_teacherId: { sectionId, teacherId } },
-      create: {
-        sectionId,
-        teacherId,
-        assignmentRole: SUBJECT_TEACHER_ROLE,
-        isPrimary: false,
-      },
-      update: {},
-    });
-  }
-
-  private async pruneRosterIfUnused(
-    tx: Prisma.TransactionClient,
-    sectionId: string,
-    teacherId: string,
-  ) {
-    const stillTeaches = await tx.sectionSubject.count({
-      where: { sectionId, teacherId },
-    });
-    if (stillTeaches > 0) return;
-    await tx.sectionTeacher.deleteMany({
-      where: {
-        sectionId,
-        teacherId,
-        isPrimary: false,
-        assignmentRole: SUBJECT_TEACHER_ROLE,
-      },
-    });
   }
 
   private async getOrThrow(id: string, actor: Actor) {

@@ -600,19 +600,48 @@ async function submitAssignment(assignment, students, markedCount) {
   }
 }
 
+// An Examination groups subject papers for one section + session; each paper is an Exam row.
+async function createExamination(school, ay, ss, teacher, title, status, resultStatus) {
+  const section = await prisma.section.findUnique({
+    where: { id: ss.sectionId },
+    include: { classGrade: true },
+  });
+  return prisma.examination.create({
+    data: {
+      schoolId: school.id,
+      academicYearId: ay.id,
+      classGradeId: section.classGradeId,
+      sectionId: section.id,
+      title,
+      status,
+      resultStatus,
+      className: section.classGrade.name,
+      sectionName: section.name,
+      createdByTeacherId: teacher.profile.id,
+      createdByUserId: teacher.user.id,
+      publishedAt: status === 'PUBLISHED' ? new Date() : null,
+      finalizedAt: resultStatus === 'FINALIZED' ? new Date() : null,
+    },
+  });
+}
+
 async function createExam(school, ay, ss, teacher, students, title, heldAt, maxScore, withResults) {
-  if (await prisma.exam.findFirst({ where: { sectionSubjectId: ss.id, title } }))
+  if (await prisma.examination.findFirst({ where: { sectionId: ss.sectionId, academicYearId: ay.id, title } }))
     return;
+  const examination = await createExamination(
+    school, ay, ss, teacher, title, 'PUBLISHED', withResults ? 'FINALIZED' : 'NOT_STARTED',
+  );
   const exam = await prisma.exam.create({
     data: {
       schoolId: school.id,
       academicYearId: ay.id,
+      examinationId: examination.id,
       sectionSubjectId: ss.id,
       createdByTeacherId: teacher.profile.id,
       title,
       heldAt: new Date(heldAt),
       maxScore,
-      status: 'PUBLISHED',
+      passingMarks: Math.round(maxScore * 0.4),
     },
   });
   if (!withResults) return;
@@ -654,18 +683,19 @@ async function createDraftQuiz(school, section, ss, teacher, title) {
 }
 
 async function createDraftExam(school, ay, ss, teacher, title) {
-  if (await prisma.exam.findFirst({ where: { sectionSubjectId: ss.id, title } }))
+  if (await prisma.examination.findFirst({ where: { sectionId: ss.sectionId, academicYearId: ay.id, title } }))
     return;
+  const examination = await createExamination(school, ay, ss, teacher, title, 'DRAFT', 'NOT_STARTED');
   await prisma.exam.create({
     data: {
       schoolId: school.id,
       academicYearId: ay.id,
+      examinationId: examination.id,
       sectionSubjectId: ss.id,
       createdByTeacherId: teacher.profile.id,
       title,
       description: 'Draft — scheduling in progress.',
       maxScore: 40,
-      status: 'DRAFT', // not yet published
     },
   });
 }

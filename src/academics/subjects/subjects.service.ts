@@ -7,6 +7,8 @@ import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { resolvePagination } from '../../common/dto/pagination-query.dto';
 import { CacheService } from '../../common/services/cache.service';
+import { assertNoExaminationHistory } from '../../common/services/exam-history-guard';
+import { pruneSectionRoster } from '../section-subjects/section-roster';
 
 type UpdateSubjectInput = UpdateSubjectDto & Partial<CreateSubjectDto>;
 type ListOpts = { page?: number; pageSize?: number; search?: string };
@@ -95,10 +97,29 @@ export class SubjectsService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     const subject = await this.getOrThrow(id, actor);
-    // Allocations and specialties cascade; a quiz holds the subject optionally
-    // and simply loses it. Nothing refuses the delete any more.
-    const removed = await this.prisma.subject.delete({ where: { id } });
-    await this.invalidateSchoolCache(subject.schoolId, 'subjects');
+    // Allocations and specialties cascade and a quiz just loses the subject; only
+    // examination history on its allocations refuses the delete (Restrict).
+    await assertNoExaminationHistory(this.prisma, 'subject', id);
+    const removed = await this.prisma.$transaction(async (tx) => {
+      const allocations = await tx.sectionSubject.findMany({
+        where: { subjectId: id },
+        select: { sectionId: true },
+        distinct: ['sectionId'],
+      });
+      const row = await tx.subject.delete({ where: { id } });
+      // The cascade removes the allocations but not the roster rows they put teachers on.
+      for (const { sectionId } of allocations) {
+        await pruneSectionRoster(tx, sectionId);
+      }
+      return row;
+    });
+    // Section cards count this subject and its teachers, so their cached lists are stale too.
+    await this.invalidateSchoolCache(
+      subject.schoolId,
+      'subjects',
+      'sections',
+      'classes',
+    );
     return removed;
   }
 

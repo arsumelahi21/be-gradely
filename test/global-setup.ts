@@ -1,5 +1,4 @@
-import { execFileSync } from 'node:child_process';
-import { PrismaClient } from '@prisma/client';
+import { execSync } from 'node:child_process';
 import {
   WORKER_COUNT,
   databaseNameOf,
@@ -7,14 +6,14 @@ import {
   workerDatabaseUrl,
 } from './utils/worker-db';
 
-// Runs once before the e2e suite: creates and migrates one database per Jest worker, so
-// every worker starts from a migrated schema that no other worker truncates mid-test.
+// One migrated database per Jest worker, so no worker truncates another's schema mid-test.
 // globalSetup doesn't see `setupFiles`, so the URLs are resolved through the shared helper.
 
-// execFile needs the real executable name; on Windows `npx` is a .cmd shim.
-const NPX = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-
 export default async function globalSetup() {
+  // Importing @prisma/client loads .env into this process and the workers inherit it, so
+  // setup-env's `X || default` would pick up dev values. Import late, restore env after.
+  const envBefore = { ...process.env };
+  const { PrismaClient } = await import('@prisma/client');
   const admin = new PrismaClient({ datasourceUrl: maintenanceDatabaseUrl() });
 
   try {
@@ -32,12 +31,17 @@ export default async function globalSetup() {
           throw error;
         }
       }
-      execFileSync(NPX, ['prisma', 'migrate', 'deploy'], {
+      // execSync runs through a shell: execFile on Windows' `npx.cmd` shim throws EINVAL.
+      execSync('npx prisma migrate deploy', {
         stdio: 'inherit',
         env: { ...process.env, DATABASE_URL: url },
       });
     }
   } finally {
     await admin.$disconnect();
+    for (const key of Object.keys(process.env)) {
+      if (!(key in envBefore)) delete process.env[key];
+    }
+    Object.assign(process.env, envBefore);
   }
 }
