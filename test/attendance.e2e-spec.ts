@@ -92,6 +92,92 @@ describe('Attendance (e2e)', () => {
     expect(write.status).toBe(403);
   });
 
+  it('refuses a teacher who does not teach the student (403)', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const teacherToken = await tokenFor(app, cls.teacherUser);
+    await request(app.getHttpServer())
+      .post('/api/attendance/mark')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send(
+        markBody(cls.sectionSubject.id, [
+          { studentId: cls.students[0].profile.id, status: 'ABSENT' },
+        ]),
+      );
+
+    // Same school, teaches a different section entirely.
+    const otherCls = await seedClass({ studentCount: 1 });
+    const strangerUser = await createTestUser({
+      role: Role.TEACHER,
+      schoolId: cls.school.id,
+    });
+    await prisma.teacherProfile.create({
+      data: {
+        userId: strangerUser.id,
+        schoolId: cls.school.id,
+        fullName: 'Stranger',
+      },
+    });
+    const strangerToken = await tokenFor(app, strangerUser);
+    const studentId = cls.students[0].profile.id;
+
+    for (const path of [
+      `/api/attendance/student/${studentId}`,
+      `/api/attendance/student/${studentId}/stats`,
+    ]) {
+      const res = await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${strangerToken}`);
+      expect(res.status).toBe(403);
+    }
+
+    // The teacher who does teach them is unaffected.
+    const allowed = await request(app.getHttpServer())
+      .get(`/api/attendance/student/${studentId}`)
+      .set('Authorization', `Bearer ${teacherToken}`);
+    expect(allowed.status).toBe(200);
+    expect(otherCls.students).toHaveLength(1);
+  });
+
+  it('keeps a promoted student on the sheet for dates they were marked', async () => {
+    const cls = await seedClass({ studentCount: 2 });
+    const teacherToken = await tokenFor(app, cls.teacherUser);
+    const promoted = cls.students[0].profile.id;
+
+    await request(app.getHttpServer())
+      .post('/api/attendance/mark')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send(
+        markBody(cls.sectionSubject.id, [
+          { studentId: promoted, status: 'ABSENT' },
+          { studentId: cls.students[1].profile.id, status: 'PRESENT' },
+        ]),
+      );
+
+    // Promotion closes the old placement rather than deleting it.
+    await prisma.enrollment.updateMany({
+      where: { studentId: promoted, sectionId: cls.section.id },
+      data: { status: 'COMPLETED' },
+    });
+
+    const sheet = await request(app.getHttpServer())
+      .get(`/api/attendance/section-subject/${cls.sectionSubject.id}`)
+      .query({ date: DATE })
+      .set('Authorization', `Bearer ${teacherToken}`);
+    expect(sheet.status).toBe(200);
+    const marked = sheet.body.roster.find(
+      (r: any) => r.student.id === promoted,
+    );
+    expect(marked?.status).toBe('ABSENT');
+
+    const summary = await request(app.getHttpServer())
+      .get(`/api/attendance/section-subject/${cls.sectionSubject.id}/summary`)
+      .set('Authorization', `Bearer ${teacherToken}`);
+    expect(summary.status).toBe(200);
+    expect(
+      summary.body.students.find((s: any) => s.student.id === promoted)?.absent,
+    ).toBe(1);
+  });
+
   it('scopes student/parent reads to own/linked children', async () => {
     const cls = await seedClass({ studentCount: 2 });
     const teacherToken = await tokenFor(app, cls.teacherUser);
