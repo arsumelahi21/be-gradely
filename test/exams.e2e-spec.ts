@@ -291,6 +291,57 @@ describe('Examinations (e2e)', () => {
     ]);
   });
 
+  it('accepts exam dates in past and future years, on create and on edit', async () => {
+    const w = await world();
+    // The date picker once stopped at the current calendar year; the API must not.
+    const nextSession = await prisma.academicYear.create({
+      data: {
+        schoolId: w.cls.school.id,
+        name: '2027-2028',
+        code: `AY-2027-${Date.now()}`,
+        startDate: new Date('2027-04-01'),
+        endDate: new Date('2028-03-31'),
+      },
+    });
+    const created = await api()
+      .post('/api/exams')
+      .set(bearer(w.tokens.teacher))
+      .send({
+        title: 'Spring Test',
+        academicYearId: nextSession.id,
+        classGradeId: w.cls.classGrade.id,
+        sectionId: w.cls.section.id,
+        subjects: [
+          subjectInput(w.cls.sectionSubject.id, { heldAt: '2027-04-15' }),
+        ],
+      })
+      .expect(201);
+    const id: string = created.body.id;
+    const subjectId: string = created.body.subjects[0].id;
+    expect(created.body.subjects[0].heldAt).toMatch(/^2027-04-15/);
+
+    for (const heldAt of [
+      '2024-05-06',
+      '2025-05-06',
+      '2026-05-06',
+      '2027-05-06',
+      '2028-05-06',
+    ]) {
+      await api()
+        .patch(`/api/exams/${id}/subjects/${subjectId}`)
+        .set(bearer(w.tokens.teacher))
+        .send({ heldAt })
+        .expect(200);
+      const reloaded = await api()
+        .get(`/api/exams/${id}`)
+        .set(bearer(w.tokens.teacher))
+        .expect(200);
+      expect(reloaded.body.subjects[0].heldAt).toMatch(
+        new RegExp(`^${heldAt}`),
+      );
+    }
+  });
+
   it('TEST 6-8: review cycles with reasons, principal edits and resubmission', async () => {
     const w = await world();
     const draft = await teacherDraft(w);
