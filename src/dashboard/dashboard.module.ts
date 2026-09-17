@@ -10,5 +10,8 @@ import { DashboardService } from './dashboard.service';
   imports: [PrismaModule, ExamsModule, AssignmentsModule, AttendanceModule],
   controllers: [DashboardController],
   providers: [DashboardService],
+  // The chatbot answers roll-up questions through this service, so the scoping
+  // lives in one place rather than being restated against Prisma.
+  exports: [DashboardService],
 })
 export class DashboardModule {}

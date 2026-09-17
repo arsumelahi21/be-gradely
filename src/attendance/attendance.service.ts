@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CacheService } from '../common/services/cache.service';
 import { BaseSchoolScopedService } from '../common/services/base-school.service';
+import { resolveTeacherStudentIds } from '../common/services/teacher-scope';
 import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
 import { MarkAttendanceDto } from './dto/mark-attendance.dto';
@@ -115,7 +116,22 @@ export class AttendanceService extends BaseSchoolScopedService {
       return;
     }
 
-    // TEACHER / SCHOOL_ADMIN / SUPER_ADMIN: same-school (already enforced).
+    if (actor.role === Role.TEACHER) {
+      // Same-school was not enough: it let any teacher read any student's whole
+      // history and remarks, across subjects they don't teach.
+      const myTeacherId = await this.teacherProfileIdFor(actor);
+      const visible = myTeacherId
+        ? await resolveTeacherStudentIds(this.prisma, myTeacherId)
+        : [];
+      if (!visible.includes(student.id)) {
+        throw new ForbiddenException(
+          'You can only view attendance for students you teach',
+        );
+      }
+      return;
+    }
+
+    // SCHOOL_ADMIN / SUPER_ADMIN: same-school (already enforced).
   }
 
   private toDateOnly(value: string): Date {
@@ -232,33 +248,63 @@ export class AttendanceService extends BaseSchoolScopedService {
     const period = query.period ?? 1;
     const date = this.toDateOnly(query.date);
 
-    const enrollments = await this.prisma.enrollment.findMany({
-      where: { sectionId: sectionSubject.section.id, status: 'ACTIVE' },
-      include: {
-        student: { select: { id: true, fullName: true, rollNo: true } },
-      },
-      orderBy: { student: { fullName: 'asc' } },
-    });
-
     const marks = await this.prisma.attendance.findMany({
       where: { sectionSubjectId, date, period },
     });
     const byStudent = new Map(marks.map((m) => [m.studentId, m]));
+
+    const roster = await this.rosterFor(
+      sectionSubject.section.id,
+      marks.map((m) => m.studentId),
+    );
 
     return {
       sectionSubjectId,
       subject: sectionSubject.subject,
       date: query.date,
       period,
-      roster: enrollments.map((e) => {
-        const mark = byStudent.get(e.studentId);
+      roster: roster.map((student) => {
+        const mark = byStudent.get(student.id);
         return {
-          student: e.student,
+          student,
           status: mark?.status ?? null,
           remarks: mark?.remarks ?? null,
         };
       }),
     };
+  }
+
+  /**
+   * Current roster plus anyone already marked in the window. Promotion closes a
+   * placement (COMPLETED) rather than deleting it, so an ACTIVE-only roster
+   * silently dropped a promoted student's existing marks from past sheets.
+   *
+   * Widening the status filter instead would be wrong: these queries carry no
+   * academicYearId, so ACTIVE+COMPLETED returns everyone who ever sat in the
+   * section, in any year.
+   */
+  private async rosterFor(sectionId: string, markedStudentIds: string[]) {
+    const enrollments = await this.prisma.enrollment.findMany({
+      where: { sectionId, status: 'ACTIVE' },
+      include: {
+        student: { select: { id: true, fullName: true, rollNo: true } },
+      },
+      orderBy: { student: { fullName: 'asc' } },
+    });
+    const roster = enrollments.map((e) => e.student);
+
+    const current = new Set(roster.map((s) => s.id));
+    const missing = [...new Set(markedStudentIds)].filter(
+      (id) => !current.has(id),
+    );
+    if (!missing.length) return roster;
+
+    const past = await this.prisma.studentProfile.findMany({
+      where: { id: { in: missing } },
+      select: { id: true, fullName: true, rollNo: true },
+      orderBy: { fullName: 'asc' },
+    });
+    return [...roster, ...past];
   }
 
   async getStudentAttendance(
@@ -480,14 +526,6 @@ export class AttendanceService extends BaseSchoolScopedService {
     const sectionSubject = await this.loadSectionSubject(sectionSubjectId);
     await this.assertSubjectAccess(actor, sectionSubject);
 
-    const enrollments = await this.prisma.enrollment.findMany({
-      where: { sectionId: sectionSubject.section.id, status: 'ACTIVE' },
-      include: {
-        student: { select: { id: true, fullName: true, rollNo: true } },
-      },
-      orderBy: { student: { fullName: 'asc' } },
-    });
-
     const where: any = { sectionSubjectId };
     if (query.from || query.to) {
       where.date = {};
@@ -519,13 +557,18 @@ export class AttendanceService extends BaseSchoolScopedService {
       tally.set(m.studentId, t);
     }
 
+    const roster = await this.rosterFor(
+      sectionSubject.section.id,
+      marks.map((m) => m.studentId),
+    );
+
     return {
       sectionSubjectId,
       subject: sectionSubject.subject,
       from: query.from ?? null,
       to: query.to ?? null,
-      students: enrollments.map((e) => {
-        const t = tally.get(e.studentId) ?? {
+      students: roster.map((student) => {
+        const t = tally.get(student.id) ?? {
           present: 0,
           absent: 0,
           late: 0,
@@ -533,7 +576,7 @@ export class AttendanceService extends BaseSchoolScopedService {
         };
         const total = t.present + t.absent + t.late + t.excused;
         return {
-          student: e.student,
+          student,
           present: t.present,
           absent: t.absent,
           late: t.late,

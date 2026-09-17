@@ -75,22 +75,44 @@ export class QuizzesService extends BaseSchoolScopedService {
     });
   }
 
-  /** Teacher may write quizzes only for a section they teach; admins within scope. */
+  /**
+   * A teacher reaches a quiz only through the SUBJECT they teach in that section.
+   * Section-wide was too wide: it handed the chemistry teacher of 9-A the maths
+   * answer key, every pupil's submitted answers and the score sheet.
+   *
+   * `subjectId` is nullable on Quiz, so a subject-less quiz falls back to
+   * authorship rather than silently reverting to section-wide access.
+   */
   private async assertSectionWriteAccess(
     actor: Actor,
     section: { id: string; schoolId: string },
+    quiz?: { subjectId: string | null; createdByUserId: string | null },
   ) {
     this.enforceScope(actor, section.schoolId);
     if (actor.role === Role.TEACHER) {
       const myTeacherId = await this.teacherProfileIdFor(actor);
       if (!myTeacherId)
         throw new ForbiddenException('Teacher profile not found');
+      if (quiz && !quiz.subjectId) {
+        if (quiz.createdByUserId && quiz.createdByUserId === actor.userId) {
+          return;
+        }
+        throw new ForbiddenException('You do not teach this subject');
+      }
       const teaches = await this.prisma.sectionSubject.findFirst({
-        where: { sectionId: section.id, teacherId: myTeacherId },
+        where: {
+          sectionId: section.id,
+          teacherId: myTeacherId,
+          ...(quiz?.subjectId ? { subjectId: quiz.subjectId } : {}),
+        },
         select: { id: true },
       });
       if (!teaches) {
-        throw new ForbiddenException('You do not teach this section');
+        throw new ForbiddenException(
+          quiz
+            ? 'You do not teach this subject'
+            : 'You do not teach this section',
+        );
       }
     }
   }
@@ -161,7 +183,15 @@ export class QuizzesService extends BaseSchoolScopedService {
       select: { id: true, schoolId: true },
     });
     if (!section) throw new NotFoundException('Section not found');
-    await this.assertSectionWriteAccess(actor, section);
+    // Authoring for a named subject requires teaching THAT subject, matching the
+    // read paths; a subject-less quiz only requires teaching the section.
+    await this.assertSectionWriteAccess(
+      actor,
+      section,
+      dto.subjectId
+        ? { subjectId: dto.subjectId, createdByUserId: actor.userId ?? null }
+        : undefined,
+    );
 
     if (dto.subjectId) {
       const subject = await this.prisma.subject.findUnique({
@@ -598,14 +628,14 @@ export class QuizzesService extends BaseSchoolScopedService {
     if (!quiz) throw new NotFoundException('Quiz not found');
     this.enforceScope(actor, quiz.schoolId);
     if (actor.role === Role.TEACHER) {
-      await this.assertSectionWriteAccess(actor, quiz.section);
+      await this.assertSectionWriteAccess(actor, quiz.section, quiz);
     }
     return quiz;
   }
 
   async getResults(quizId: string, actor: Actor, query: FindQuizzesQueryDto) {
     const quiz = await this.loadQuizWithSection(quizId);
-    await this.assertSectionWriteAccess(actor, quiz.section);
+    await this.assertSectionWriteAccess(actor, quiz.section, quiz);
 
     const page = query.page && query.page > 0 ? query.page : 1;
     const pageSize = Math.min(
@@ -814,10 +844,11 @@ export class QuizzesService extends BaseSchoolScopedService {
       });
       if (!link) throw new ForbiddenException('Not your child');
     } else if (actor.role === Role.TEACHER) {
-      await this.assertSectionWriteAccess(actor, {
-        id: attempt.quiz.sectionId,
-        schoolId: attempt.quiz.schoolId,
-      });
+      await this.assertSectionWriteAccess(
+        actor,
+        { id: attempt.quiz.sectionId, schoolId: attempt.quiz.schoolId },
+        attempt.quiz,
+      );
     }
 
     const graded = attempt.status === QuizAttemptStatus.GRADED;

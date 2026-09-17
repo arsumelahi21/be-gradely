@@ -40,6 +40,13 @@ process.env.CORS_ORIGINS = process.env.CORS_ORIGINS || 'http://localhost:3000';
 
 process.env.THROTTLE_LIMIT = process.env.THROTTLE_LIMIT || '1000000';
 
+// The chatbot must answer deterministically here. Deleting ANTHROPIC_API_KEY is
+// not enough: ConfigModule.forRoot() reads `.env` later, during app construction,
+// and dotenv fills any variable that is currently UNDEFINED — so the delete just
+// clears the slot for it to refill. This flag is set, not unset, so dotenv leaves
+// it alone, and the provider factory honours it.
+process.env.CHATBOT_DISABLE_LLM = 'true';
+
 // Email is flagged OFF for beta in prod, but the e2e suite must exercise the
 // notification email fan-out (per-preference suppression), so enable it here.
 process.env.EMAIL_NOTIFICATIONS_ENABLED =

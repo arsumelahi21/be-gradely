@@ -338,12 +338,23 @@ export class DemoChatbotProvider implements ChatbotProvider {
   }
 }
 
-function tokenize(question: string): string[] {
+/** Shared with the data-backed provider so both match on identical terms. */
+export function tokenize(question: string): string[] {
   return question
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w.length > 0 && !STOP_WORDS.has(w));
+    .filter((w) => w.length > 0 && !STOP_WORDS.has(w))
+    .map(stem);
+}
+
+/**
+ * Crude singularisation so "count of students" matches a `student` pattern.
+ * Applied to BOTH sides of the comparison, so it only has to be consistent, not
+ * linguistically right — "classes" and "class" both land on "clas" and match.
+ */
+function stem(word: string): string {
+  return word.length > 3 && word.endsWith('s') ? word.slice(0, -1) : word;
 }
 
 const STOP_WORDS = new Set([
@@ -376,12 +387,18 @@ const STOP_WORDS = new Set([
  * A group scores only if EVERY term in it is present; the score is that group's
  * length, so "add fee head" (3) beats a bare "fee head" (2) on the same input.
  */
-function scoreIntent(intent: Intent, terms: string[]): number {
+export function scoreGroups(patterns: string[][], terms: string[]): number {
   let best = 0;
-  for (const group of intent.patterns) {
-    if (group.every((term) => terms.includes(term))) {
+  for (const group of patterns) {
+    // Patterns are stemmed here rather than at the literals, so a pattern can be
+    // written in whichever number reads naturally.
+    if (group.every((term) => terms.includes(stem(term)))) {
       best = Math.max(best, group.length);
     }
   }
   return best;
+}
+
+function scoreIntent(intent: Intent, terms: string[]): number {
+  return scoreGroups(intent.patterns, terms);
 }

@@ -21,7 +21,7 @@ import { CreateSchoolDto } from './dto/create-school.dto';
 import { UpdateSchoolDto } from './dto/update-school.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../common/decorators/roles.decorator';
+import { ALL_ROLES, Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/types/role.type';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -47,7 +47,9 @@ export class SchoolsController {
     return this.schools.uploadLogo(req.user?.schoolId, file);
   }
 
-  // No @Roles: any authenticated user may display their own school's logo.
+  // Any authenticated user may display their own school's logo — students and
+  // parents render it on a printed challan.
+  @Roles(...ALL_ROLES)
   @Get('me/logo')
   async getMyLogo(@Req() req: any, @Res() res: Response) {
     const { data, mimeType } = await this.schools.getLogo(req.user?.schoolId);

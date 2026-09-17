@@ -4,7 +4,7 @@ import {
   resolvePagination,
 } from '../common/dto/pagination-query.dto';
 import { Role } from '../common/types/role.type';
-import { ChatStore } from './chat-store';
+import { ChatRepository, HISTORY_TURNS } from './chat-repository';
 import type { Chat, ChatMessage, ChatSummary } from './chatbot.types';
 import {
   CHATBOT_PROVIDER,
@@ -27,43 +27,42 @@ export interface SendMessageResult {
   /** Both new turns, so the client appends without refetching the thread. */
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
-  /** False when the demo engine fell through to its catch-all. */
+  /** False when the engine fell through to its catch-all. */
   matched: boolean;
 }
 
 /**
- * Conversation lifecycle for the demo chatbot.
+ * Conversation lifecycle.
  *
  * No tenant scoping via `BaseSchoolScopedService` here, deliberately: a chat has
- * no school-owned data in it. It is owned by ONE user, and every store call is
- * keyed by that user's id, which is a stricter boundary than school scoping —
+ * no school-owned data in it. It is owned by ONE user, and every repository call
+ * is keyed by that user's id, which is a stricter boundary than school scoping —
  * a school admin cannot read a colleague's chat either.
  */
 @Injectable()
 export class ChatbotService {
   constructor(
-    private readonly store: ChatStore,
+    private readonly chats: ChatRepository,
     @Inject(CHATBOT_PROVIDER) private readonly provider: ChatbotProvider,
   ) {}
 
-  /** What the client shows in the header, so the demo is never misrepresented. */
+  /** What the client shows in the header, so the engine is never misrepresented. */
   status(): { provider: string; isLive: boolean; persistent: boolean } {
     return {
       provider: this.provider.name,
       isLive: this.provider.isLive,
-      // In-memory: history does not survive an API restart. Say so.
-      persistent: false,
+      persistent: true,
     };
   }
 
-  listChats(
+  async listChats(
     user: ChatbotUser,
     query: PaginationQueryDto,
-  ):
+  ): Promise<
     | ChatSummary[]
-    | { items: ChatSummary[]; total: number; page: number; pageSize: number } {
-    this.store.sweep();
-    const all = this.store.list(user.userId).map(toSummary);
+    | { items: ChatSummary[]; total: number; page: number; pageSize: number }
+  > {
+    const all = (await this.chats.list(user.userId)).map(toSummary);
 
     // Same backward-compatible envelope the rest of the API uses: paginated
     // only when the caller asks for a page.
@@ -78,16 +77,15 @@ export class ChatbotService {
   }
 
   async createChat(user: ChatbotUser, dto: CreateChatDto): Promise<Chat> {
-    this.store.sweep();
-    const chat = this.store.create(user.userId);
+    const chat = await this.chats.create(user.userId, user.schoolId);
     if (dto.message?.trim()) {
       await this.sendMessage(user, chat.id, { content: dto.message });
     }
     return this.getChat(user, chat.id);
   }
 
-  getChat(user: ChatbotUser, chatId: string): Chat {
-    const chat = this.store.findById(user.userId, chatId);
+  async getChat(user: ChatbotUser, chatId: string): Promise<Chat> {
+    const chat = await this.chats.findById(user.userId, chatId);
     // 404 rather than 403 for someone else's chat: the id space is private, and
     // distinguishing "exists but not yours" would confirm it exists.
     if (!chat) throw new NotFoundException('Chat not found');
@@ -99,10 +97,10 @@ export class ChatbotService {
     chatId: string,
     dto: SendMessageDto,
   ): Promise<SendMessageResult> {
-    const chat = this.getChat(user, chatId);
+    const chat = await this.getChat(user, chatId);
     const question = dto.content.trim();
 
-    const userMessage = this.store.addMessage(
+    const userMessage = await this.chats.addMessage(
       user.userId,
       chat.id,
       'USER',
@@ -113,29 +111,45 @@ export class ChatbotService {
     const reply = await this.provider.generateReply({
       question,
       // Excludes the turn just added — the provider gets prior context only.
-      history: chat.messages.slice(0, -1),
+      // Capped so a long conversation can't grow the prompt without bound.
+      history: chat.messages.slice(-HISTORY_TURNS),
       role: user.role,
+      // Data-backed answers run as the asker, through the same scoped services
+      // the REST API uses.
+      actor: {
+        userId: user.userId,
+        role: user.role,
+        schoolId: user.schoolId,
+      },
     });
 
-    const assistantMessage = this.store.addMessage(
+    const assistantMessage = await this.chats.addMessage(
       user.userId,
       chat.id,
       'ASSISTANT',
       reply.content,
+      reply.toolCalls,
     );
     if (!assistantMessage) throw new NotFoundException('Chat not found');
 
+    // The first user message renames the chat, so the title loaded before the
+    // write is stale — re-read it rather than echoing the old one.
+    const saved = await this.chats.findById(user.userId, chat.id);
+
     return {
       chatId: chat.id,
-      title: chat.title,
+      title: saved?.title ?? chat.title,
       userMessage,
       assistantMessage,
       matched: reply.matched,
     };
   }
 
-  deleteChat(user: ChatbotUser, chatId: string): { deleted: true } {
-    if (!this.store.delete(user.userId, chatId)) {
+  async deleteChat(
+    user: ChatbotUser,
+    chatId: string,
+  ): Promise<{ deleted: true }> {
+    if (!(await this.chats.delete(user.userId, chatId))) {
       throw new NotFoundException('Chat not found');
     }
     return { deleted: true };

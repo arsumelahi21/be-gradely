@@ -12,7 +12,10 @@ export class RolesGuard implements CanActivate {
       ctx.getHandler(),
       ctx.getClass(),
     ]);
-    if (!required || required.length === 0) return true;
+    // Fail CLOSED: a handler under this guard with no @Roles used to admit every
+    // authenticated role, so forgetting the decorator silently published a route.
+    // Handlers that genuinely serve all roles say so with @Roles(...ALL_ROLES).
+    if (!required || required.length === 0) return false;
 
     const req = ctx.switchToHttp().getRequest();
     const user = req.user as { role?: Role };

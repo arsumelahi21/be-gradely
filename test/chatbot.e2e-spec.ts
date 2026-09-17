@@ -100,7 +100,10 @@ describe('Chatbot (e2e)', () => {
 
   // ---- Status -------------------------------------------------------------
 
-  it('reports itself as a non-live, non-persistent demo', async () => {
+  // Without ANTHROPIC_API_KEY the deterministic engine IS the assistant, which
+  // is what keeps this suite free of model calls. Conversations now live in
+  // Postgres either way, so `persistent` is true regardless of engine.
+  it('reports the engine and that conversations persist', async () => {
     const token = await tokenForRole(Role.SCHOOL_ADMIN);
     const res = await request(server())
       .get('/api/chatbot/status')
@@ -108,9 +111,9 @@ describe('Chatbot (e2e)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      provider: 'demo',
+      provider: 'app-data',
       isLive: false,
-      persistent: false,
+      persistent: true,
     });
   });
 
@@ -327,6 +330,52 @@ describe('Chatbot (e2e)', () => {
     const teacherAnswer = await askAs(teacher);
     expect(teacherAnswer).toMatch(/not available to teachers/i);
     expect(teacherAnswer).not.toMatch(/Preview/);
+  });
+
+  // ---- Data-backed answers ------------------------------------------------
+
+  describe('answers from the school’s own data', () => {
+    const askAs = async (token: string, message: string) => {
+      const res = await request(server())
+        .post('/api/chatbot/chats')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ message });
+      expect(res.status).toBe(201);
+      return res.body.messages[1].content as string;
+    };
+
+    it('gives an admin the real student count', async () => {
+      const token = await tokenForRole(Role.SCHOOL_ADMIN);
+      for (let i = 0; i < 3; i++) {
+        const user = await createTestUser({ role: Role.STUDENT, schoolId });
+        await prisma.studentProfile.create({
+          data: { userId: user.id, schoolId, fullName: `Student ${i}` },
+        });
+      }
+
+      const answer = await askAs(token, 'how many students do we have?');
+      expect(answer).toMatch(/\*\*3\*\* students/);
+    });
+
+    // The scoping comes from DashboardService, not from the chatbot: a teacher
+    // is refused there, so the answer degrades to guidance instead of leaking
+    // school-wide figures.
+    it('does not give a teacher school-wide counts', async () => {
+      const token = await tokenForRole(Role.TEACHER);
+      const user = await createTestUser({ role: Role.STUDENT, schoolId });
+      await prisma.studentProfile.create({
+        data: { userId: user.id, schoolId, fullName: 'Student' },
+      });
+
+      const answer = await askAs(token, 'how many students do we have?');
+      expect(answer).not.toMatch(/\*\*1\*\* students/);
+    });
+
+    it('tells a teacher which classes they teach', async () => {
+      const token = await tokenForRole(Role.TEACHER);
+      const answer = await askAs(token, 'what classes do I teach?');
+      expect(answer).toMatch(/no subject-classes allocated/i);
+    });
   });
 
   it('says plainly that it is a demo when it cannot answer', async () => {

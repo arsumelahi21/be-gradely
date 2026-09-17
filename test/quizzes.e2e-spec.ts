@@ -3,7 +3,7 @@ import request from 'supertest';
 import { createTestApp } from './utils/app';
 import { prisma, resetDb } from './utils/db';
 import { createTestSchool, createTestUser, tokenFor } from './utils/factories';
-import { seedClass } from './utils/class-fixture';
+import { addSecondSubject, seedClass } from './utils/class-fixture';
 import { Role } from '../src/common/types/role.type';
 
 const QUIZ_BODY = (sectionId: string) => ({
@@ -446,6 +446,63 @@ describe('Quizzes (e2e)', () => {
       .set('Authorization', `Bearer ${strangerToken}`)
       .send({ title: 'Hijacked' });
     expect(res.status).toBe(403);
+  });
+
+  it('refuses a same-section teacher of a DIFFERENT subject (403)', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const teacherToken = await tokenFor(app, cls.teacherUser);
+
+    // Pinned to the seeded subject, which cls.teacherUser teaches.
+    const created = await request(app.getHttpServer())
+      .post('/api/quizzes')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send({ ...QUIZ_BODY(cls.section.id), subjectId: cls.subject.id });
+    expect(created.status).toBe(201);
+    const quizId = created.body.id as string;
+    await request(app.getHttpServer())
+      .patch(`/api/quizzes/${quizId}/publish`)
+      .set('Authorization', `Bearer ${teacherToken}`);
+
+    const studentToken = await tokenFor(app, cls.students[0].user);
+    const start = await request(app.getHttpServer())
+      .post(`/api/quizzes/${quizId}/attempts`)
+      .set('Authorization', `Bearer ${studentToken}`);
+    const attemptId = start.body.attemptId as string;
+    await request(app.getHttpServer())
+      .patch(`/api/quizzes/attempts/${attemptId}/submit`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({ answers: {} });
+
+    // Teaches this very section — but another subject. Section-wide access gave
+    // them the answer key, every pupil's answers and the score sheet.
+    const { otherTeacherUser } = await addSecondSubject(
+      cls.school,
+      cls.section.id,
+    );
+    const otherToken = await tokenFor(app, otherTeacherUser);
+
+    for (const path of [
+      `/api/quizzes/${quizId}`,
+      `/api/quizzes/${quizId}/results`,
+      `/api/quizzes/attempts/${attemptId}`,
+    ]) {
+      const res = await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${otherToken}`);
+      expect(res.status).toBe(403);
+    }
+
+    // The subject's own teacher still reaches all three.
+    for (const path of [
+      `/api/quizzes/${quizId}`,
+      `/api/quizzes/${quizId}/results`,
+      `/api/quizzes/attempts/${attemptId}`,
+    ]) {
+      const res = await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${teacherToken}`);
+      expect(res.status).toBe(200);
+    }
   });
 
   it('refuses cross-school edits (403)', async () => {

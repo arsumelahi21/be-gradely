@@ -108,6 +108,7 @@ model User {
   announcementsAuthored Announcement[]
   announcementReads     AnnouncementRead[]
   notifications         Notification[]
+  chats                 Chat[]
   challansGenerated     Challan[]            @relation("ChallanGeneratedBy")
   paymentsRecorded      Payment[]            @relation("PaymentRecordedBy")
   paymentsVoided        Payment[]            @relation("PaymentVoidedBy")
@@ -1747,4 +1748,36 @@ model TimetableEntry {
   @@index([sectionSubjectId])
   @@index([timetableId])
   @@index([schoolId])
+}
+
+/// AI assistant conversation. Replaces the in-memory ChatStore: history has to
+/// survive a restart and be shared across API instances, and a follow-up question
+/// ("divide them by grade") is only answerable with the prior turns in hand.
+model Chat {
+  id        String   @id @default(uuid())
+  userId    String
+  schoolId  String? // null for a super admin; scopes the row to its tenant
+  title     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId, updatedAt]) // the sidebar: my chats, newest first
+}
+
+/// One turn. `toolCalls` records which data functions answered it, so a wrong
+/// answer can be traced to the tool that produced it rather than guessed at.
+model ChatMessage {
+  id        String   @id @default(uuid())
+  chatId    String
+  role      String // USER | ASSISTANT
+  content   String
+  toolCalls Json? // [{ name, input }] — audit trail for a data-backed answer
+  createdAt DateTime @default(now())
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt]) // replaying a conversation in order
 }

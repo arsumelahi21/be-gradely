@@ -4,6 +4,8 @@ import { APP_GUARD } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { Redis } from 'ioredis';
+import { ThrottlerRedisStorage } from './common/services/throttler-redis.storage';
 import { PrismaModule } from './prisma/prisma.module';
 import { CacheModule } from './common/cache.module';
 import { AuthModule } from './auth/auth.module';
@@ -34,12 +36,29 @@ import { ChatbotModule } from './chatbot/chatbot.module';
     // 100 req/min/IP; auth-sensitive routes tighten this with @Throttle.
     // THROTTLE_LIMIT is how the e2e suite lifts the cap — an APP_GUARD cannot
     // be replaced with overrideGuard().
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60_000, // 1 minute (ms)
-        limit: Number(process.env.THROTTLE_LIMIT ?? 100),
-      },
-    ]),
+    // Counters live in Redis when one is configured, so the limit is per
+    // deployment: with the default in-memory storage every process allows the
+    // full quota, making the real limit N × THROTTLE_LIMIT.
+    ThrottlerModule.forRoot({
+      throttlers: [
+        {
+          ttl: 60_000, // 1 minute (ms)
+          limit: Number(process.env.THROTTLE_LIMIT ?? 100),
+        },
+      ],
+      ...(process.env.REDIS_URL
+        ? {
+            storage: new ThrottlerRedisStorage(
+              new Redis(process.env.REDIS_URL, {
+                maxRetriesPerRequest: 1,
+                enableOfflineQueue: false,
+                connectTimeout: 1000,
+                commandTimeout: 1000,
+              }),
+            ),
+          }
+        : {}),
+    }),
     // Phase 3: internal event bus (notification fan-out) + cron (scheduled announcements).
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
