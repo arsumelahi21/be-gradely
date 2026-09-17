@@ -9,7 +9,14 @@ describe('DemoChatbotProvider', () => {
   const provider = new DemoChatbotProvider();
 
   const ask = (question: string, role: Role = Role.SCHOOL_ADMIN) =>
-    provider.generateReply({ question, history: [], role });
+    provider.generateReply({
+      question,
+      history: [],
+      role,
+      // Carried by the interface for data-backed providers; this engine is pure
+      // and ignores it.
+      actor: { userId: 'u1', role, schoolId: 's1' },
+    });
 
   it('declares itself as a non-live demo engine', () => {
     expect(provider.name).toBe('demo');
@@ -85,6 +92,7 @@ describe('DemoChatbotProvider', () => {
           question: q,
           history: [],
           role: Role.TEACHER,
+          actor: { userId: 'u1', role: Role.TEACHER, schoolId: 's1' },
         });
         expect(reply.matched).toBe(true);
         expect(reply.content).toMatch(/school.admin/i);
