@@ -114,7 +114,6 @@ describe('submissionProblems', () => {
     endMin: 660,
     maxScore: 100,
     passingMarks: 40,
-    hasPaper: true,
     ...over,
   });
   const exam = (over: Partial<ExaminationDraft> = {}): ExaminationDraft => ({
@@ -159,12 +158,11 @@ describe('submissionProblems', () => {
     expect(submissionProblems(exam(), { requireTerm: true })).toEqual([]);
   });
 
-  it('requires the paper, date and valid marks per subject', () => {
+  it('requires the date and valid marks per subject, never the exam paper', () => {
     const problems = submissionProblems(
       exam({
         subjects: [
           subject({
-            hasPaper: false,
             heldAt: null,
             maxScore: 0,
             passingMarks: 5,
@@ -178,7 +176,6 @@ describe('submissionProblems', () => {
       'Mathematics: total marks must be greater than 0',
       'Mathematics: passing marks cannot exceed total marks',
       'Mathematics: end time must be after start time',
-      'Mathematics: upload the exam paper (PDF)',
     ]);
   });
 });

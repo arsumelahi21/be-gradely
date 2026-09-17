@@ -256,6 +256,30 @@ describe('Examination terms (e2e)', () => {
   });
 
   describe('publishing', () => {
+    it('publishes with a term that has no dates and a subject with no paper', async () => {
+      const w = await world();
+      const term = await addTerm(w, 'First Term', 1);
+      const { examination } = await seedExamination({
+        schoolId: w.cls.school.id,
+        academicYearId: w.cls.academicYear.id,
+        sectionId: w.cls.section.id,
+        sectionSubjectIds: [w.cls.sectionSubject.id],
+        status: 'DRAFT',
+        termId: term.id,
+      });
+
+      await api()
+        .post(`/api/exams/${examination.id}/publish`)
+        .set(bearer(w.admin))
+        .expect(201);
+      expect(await current(examination.id)).toBe('PUBLISHED');
+      expect(
+        await prisma.examPaper.count({
+          where: { exam: { examinationId: examination.id } },
+        }),
+      ).toBe(0);
+    });
+
     it('refuses to publish without a term, and publishes once one is chosen', async () => {
       const w = await world();
       const term = await addTerm(w, 'First Term', 1);
@@ -267,7 +291,7 @@ describe('Examination terms (e2e)', () => {
         status: 'DRAFT',
         termId: null,
       });
-      // Papers are the other publish gate; satisfy it so the term is what is being tested.
+      // A paper is present so this also covers publishing with one.
       await prisma.examPaper.create({
         data: {
           examId: subjects[0].id,
