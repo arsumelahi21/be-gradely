@@ -41,7 +41,7 @@ import {
   termOutcome,
   termSubjectColumns,
 } from './result-calculator';
-import { cleanText } from './exam-mappers';
+import { cleanText, schoolHeaderSelect } from './exam-mappers';
 import { SaveMarksDto, SaveRemarksDto } from './dto/results.dto';
 
 type Db = Prisma.TransactionClient;
@@ -73,19 +73,6 @@ const sheetExamSelect = {
     },
   },
 } satisfies Prisma.ExaminationSelect;
-
-const schoolHeaderSelect = {
-  id: true,
-  name: true,
-  addressLine1: true,
-  addressLine2: true,
-  city: true,
-  state: true,
-  country: true,
-  phone: true,
-  email: true,
-  logoMimeType: true,
-} satisfies Prisma.SchoolSelect;
 
 export type SchoolHeaderRow = Prisma.SchoolGetPayload<{
   select: typeof schoolHeaderSelect;
@@ -242,7 +229,10 @@ export class ExamResultsService {
     if (actor.role === Role.TEACHER && !mayEdit) {
       throw new ForbiddenException('You do not teach this subject');
     }
-    const sheet = await this.buildSheet(this.prisma, examinationId);
+    const [sheet, marked] = await Promise.all([
+      this.buildSheet(this.prisma, examinationId),
+      this.prisma.examResult.count({ where: { examId: subject.id } }),
+    ]);
     return {
       examination: {
         id: core.id,
@@ -258,6 +248,7 @@ export class ExamResultsService {
         maxScore: subject.maxScore,
         passingMarks: subject.passingMarks,
         heldAt: subject.heldAt,
+        totalsLocked: marked > 0,
       },
       editable: mayEdit && canEnterMarks(core.status, core.resultStatus),
       rows: sheet.students.map((student) => {
@@ -293,17 +284,27 @@ export class ExamResultsService {
           : 'Marks can be entered once the examination is published.',
       );
     }
-    if (subject.maxScore == null) {
+    const maxScore = dto.maxScore ?? subject.maxScore;
+    const passingMarks =
+      dto.passingMarks !== undefined ? dto.passingMarks : subject.passingMarks;
+    if (maxScore == null) {
       throw new ConflictException('Set the total marks for this subject first');
     }
+    if (passingMarks != null && passingMarks > maxScore) {
+      throw new BadRequestException(
+        'Passing marks cannot be more than total marks',
+      );
+    }
+    const totalsChanged =
+      maxScore !== subject.maxScore || passingMarks !== subject.passingMarks;
     const ids = dto.entries.map((e) => e.studentId);
     if (new Set(ids).size !== ids.length) {
       throw new BadRequestException('Each student can appear only once');
     }
     for (const e of dto.entries) {
-      if (!e.isAbsent && e.score != null && e.score > subject.maxScore) {
+      if (!e.isAbsent && e.score != null && e.score > maxScore) {
         throw new BadRequestException(
-          `Marks cannot be more than the total of ${subject.maxScore}`,
+          `Marks cannot be more than the total of ${maxScore}`,
         );
       }
     }
@@ -338,6 +339,18 @@ export class ExamResultsService {
           throw new BadRequestException(
             'A student in this list is not on the class roster',
           );
+        }
+        if (totalsChanged) {
+          // Rescaling under entered marks would silently change every grade already given.
+          if (await tx.examResult.count({ where: { examId: subject.id } })) {
+            throw new ConflictException(
+              "Total marks can't change once marks have been entered",
+            );
+          }
+          await tx.exam.update({
+            where: { id: subject.id },
+            data: { maxScore, passingMarks },
+          });
         }
         for (const e of dto.entries) {
           const isAbsent = !!e.isAbsent;

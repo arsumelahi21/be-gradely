@@ -107,7 +107,7 @@ export class ExamAccessService {
     );
   }
 
-  /** A teacher sees their own proposals, and published exams for subjects they teach or classes they lead. */
+  /** A teacher sees their own proposals, and published exams they teach, lead the class of, or invigilate. */
   teacherVisibility(teacherId: string): Prisma.ExaminationWhereInput {
     return {
       OR: [
@@ -116,6 +116,7 @@ export class ExamAccessService {
           status: ExaminationStatus.PUBLISHED,
           OR: [
             { subjects: { some: { sectionSubject: { teacherId } } } },
+            { subjects: { some: { invigilatorTeacherId: teacherId } } },
             { section: { teachers: { some: { teacherId, isPrimary: true } } } },
           ],
         },

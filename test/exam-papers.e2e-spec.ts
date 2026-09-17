@@ -145,6 +145,11 @@ describe('Exam paper security (e2e)', () => {
       .set(bearer(w.tokens.teacher))
       .expect(201);
     await api()
+      .patch(`/api/exams/${w.examId}/subjects/${w.subjectId}`)
+      .set(bearer(w.tokens.admin))
+      .send({ invigilatorTeacherId: w.cls.teacherProfile.id })
+      .expect(200);
+    await api()
       .post(`/api/exams/${w.examId}/publish`)
       .set(bearer(w.tokens.admin))
       .expect(201);

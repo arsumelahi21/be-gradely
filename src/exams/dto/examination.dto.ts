@@ -142,10 +142,13 @@ export class ListExaminationsQueryDto extends PaginationQueryDto {
   @IsDateString()
   to?: string;
 
-  /** "approvals" limits the list to proposals that have been sent for review at least once. */
+  /**
+   * "approvals": proposals sent for review at least once. "datesheets": published
+   * examinations plus the principal's own drafts — teacher drafts are still private.
+   */
   @IsOptional()
-  @IsIn(['approvals'])
-  view?: 'approvals';
+  @IsIn(['approvals', 'datesheets'])
+  view?: 'approvals' | 'datesheets';
 }
 
 export class StudentQueryDto {

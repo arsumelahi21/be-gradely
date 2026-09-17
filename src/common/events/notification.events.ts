@@ -26,6 +26,7 @@ export type NotificationType =
   | 'EXAM_CHANGES_REQUESTED'
   | 'EXAM_REJECTED'
   | 'EXAM_APPROVED'
+  | 'EXAM_INVIGILATION'
   | 'ATTENDANCE_MARKED'
   // Fee events ride the existing notifyGrades preference — no new UserSettings column.
   | 'FEE_CHALLAN_ISSUED'

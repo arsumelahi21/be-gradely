@@ -41,6 +41,19 @@ export class SaveMarksDto {
   @ValidateNested({ each: true })
   @Type(() => MarkEntryDto)
   entries!: MarkEntryDto[];
+
+  // Date sheets publish without marks, so the totals are set here, before the first score.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  maxScore?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1000)
+  passingMarks?: number | null;
 }
 
 export class RemarkEntryDto {

@@ -171,6 +171,14 @@ describe('Examinations (e2e)', () => {
     };
   }
 
+  // Teachers propose; only the principal assigns the invigilator a publish needs.
+  const assignInvigilator = (w: World, examId: string, subjectId: string) =>
+    api()
+      .patch(`/api/exams/${examId}/subjects/${subjectId}`)
+      .set(bearer(w.tokens.admin))
+      .send({ invigilatorTeacherId: w.cls.teacherProfile.id })
+      .expect(200);
+
   const uploadPaper = (examId: string, subjectId: string, token: string) =>
     api()
       .put(`/api/exams/${examId}/subjects/${subjectId}/paper`)
@@ -192,8 +200,13 @@ describe('Examinations (e2e)', () => {
         sectionId: w.cls.section.id,
         termId: w.term.id,
         subjects: [
-          subjectInput(w.cls.sectionSubject.id),
-          subjectInput(w.other.sectionSubject.id, { heldAt: '2026-10-13' }),
+          subjectInput(w.cls.sectionSubject.id, {
+            invigilatorTeacherId: w.cls.teacherProfile.id,
+          }),
+          subjectInput(w.other.sectionSubject.id, {
+            heldAt: '2026-10-13',
+            invigilatorTeacherId: w.cls.teacherProfile.id,
+          }),
         ],
       })
       .expect(201);
@@ -373,6 +386,7 @@ describe('Examinations (e2e)', () => {
       .set(bearer(w.tokens.admin))
       .expect(404);
 
+    await assignInvigilator(w, draft.id, draft.subjectId);
     const published = await api()
       .post(`/api/exams/${draft.id}/publish`)
       .set(bearer(w.tokens.admin))
@@ -532,6 +546,7 @@ describe('Examinations (e2e)', () => {
       .post(`/api/exams/${draft.id}/submit`)
       .set(bearer(w.tokens.teacher))
       .expect(201);
+    await assignInvigilator(w, draft.id, draft.subjectId);
 
     const events = notificationSpy();
     const published = await api()

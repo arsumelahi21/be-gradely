@@ -266,6 +266,7 @@ describe('Examination terms (e2e)', () => {
         sectionSubjectIds: [w.cls.sectionSubject.id],
         status: 'DRAFT',
         termId: term.id,
+        invigilatorTeacherId: w.cls.teacherProfile.id,
       });
 
       await api()
@@ -290,6 +291,7 @@ describe('Examination terms (e2e)', () => {
         sectionSubjectIds: [w.cls.sectionSubject.id],
         status: 'DRAFT',
         termId: null,
+        invigilatorTeacherId: w.cls.teacherProfile.id,
       });
       // A paper is present so this also covers publishing with one.
       await prisma.examPaper.create({
