@@ -21,6 +21,8 @@ import { ExamSettingsService } from './exam-settings.service';
     ExamSettingsService,
   ],
   // Dashboards grade with the same scheme loader as results.
-  exports: [ExamsService, ExamSettingsService],
+  // ExamResultsService is exported for the chatbot's results tools, so result
+  // scoping (assertStaffCanView) stays in one place rather than being restated.
+  exports: [ExamsService, ExamSettingsService, ExamResultsService],
 })
 export class ExamsModule {}
