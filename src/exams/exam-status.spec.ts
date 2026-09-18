@@ -8,6 +8,8 @@ import {
   ExaminationStatus as S,
   nextStatus,
   paperIsEditable,
+  scheduleConflicts,
+  ScheduledPaper,
   submissionProblems,
   teacherCanEdit,
   ExaminationDraft,
@@ -108,13 +110,15 @@ describe('submissionProblems', () => {
   const subject = (
     over: Partial<SubjectPaperDraft> = {},
   ): SubjectPaperDraft => ({
+    id: 'e1',
     label: 'Mathematics',
     heldAt: new Date('2026-10-12'),
     startMin: 540,
     endMin: 660,
+    venue: 'Hall 1',
+    invigilatorTeacherId: 't1',
     maxScore: 100,
     passingMarks: 40,
-    hasPaper: true,
     ...over,
   });
   const exam = (over: Partial<ExaminationDraft> = {}): ExaminationDraft => ({
@@ -126,22 +130,26 @@ describe('submissionProblems', () => {
     subjects: [subject()],
     ...over,
   });
+  const messages = (...args: Parameters<typeof submissionProblems>) =>
+    submissionProblems(...args).map((i) => i.message);
 
   it('accepts a complete proposal', () => {
     expect(submissionProblems(exam())).toEqual([]);
+    expect(submissionProblems(exam(), { forPublish: true })).toEqual([]);
   });
 
   it('requires title, session, class, section and a subject', () => {
-    const problems = submissionProblems(
-      exam({
-        title: '  ',
-        academicYearId: null,
-        classGradeId: null,
-        sectionId: null,
-        subjects: [],
-      }),
-    );
-    expect(problems).toEqual([
+    expect(
+      messages(
+        exam({
+          title: '  ',
+          academicYearId: null,
+          classGradeId: null,
+          sectionId: null,
+          subjects: [],
+        }),
+      ),
+    ).toEqual([
       'Examination title is required',
       'Academic session is required',
       'Class is required',
@@ -153,18 +161,17 @@ describe('submissionProblems', () => {
   it('asks for a term only when the caller must have one', () => {
     // A teacher draft in a session with no terms stays valid; publishing never is.
     expect(submissionProblems(exam({ termId: null }))).toEqual([]);
-    expect(
-      submissionProblems(exam({ termId: null }), { requireTerm: true }),
-    ).toEqual([TERM_REQUIRED_MESSAGE]);
+    expect(messages(exam({ termId: null }), { requireTerm: true })).toEqual([
+      TERM_REQUIRED_MESSAGE,
+    ]);
     expect(submissionProblems(exam(), { requireTerm: true })).toEqual([]);
   });
 
-  it('requires the paper, date and valid marks per subject', () => {
+  it('requires the date and valid marks per subject, never the exam paper', () => {
     const problems = submissionProblems(
       exam({
         subjects: [
           subject({
-            hasPaper: false,
             heldAt: null,
             maxScore: 0,
             passingMarks: 5,
@@ -173,12 +180,147 @@ describe('submissionProblems', () => {
         ],
       }),
     );
-    expect(problems).toEqual([
+    expect(problems.map((p) => p.message)).toEqual([
       'Mathematics: exam date is required',
       'Mathematics: total marks must be greater than 0',
       'Mathematics: passing marks cannot exceed total marks',
       'Mathematics: end time must be after start time',
-      'Mathematics: upload the exam paper (PDF)',
     ]);
+    expect(problems.every((p) => p.subjectId === 'e1')).toBe(true);
+  });
+
+  it('never requires total marks — they are set at marks entry', () => {
+    const noMarks = exam({
+      subjects: [subject({ maxScore: null, passingMarks: null })],
+    });
+    expect(submissionProblems(noMarks)).toEqual([]);
+    expect(submissionProblems(noMarks, { forPublish: true })).toEqual([]);
+  });
+
+  it('needs times, venue and invigilator only to publish', () => {
+    const bare = exam({
+      subjects: [
+        subject({
+          startMin: null,
+          endMin: null,
+          venue: '  ',
+          invigilatorTeacherId: null,
+        }),
+      ],
+    });
+    expect(submissionProblems(bare)).toEqual([]);
+    expect(messages(bare, { forPublish: true })).toEqual([
+      'Mathematics: start time is required',
+      'Mathematics: end time is required',
+      'Mathematics: venue is required',
+      'Mathematics: invigilator is required',
+    ]);
+  });
+});
+
+describe('scheduleConflicts', () => {
+  const paper = (over: Partial<ScheduledPaper> = {}): ScheduledPaper => ({
+    id: 'e1',
+    label: 'Mathematics',
+    heldAt: new Date('2027-06-14'),
+    startMin: 540,
+    endMin: 660,
+    venue: 'Room 12',
+    invigilatorTeacherId: 'teacherA',
+    invigilatorName: 'Teacher A',
+    examinationTitle: 'First Term Examination',
+    sectionKey: 'sectionA:y1',
+    ...over,
+  });
+  const otherSection = (over: Partial<ScheduledPaper> = {}) =>
+    paper({
+      id: 'b1',
+      label: 'English',
+      venue: 'Room 30',
+      invigilatorTeacherId: 'teacherB',
+      invigilatorName: 'Teacher B',
+      examinationTitle: 'Grade 7 Term Exam',
+      sectionKey: 'sectionB:y1',
+      startMin: 600,
+      endMin: 720,
+      ...over,
+    });
+
+  it('blocks an invigilator booked elsewhere at an overlapping time', () => {
+    const issues = scheduleConflicts(
+      [paper()],
+      [
+        otherSection({
+          invigilatorTeacherId: 'teacherA',
+          invigilatorName: 'Teacher A',
+        }),
+      ],
+    );
+    expect(issues).toEqual([
+      {
+        subjectId: 'e1',
+        message:
+          'Mathematics: Teacher A is already assigned as an invigilator during this time (English, Grade 7 Term Exam)',
+      },
+    ]);
+  });
+
+  it('blocks a venue already occupied, ignoring case and spaces', () => {
+    const issues = scheduleConflicts(
+      [paper()],
+      [otherSection({ venue: ' room 12 ' })],
+    );
+    expect(issues.map((i) => i.message)).toEqual([
+      'Mathematics: Room 12 is already occupied during this time (English, Grade 7 Term Exam)',
+    ]);
+  });
+
+  it('lets touching times, different days, invigilators and venues through', () => {
+    const shared = { invigilatorTeacherId: 'teacherA', venue: 'Room 12' };
+    expect(
+      scheduleConflicts(
+        [paper()],
+        [
+          otherSection({ ...shared, startMin: 660, endMin: 780 }),
+          otherSection({ ...shared, heldAt: new Date('2027-06-15') }),
+          otherSection(),
+        ],
+      ),
+    ).toEqual([]);
+  });
+
+  it('blocks two overlapping papers for the same students', () => {
+    const own = [
+      paper(),
+      paper({
+        id: 'e2',
+        label: 'Biology',
+        startMin: 600,
+        endMin: 720,
+        venue: 'Lab',
+        invigilatorTeacherId: 'teacherC',
+      }),
+    ];
+    expect(scheduleConflicts(own, []).map((i) => i.subjectId)).toEqual([
+      'e1',
+      'e2',
+    ]);
+    expect(
+      scheduleConflicts(
+        [paper()],
+        [otherSection({ sectionKey: 'sectionA:y1' })],
+      ).map((i) => i.message),
+    ).toEqual([
+      'Mathematics: this section already has English, Grade 7 Term Exam at this time',
+    ]);
+  });
+
+  it('ignores papers without a date or times', () => {
+    expect(
+      scheduleConflicts(
+        [paper({ startMin: null })],
+        [otherSection({ invigilatorTeacherId: 'teacherA' })],
+      ),
+    ).toEqual([]);
   });
 });

@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -15,6 +15,10 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+
+// A cleared date input arrives as "", which @IsOptional doesn't skip; store it as no date.
+const blankToNull = ({ value }: { value: unknown }) =>
+  value === '' ? null : value;
 
 export class ListTermsQueryDto {
   @IsOptional()
@@ -37,10 +41,12 @@ export class CreateTermDto {
   @Max(100)
   sortOrder?: number;
 
+  @Transform(blankToNull)
   @IsOptional()
   @IsDateString()
   startDate?: string | null;
 
+  @Transform(blankToNull)
   @IsOptional()
   @IsDateString()
   endDate?: string | null;
@@ -59,10 +65,12 @@ export class UpdateTermDto {
   @Max(100)
   sortOrder?: number;
 
+  @Transform(blankToNull)
   @IsOptional()
   @IsDateString()
   startDate?: string | null;
 
+  @Transform(blankToNull)
   @IsOptional()
   @IsDateString()
   endDate?: string | null;

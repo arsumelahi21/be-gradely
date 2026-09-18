@@ -39,6 +39,8 @@ describe('Examination history across promotion (e2e)', () => {
     score: number;
     studentId: string;
     termId: string;
+    heldAt: string;
+    invigilatorTeacherId: string;
   }) {
     const created = await api()
       .post('/api/exams')
@@ -52,7 +54,11 @@ describe('Examination history across promotion (e2e)', () => {
         subjects: [
           {
             sectionSubjectId: opts.sectionSubjectId,
-            heldAt: '2026-06-01',
+            heldAt: opts.heldAt,
+            startMin: 540,
+            endMin: 660,
+            venue: 'Hall 1',
+            invigilatorTeacherId: opts.invigilatorTeacherId,
             maxScore: 100,
             passingMarks: 40,
           },
@@ -122,6 +128,8 @@ describe('Examination history across promotion (e2e)', () => {
       score: 72,
       studentId: student.profile.id,
       termId: oldTerm.id,
+      heldAt: '2026-06-01',
+      invigilatorTeacherId: cls.teacherProfile.id,
     });
     const before = await prisma.examinationResult.findFirstOrThrow({
       where: { examinationId: oldExamId },
@@ -196,6 +204,8 @@ describe('Examination history across promotion (e2e)', () => {
       score: 91,
       studentId: student.profile.id,
       termId: nextTerm.id,
+      heldAt: '2027-06-01',
+      invigilatorTeacherId: cls.teacherProfile.id,
     });
 
     const oldExam = await prisma.examination.findUniqueOrThrow({

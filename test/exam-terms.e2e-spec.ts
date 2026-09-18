@@ -164,7 +164,123 @@ describe('Examination terms (e2e)', () => {
     });
   });
 
+  describe('term dates', () => {
+    const createTerm = (w: World, body: Record<string, unknown>) =>
+      api()
+        .post('/api/exam-settings/terms')
+        .set(bearer(w.admin))
+        .send({ academicYearId: w.cls.academicYear.id, ...body });
+    const day = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
+
+    it('accepts a term with no dates, either date or both, sent as null or blank', async () => {
+      const w = await world();
+      const cases: [string, object, string | null, string | null][] = [
+        ['Omitted', {}, null, null],
+        ['Null', { startDate: null, endDate: null }, null, null],
+        ['Blank', { startDate: '', endDate: '' }, null, null],
+        ['Start only', { startDate: '2026-08-01' }, '2026-08-01', null],
+        ['End only', { endDate: '2026-12-20' }, null, '2026-12-20'],
+        [
+          'Both',
+          { startDate: '2026-08-01', endDate: '2026-12-20' },
+          '2026-08-01',
+          '2026-12-20',
+        ],
+      ];
+      for (const [name, dates, start, end] of cases) {
+        const res = await createTerm(w, { name, ...dates }).expect(201);
+        expect([day(res.body.startDate), day(res.body.endDate)]).toEqual([
+          start,
+          end,
+        ]);
+      }
+    });
+
+    it('refuses a start date after the end date, including against a stored date', async () => {
+      const w = await world();
+      const bad = await createTerm(w, {
+        name: 'First Term',
+        startDate: '2026-12-20',
+        endDate: '2026-08-01',
+      }).expect(400);
+      expect(bad.body.message).toBe(
+        'Term end date must be on or after its start date',
+      );
+
+      const term = await createTerm(w, {
+        name: 'First Term',
+        startDate: '2026-08-01',
+      }).expect(201);
+      await api()
+        .patch(`/api/exam-settings/terms/${term.body.id}`)
+        .set(bearer(w.admin))
+        .send({ endDate: '2026-07-01' })
+        .expect(400);
+    });
+
+    it('clears the dates of an existing term, and they stay optional afterwards', async () => {
+      const w = await world();
+      const term = await createTerm(w, {
+        name: 'First Term',
+        startDate: '2026-08-01',
+        endDate: '2026-12-20',
+      }).expect(201);
+      const path = `/api/exam-settings/terms/${term.body.id}`;
+
+      const oneCleared = await api()
+        .patch(path)
+        .set(bearer(w.admin))
+        .send({ endDate: '' })
+        .expect(200);
+      expect([
+        day(oneCleared.body.startDate),
+        day(oneCleared.body.endDate),
+      ]).toEqual(['2026-08-01', null]);
+
+      await api()
+        .patch(path)
+        .set(bearer(w.admin))
+        .send({ startDate: null, endDate: null })
+        .expect(200);
+      await api()
+        .patch(path)
+        .set(bearer(w.admin))
+        .send({ name: 'Term 1' })
+        .expect(200);
+      expect(
+        await prisma.academicTerm.findUniqueOrThrow({
+          where: { id: term.body.id },
+        }),
+      ).toMatchObject({ name: 'Term 1', startDate: null, endDate: null });
+    });
+  });
+
   describe('publishing', () => {
+    it('publishes with a term that has no dates and a subject with no paper', async () => {
+      const w = await world();
+      const term = await addTerm(w, 'First Term', 1);
+      const { examination } = await seedExamination({
+        schoolId: w.cls.school.id,
+        academicYearId: w.cls.academicYear.id,
+        sectionId: w.cls.section.id,
+        sectionSubjectIds: [w.cls.sectionSubject.id],
+        status: 'DRAFT',
+        termId: term.id,
+        invigilatorTeacherId: w.cls.teacherProfile.id,
+      });
+
+      await api()
+        .post(`/api/exams/${examination.id}/publish`)
+        .set(bearer(w.admin))
+        .expect(201);
+      expect(await current(examination.id)).toBe('PUBLISHED');
+      expect(
+        await prisma.examPaper.count({
+          where: { exam: { examinationId: examination.id } },
+        }),
+      ).toBe(0);
+    });
+
     it('refuses to publish without a term, and publishes once one is chosen', async () => {
       const w = await world();
       const term = await addTerm(w, 'First Term', 1);
@@ -175,8 +291,9 @@ describe('Examination terms (e2e)', () => {
         sectionSubjectIds: [w.cls.sectionSubject.id],
         status: 'DRAFT',
         termId: null,
+        invigilatorTeacherId: w.cls.teacherProfile.id,
       });
-      // Papers are the other publish gate; satisfy it so the term is what is being tested.
+      // A paper is present so this also covers publishing with one.
       await prisma.examPaper.create({
         data: {
           examId: subjects[0].id,

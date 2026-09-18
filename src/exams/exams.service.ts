@@ -20,6 +20,8 @@ import { resolvePagination } from '../common/dto/pagination-query.dto';
 import { AuditLogService } from '../audit/audit.service';
 import {
   NOTIFICATION_CREATE,
+  NOTIFICATION_CREATE_BATCH,
+  NotificationCreateBatchEvent,
   NotificationCreateEvent,
 } from '../common/events/notification.events';
 import {
@@ -41,9 +43,12 @@ import {
   canEnterMarks,
   canFinalize,
   canReopen,
+  ExamIssue,
   nextStatus,
   paperIsEditable,
   ReviewAction,
+  scheduleConflicts,
+  ScheduledPaper,
   submissionProblems,
   teacherCanEdit,
   TERM_REQUIRED_MESSAGE,
@@ -66,6 +71,7 @@ import {
 import {
   CreateExamSubjectDto,
   ExamSubjectFieldsDto,
+  ReplaceExamSubjectsDto,
   UpdateExamSubjectDto,
 } from './dto/exam-subject.dto';
 
@@ -166,6 +172,7 @@ export class ExamsService extends BaseSchoolScopedService {
       dto.sectionId,
       scope,
     );
+    await this.assertInvigilators(schoolId, dto.subjects ?? [], actor);
 
     const created = await this.prisma.$transaction(async (tx) => {
       const exam = await tx.examination.create({
@@ -251,6 +258,13 @@ export class ExamsService extends BaseSchoolScopedService {
       });
     }
     if (query.view === 'approvals') and.push({ submittedAt: { not: null } });
+    if (query.view === 'datesheets')
+      and.push({
+        OR: [
+          { status: 'PUBLISHED' },
+          { status: 'DRAFT', createdByTeacherId: null },
+        ],
+      });
 
     const where: Prisma.ExaminationWhereInput = { AND: and };
     const orderBy: Prisma.ExaminationOrderByWithRelationInput[] =
@@ -475,6 +489,7 @@ export class ExamsService extends BaseSchoolScopedService {
       core.sectionId,
       scope,
     );
+    await this.assertInvigilators(core.schoolId, [dto], actor);
     const duplicate = await this.prisma.exam.findFirst({
       where: { examinationId: id, sectionSubjectId: dto.sectionSubjectId },
       select: { id: true },
@@ -556,6 +571,7 @@ export class ExamsService extends BaseSchoolScopedService {
       endMin: dto.endMin !== undefined ? dto.endMin : subject.endMin,
     };
     assertSubjectNumbers(merged);
+    await this.assertInvigilators(core.schoolId, [dto], actor);
     const data = this.subjectFieldData(dto);
     const fields = Object.keys(data);
     if (!fields.length) return this.getStaff(id, actor, teacherId);
@@ -625,6 +641,98 @@ export class ExamsService extends BaseSchoolScopedService {
     return this.getStaff(id, actor, teacherId);
   }
 
+  /** Saves a whole date sheet in one transaction, so a failed save never leaves half the rows written. */
+  async replaceSubjects(id: string, dto: ReplaceExamSubjectsDto, actor: Actor) {
+    const core = await this.access.loadCore(id);
+    const { teacherId, asAdmin } = await this.assertCanEditDetails(actor, core);
+    const subjects = await this.resolveNewSubjects(
+      dto.subjects,
+      core.sectionId,
+      null,
+    );
+    await this.assertInvigilators(core.schoolId, dto.subjects, actor);
+    const existing = await this.prisma.exam.findMany({
+      where: { examinationId: id },
+      select: {
+        id: true,
+        sectionSubjectId: true,
+        sectionSubject: { select: { subject: { select: { name: true } } } },
+        _count: { select: { results: true } },
+      },
+    });
+    const kept = new Set(dto.subjects.map((s) => s.sectionSubjectId));
+    const removed = existing.filter((e) => !kept.has(e.sectionSubjectId));
+    const marked = removed.find((e) => e._count.results > 0);
+    if (marked)
+      throw new ConflictException(
+        `${marked.sectionSubject.subject.name} already has marks and cannot be removed`,
+      );
+    const examIdBySubject = new Map(
+      existing.map((e) => [e.sectionSubjectId, e.id]),
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.guardStatus(tx, id, core.status);
+      if (removed.length)
+        await tx.exam.deleteMany({
+          where: { id: { in: removed.map((e) => e.id) } },
+        });
+      for (const { input, label } of subjects) {
+        const examId = examIdBySubject.get(input.sectionSubjectId);
+        if (examId)
+          await tx.exam.update({
+            where: { id: examId },
+            data: this.subjectFieldData(input),
+          });
+        else
+          await tx.exam.create({
+            data: this.newSubjectData(
+              id,
+              core.schoolId,
+              core.academicYearId,
+              teacherId,
+              input,
+              label,
+            ),
+          });
+      }
+      await this.event(
+        tx,
+        id,
+        actor,
+        asAdmin && core.createdByUserId !== actor.userId
+          ? 'ADMIN_EDITED'
+          : 'UPDATED',
+        {
+          details: {
+            fields: ['schedule'],
+            subjects: subjects.length,
+            removed: removed.length,
+          },
+        },
+      );
+    });
+    void this.audit.record(actor.userId, 'EXAM_SCHEDULE_UPDATE', {
+      schoolId: core.schoolId,
+      entityType: 'Examination',
+      entityId: id,
+      metadata: { subjects: subjects.length, removed: removed.length },
+    });
+    return this.getStaff(id, actor, teacherId);
+  }
+
+  /** The publish checks without publishing, so the date sheet can show each problem beside its row. */
+  async scheduleCheck(id: string, actor: Actor) {
+    const core = await this.access.loadCore(id);
+    this.access.assertSameSchool(actor, core.schoolId);
+    return {
+      issues: await this.readinessIssues(id, {
+        requireTerm: true,
+        forPublish: true,
+      }),
+    };
+  }
+
   async submit(id: string, actor: Actor) {
     const core = await this.access.loadCore(id);
     this.access.assertSameSchool(actor, core.schoolId);
@@ -686,7 +794,7 @@ export class ExamsService extends BaseSchoolScopedService {
       );
     // The principal owns the term decision, so it is demanded, never inferred.
     await this.assertTermChosen(core.academicYearId, core.termId);
-    await this.assertComplete(id, { requireTerm: true });
+    await this.assertComplete(id, { requireTerm: true, forPublish: true });
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
@@ -951,54 +1059,121 @@ export class ExamsService extends BaseSchoolScopedService {
     });
   }
 
-  private async assertComplete(id: string, opts: { requireTerm: boolean }) {
+  private async assertComplete(
+    id: string,
+    opts: { requireTerm: boolean; forPublish?: boolean },
+  ) {
+    const issues = await this.readinessIssues(id, opts);
+    if (issues.length) {
+      throw new BadRequestException({
+        statusCode: 400,
+        message: `${opts.forPublish ? "This examination can't be published yet" : 'Complete the examination first'}: ${issues[0].message}`,
+        problems: issues.map((i) => i.message),
+        issues,
+      });
+    }
+  }
+
+  private async readinessIssues(
+    id: string,
+    opts: { requireTerm: boolean; forPublish?: boolean },
+  ): Promise<ExamIssue[]> {
     const exam = await this.prisma.examination.findUniqueOrThrow({
       where: { id },
       select: {
         title: true,
+        schoolId: true,
         academicYearId: true,
         classGradeId: true,
         sectionId: true,
         termId: true,
         subjects: {
           select: {
+            id: true,
             heldAt: true,
             startMin: true,
             endMin: true,
+            venue: true,
+            invigilatorTeacherId: true,
             maxScore: true,
             passingMarks: true,
             sectionSubject: { select: { subject: { select: { name: true } } } },
-            paper: { select: { uploadedAt: true } },
           },
         },
       },
     });
-    const problems = submissionProblems(
-      {
-        title: exam.title,
-        academicYearId: exam.academicYearId,
-        classGradeId: exam.classGradeId,
-        sectionId: exam.sectionId,
-        termId: exam.termId,
-        subjects: exam.subjects.map((s) => ({
-          label: s.sectionSubject.subject.name,
-          heldAt: s.heldAt,
-          startMin: s.startMin,
-          endMin: s.endMin,
-          maxScore: s.maxScore,
-          passingMarks: s.passingMarks,
-          hasPaper: !!s.paper,
+    const papers = exam.subjects.map((s) => ({
+      id: s.id,
+      label: s.sectionSubject.subject.name,
+      heldAt: s.heldAt,
+      startMin: s.startMin,
+      endMin: s.endMin,
+      venue: s.venue,
+      invigilatorTeacherId: s.invigilatorTeacherId,
+      maxScore: s.maxScore,
+      passingMarks: s.passingMarks,
+    }));
+    const issues = submissionProblems({ ...exam, subjects: papers }, opts);
+    if (!opts.forPublish) return issues;
+
+    const sectionKey = `${exam.sectionId}:${exam.academicYearId}`;
+    const own: ScheduledPaper[] = papers.map((p) => ({
+      ...p,
+      invigilatorName: null,
+      examinationTitle: exam.title,
+      sectionKey,
+    }));
+    const days = [
+      ...new Set(own.map((p) => p.heldAt?.toISOString().slice(0, 10))),
+    ].filter((d): d is string => !!d);
+    if (!days.length) return [...issues, ...scheduleConflicts(own, [])];
+
+    // ponytail: read before the publish transaction, so two sheets published in the same instant
+    // can both pass; a per-school advisory lock around check + publish would close that gap.
+    const booked = await this.prisma.exam.findMany({
+      where: {
+        schoolId: exam.schoolId,
+        examinationId: { not: id },
+        examination: { status: 'PUBLISHED' },
+        OR: days.map((d) => ({
+          heldAt: {
+            gte: new Date(`${d}T00:00:00.000Z`),
+            lt: new Date(new Date(`${d}T00:00:00.000Z`).getTime() + 86_400_000),
+          },
         })),
       },
-      opts,
-    );
-    if (problems.length) {
-      throw new BadRequestException({
-        statusCode: 400,
-        message: `Complete the examination first: ${problems[0]}`,
-        problems,
-      });
-    }
+      select: {
+        id: true,
+        heldAt: true,
+        startMin: true,
+        endMin: true,
+        venue: true,
+        invigilatorTeacherId: true,
+        invigilator: { select: { fullName: true } },
+        sectionSubject: { select: { subject: { select: { name: true } } } },
+        examination: {
+          select: { title: true, sectionId: true, academicYearId: true },
+        },
+      },
+    });
+    return [
+      ...issues,
+      ...scheduleConflicts(
+        own,
+        booked.map((b) => ({
+          id: b.id,
+          label: b.sectionSubject.subject.name,
+          heldAt: b.heldAt,
+          startMin: b.startMin,
+          endMin: b.endMin,
+          venue: b.venue,
+          invigilatorTeacherId: b.invigilatorTeacherId,
+          invigilatorName: b.invigilator?.fullName ?? null,
+          examinationTitle: b.examination.title,
+          sectionKey: `${b.examination.sectionId}:${b.examination.academicYearId}`,
+        })),
+      ),
+    ];
   }
 
   private transitionMessage(
@@ -1154,6 +1329,39 @@ export class ExamsService extends BaseSchoolScopedService {
     });
   }
 
+  private async assertInvigilators(
+    schoolId: string,
+    inputs: ExamSubjectFieldsDto[],
+    actor: Actor,
+  ) {
+    const given = inputs.filter((s) => s.invigilatorTeacherId !== undefined);
+    if (!given.length) return;
+    if (actor.role !== Role.SCHOOL_ADMIN) {
+      throw new ForbiddenException('Only the principal assigns invigilators');
+    }
+    const ids = [
+      ...new Set(
+        given
+          .map((s) => s.invigilatorTeacherId)
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    if (!ids.length) return;
+    const active = await this.prisma.teacherProfile.count({
+      where: {
+        id: { in: ids },
+        schoolId,
+        isActive: true,
+        user: { isActive: true },
+      },
+    });
+    if (active !== ids.length) {
+      throw new BadRequestException(
+        'Choose an active teacher from your school as the invigilator',
+      );
+    }
+  }
+
   private newSubjectData(
     examinationId: string,
     schoolId: string,
@@ -1180,6 +1388,8 @@ export class ExamsService extends BaseSchoolScopedService {
     if (input.startMin !== undefined) data.startMin = input.startMin;
     if (input.endMin !== undefined) data.endMin = input.endMin;
     if (input.venue !== undefined) data.venue = cleanText(input.venue);
+    if (input.invigilatorTeacherId !== undefined)
+      data.invigilatorTeacherId = input.invigilatorTeacherId;
     if (input.maxScore !== undefined) data.maxScore = input.maxScore;
     if (input.passingMarks !== undefined)
       data.passingMarks = input.passingMarks;
@@ -1320,6 +1530,7 @@ export class ExamsService extends BaseSchoolScopedService {
         sectionId: true,
         academicYearId: true,
         createdByUserId: true,
+        term: { select: { name: true } },
         subjects: {
           orderBy: [{ heldAt: 'asc' }, { createdAt: 'asc' }],
           select: {
@@ -1327,11 +1538,13 @@ export class ExamsService extends BaseSchoolScopedService {
             startMin: true,
             endMin: true,
             venue: true,
+            invigilator: { select: { userId: true } },
             sectionSubject: { select: { subject: { select: { name: true } } } },
           },
         },
       },
     });
+    const term = exam.term?.name;
 
     const schedule = exam.subjects.slice(0, 3).map((s) => {
       const time =
@@ -1359,13 +1572,29 @@ export class ExamsService extends BaseSchoolScopedService {
       this.eventEmitter.emit(NOTIFICATION_CREATE, {
         userIds,
         type: 'EXAM_PUBLISHED',
-        title: `New examination: ${exam.title}`,
-        body: `${exam.className} ${exam.sectionName} — ${schedule.join('; ')}${more}`,
+        title: `Date sheet published: ${exam.title}`,
+        body: `${exam.className} ${exam.sectionName}${term ? ` · ${term}` : ''} — ${schedule.join('; ')}${more}`,
         link: `/exams/${exam.id}`,
         entityType: 'Examination',
         entityId: exam.id,
         notifyPreferenceKey: 'notifyGrades',
       } as NotificationCreateEvent);
+    }
+
+    const duties = exam.subjects.filter((s) => s.invigilator?.userId);
+    if (duties.length) {
+      this.eventEmitter.emit(NOTIFICATION_CREATE_BATCH, {
+        type: 'EXAM_INVIGILATION',
+        notifyPreferenceKey: 'notifyGrades',
+        items: duties.map((s) => ({
+          userIds: [s.invigilator!.userId!],
+          title: `Invigilation duty: ${s.sectionSubject.subject.name}`,
+          body: `You have been assigned as an invigilator for ${s.sectionSubject.subject.name}, ${exam.className} Section ${exam.sectionName}${term ? ` (${term})` : ''}, on ${formatDate(s.heldAt)} from ${formatMinutes(s.startMin)} to ${formatMinutes(s.endMin)} at ${s.venue}.`,
+          link: `/examinations/${exam.id}`,
+          entityType: 'Examination',
+          entityId: exam.id,
+        })),
+      } as NotificationCreateBatchEvent);
     }
 
     if (exam.createdByUserId && exam.createdByUserId !== actor.userId) {
