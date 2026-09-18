@@ -35,6 +35,7 @@ import {
 } from './dto/examination.dto';
 import {
   CreateExamSubjectDto,
+  ReplaceExamSubjectsDto,
   UpdateExamSubjectDto,
 } from './dto/exam-subject.dto';
 
@@ -147,6 +148,22 @@ export class ExamsController {
     @Req() req: any,
   ) {
     return this.exams.addSubject(id, dto, req.user);
+  }
+
+  @Roles(Role.SCHOOL_ADMIN)
+  @Put(':id/subjects')
+  replaceSubjects(
+    @Param('id', uuid) id: string,
+    @Body() dto: ReplaceExamSubjectsDto,
+    @Req() req: any,
+  ) {
+    return this.exams.replaceSubjects(id, dto, req.user);
+  }
+
+  @Roles(Role.SCHOOL_ADMIN)
+  @Get(':id/schedule-check')
+  scheduleCheck(@Param('id', uuid) id: string, @Req() req: any) {
+    return this.exams.scheduleCheck(id, req.user);
   }
 
   @Roles(Role.SCHOOL_ADMIN, Role.TEACHER)

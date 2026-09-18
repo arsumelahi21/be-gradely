@@ -3,7 +3,21 @@ import { Prisma } from '@prisma/client';
 // Response shapes per audience. Staff and students get separate selects AND separate
 // mappers, so paper metadata can't reach a student even if a select grows.
 
+export const schoolHeaderSelect = {
+  id: true,
+  name: true,
+  addressLine1: true,
+  addressLine2: true,
+  city: true,
+  state: true,
+  country: true,
+  phone: true,
+  email: true,
+  logoMimeType: true,
+} satisfies Prisma.SchoolSelect;
+
 export const staffExaminationInclude = {
+  school: { select: schoolHeaderSelect },
   academicYear: {
     select: { id: true, name: true, startDate: true, endDate: true },
   },
@@ -26,6 +40,7 @@ export const staffExaminationInclude = {
       maxScore: true,
       passingMarks: true,
       createdByTeacherId: true,
+      invigilator: { select: { id: true, fullName: true } },
       sectionSubject: {
         select: {
           id: true,
@@ -60,6 +75,7 @@ export function toStaffExamination(row: StaffExaminationRow) {
     sectionId: row.sectionId,
     termId: row.termId,
     gradingSchemeId: row.gradingSchemeId,
+    school: row.school,
     academicYear: row.academicYear,
     term: row.term,
     gradingScheme: row.gradingScheme,
@@ -90,6 +106,7 @@ export function toStaffExamination(row: StaffExaminationRow) {
       startMin: s.startMin,
       endMin: s.endMin,
       venue: s.venue,
+      invigilator: s.invigilator,
       maxScore: s.maxScore,
       passingMarks: s.passingMarks,
       description: s.description,

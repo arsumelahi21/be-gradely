@@ -1,4 +1,7 @@
+import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsDateString,
   IsInt,
   IsOptional,
@@ -7,6 +10,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 // null clears a field; @IsOptional lets null through without running the validators.
@@ -33,6 +37,10 @@ export class ExamSubjectFieldsDto {
   venue?: string | null;
 
   @IsOptional()
+  @IsUUID()
+  invigilatorTeacherId?: string | null;
+
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(1000)
@@ -56,3 +64,11 @@ export class CreateExamSubjectDto extends ExamSubjectFieldsDto {
 }
 
 export class UpdateExamSubjectDto extends ExamSubjectFieldsDto {}
+
+export class ReplaceExamSubjectsDto {
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => CreateExamSubjectDto)
+  subjects!: CreateExamSubjectDto[];
+}

@@ -177,7 +177,8 @@ model TeacherProfile {
   socialLinks                   SocialLink[]
   assignmentsCreated            Assignment[]
   assignmentAttachmentsUploaded AssignmentAttachment[]
-  examsCreated                  Exam[]
+  examsCreated                  Exam[]                    @relation("ExamCreatedBy")
+  examsInvigilated              Exam[]                    @relation("ExamInvigilator")
   examinationsCreated           Examination[]
   timetableEntries              TimetableEntry[]
 
@@ -674,28 +675,30 @@ model Examination {
 // One subject paper inside an Examination. Predates Examination, so ExamResult ids and the
 // dashboard SQL stay valid. Restrict/SetNull keep results when allocations or teachers go.
 model Exam {
-  id                 String    @id @default(uuid())
-  schoolId           String
-  academicYearId     String
-  examinationId      String
-  sectionSubjectId   String
-  createdByTeacherId String?
-  title              String
-  description        String?
-  heldAt             DateTime?
-  startMin           Int? // wall-clock minutes from midnight, like TimetablePeriod
-  endMin             Int?
-  venue              String?
-  maxScore           Int? // total marks
-  passingMarks       Int?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  id                   String    @id @default(uuid())
+  schoolId             String
+  academicYearId       String
+  examinationId        String
+  sectionSubjectId     String
+  createdByTeacherId   String?
+  invigilatorTeacherId String?
+  title                String
+  description          String?
+  heldAt               DateTime?
+  startMin             Int? // wall-clock minutes from midnight, like TimetablePeriod
+  endMin               Int?
+  venue                String?
+  maxScore             Int? // total marks
+  passingMarks         Int?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   school           School          @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   academicYear     AcademicYear    @relation(fields: [academicYearId], references: [id], onDelete: Restrict)
   examination      Examination     @relation(fields: [examinationId], references: [id], onDelete: Cascade)
   sectionSubject   SectionSubject  @relation(fields: [sectionSubjectId], references: [id], onDelete: Restrict)
-  createdByTeacher TeacherProfile? @relation(fields: [createdByTeacherId], references: [id], onDelete: SetNull)
+  createdByTeacher TeacherProfile? @relation("ExamCreatedBy", fields: [createdByTeacherId], references: [id], onDelete: SetNull)
+  invigilator      TeacherProfile? @relation("ExamInvigilator", fields: [invigilatorTeacherId], references: [id], onDelete: SetNull)
   paper            ExamPaper?
   results          ExamResult[]
 
@@ -705,6 +708,7 @@ model Exam {
   @@index([sectionSubjectId])
   @@index([createdByTeacherId])
   @@index([heldAt])
+  @@index([invigilatorTeacherId, heldAt])
 }
 
 // Confidential paper bytes, isolated like SchoolLogo. Only the authorized paper endpoint

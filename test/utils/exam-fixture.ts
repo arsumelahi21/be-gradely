@@ -20,6 +20,7 @@ export async function seedExamination(opts: {
   passingMarks?: number | null;
   heldAt?: Date | null;
   termId?: string | null;
+  invigilatorTeacherId?: string | null;
 }) {
   const section = await prisma.section.findUniqueOrThrow({
     where: { id: opts.sectionId },
@@ -64,6 +65,7 @@ export async function seedExamination(opts: {
           startMin: 540,
           endMin: 660,
           venue: 'Hall 1',
+          invigilatorTeacherId: opts.invigilatorTeacherId ?? null,
         },
       }),
     );
