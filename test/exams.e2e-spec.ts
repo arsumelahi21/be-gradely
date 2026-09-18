@@ -291,18 +291,132 @@ describe('Examinations (e2e)', () => {
     ]);
   });
 
+  it('accepts exam dates in past and future years, on create and on edit', async () => {
+    const w = await world();
+    // The date picker once stopped at the current calendar year; the API must not.
+    const nextSession = await prisma.academicYear.create({
+      data: {
+        schoolId: w.cls.school.id,
+        name: '2027-2028',
+        code: `AY-2027-${Date.now()}`,
+        startDate: new Date('2027-04-01'),
+        endDate: new Date('2028-03-31'),
+      },
+    });
+    const created = await api()
+      .post('/api/exams')
+      .set(bearer(w.tokens.teacher))
+      .send({
+        title: 'Spring Test',
+        academicYearId: nextSession.id,
+        classGradeId: w.cls.classGrade.id,
+        sectionId: w.cls.section.id,
+        subjects: [
+          subjectInput(w.cls.sectionSubject.id, { heldAt: '2027-04-15' }),
+        ],
+      })
+      .expect(201);
+    const id: string = created.body.id;
+    const subjectId: string = created.body.subjects[0].id;
+    expect(created.body.subjects[0].heldAt).toMatch(/^2027-04-15/);
+
+    for (const heldAt of [
+      '2024-05-06',
+      '2025-05-06',
+      '2026-05-06',
+      '2027-05-06',
+      '2028-05-06',
+    ]) {
+      await api()
+        .patch(`/api/exams/${id}/subjects/${subjectId}`)
+        .set(bearer(w.tokens.teacher))
+        .send({ heldAt })
+        .expect(200);
+      const reloaded = await api()
+        .get(`/api/exams/${id}`)
+        .set(bearer(w.tokens.teacher))
+        .expect(200);
+      expect(reloaded.body.subjects[0].heldAt).toMatch(
+        new RegExp(`^${heldAt}`),
+      );
+    }
+  });
+
+  it('a proposal without an exam paper can be reviewed, rejected and published', async () => {
+    const w = await world();
+    const draft = await teacherDraft(w);
+    expect(draft.body.subjects[0].hasPaper).toBe(false);
+
+    const submitted = await api()
+      .post(`/api/exams/${draft.id}/submit`)
+      .set(bearer(w.tokens.teacher))
+      .expect(201);
+    expect(submitted.body.status).toBe('PENDING_REVIEW');
+    await api()
+      .post(`/api/exams/${draft.id}/request-changes`)
+      .set(bearer(w.tokens.admin))
+      .send({ reason: 'Please confirm the venue.' })
+      .expect(201);
+    await api()
+      .post(`/api/exams/${draft.id}/submit`)
+      .set(bearer(w.tokens.teacher))
+      .expect(201);
+
+    // No paper means nothing to open — never a placeholder document.
+    const review = await api()
+      .get(`/api/exams/${draft.id}`)
+      .set(bearer(w.tokens.admin))
+      .expect(200);
+    expect(review.body.subjects[0].hasPaper).toBe(false);
+    await api()
+      .get(`/api/exams/${draft.id}/subjects/${draft.subjectId}/paper`)
+      .set(bearer(w.tokens.admin))
+      .expect(404);
+
+    const published = await api()
+      .post(`/api/exams/${draft.id}/publish`)
+      .set(bearer(w.tokens.admin))
+      .expect(201);
+    expect(published.body.status).toBe('PUBLISHED');
+    expect(
+      await prisma.examPaper.count({ where: { examId: draft.subjectId } }),
+    ).toBe(0);
+
+    const second = await teacherDraft(w, 'Unit Test');
+    await api()
+      .post(`/api/exams/${second.id}/submit`)
+      .set(bearer(w.tokens.teacher))
+      .expect(201);
+    await api()
+      .post(`/api/exams/${second.id}/reject`)
+      .set(bearer(w.tokens.admin))
+      .send({ reason: 'This duplicates the mid term.' })
+      .expect(201);
+  });
+
   it('TEST 6-8: review cycles with reasons, principal edits and resubmission', async () => {
     const w = await world();
     const draft = await teacherDraft(w);
     const events = notificationSpy();
 
+    await api()
+      .patch(`/api/exams/${draft.id}/subjects/${draft.subjectId}`)
+      .set(bearer(w.tokens.teacher))
+      .send({ heldAt: null })
+      .expect(200);
     const incomplete = await api()
       .post(`/api/exams/${draft.id}/submit`)
       .set(bearer(w.tokens.teacher))
       .expect(400);
     expect(incomplete.body.problems.join(' ')).toContain(
-      'upload the exam paper',
+      'exam date is required',
     );
+    expect(incomplete.body.problems.join(' ')).not.toContain('paper');
+    await api()
+      .patch(`/api/exams/${draft.id}/subjects/${draft.subjectId}`)
+      .set(bearer(w.tokens.teacher))
+      .send({ heldAt: '2026-10-12' })
+      .expect(200);
 
     await uploadPaper(draft.id, draft.subjectId, w.tokens.teacher).expect(200);
     const submitted = await api()

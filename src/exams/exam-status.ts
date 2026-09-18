@@ -100,7 +100,6 @@ export interface SubjectPaperDraft {
   endMin: number | null;
   maxScore: number | null;
   passingMarks: number | null;
-  hasPaper: boolean;
 }
 
 export interface ExaminationDraft {
@@ -118,7 +117,7 @@ export const TERM_REQUIRED_MESSAGE =
 
 /**
  * Everything that blocks "Send for Review" (and admin publish). Drafts may be saved
- * incomplete; this is the gate for leaving draft.
+ * incomplete; this is the gate for leaving draft. The exam paper is optional.
  */
 export function submissionProblems(
   exam: ExaminationDraft,
@@ -146,7 +145,6 @@ export function submissionProblems(
       problems.push(`${p}: passing marks cannot exceed total marks`);
     if (s.startMin != null && s.endMin != null && s.endMin <= s.startMin)
       problems.push(`${p}: end time must be after start time`);
-    if (!s.hasPaper) problems.push(`${p}: upload the exam paper (PDF)`);
   }
   return problems;
 }
