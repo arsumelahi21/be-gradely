@@ -851,15 +851,26 @@ export class QuizzesService extends BaseSchoolScopedService {
 
     // Notify the student + their parents of the score, and the teacher that the
     // quiz was completed (decoupled via the event bus).
-    const parents = await parentUserIds(this.prisma, [student.id]);
-    this.eventEmitter.emit(NOTIFICATION_CREATE, {
-      userIds: [actor.userId, ...parents].filter((id): id is string => !!id),
+    const graded = {
       type: 'QUIZ_GRADED',
       title: `Quiz completed: ${attempt.quiz.title}`,
       body: `Scored ${score}/${maxScore} on "${attempt.quiz.title}".`,
-      link: `/quizzes/${attempt.quiz.id}`,
       notifyPreferenceKey: 'notifyGrades',
+    } as const;
+    // The quiz page itself starts a new attempt, so the score lives on the attempt page.
+    this.eventEmitter.emit(NOTIFICATION_CREATE, {
+      ...graded,
+      userIds: [actor.userId],
+      link: `/quizzes/attempt/${updated.id}`,
     } as NotificationCreateEvent);
+    // The parent portal has no quiz page; the score is in the body.
+    const parents = await parentUserIds(this.prisma, [student.id]);
+    if (parents.length) {
+      this.eventEmitter.emit(NOTIFICATION_CREATE, {
+        ...graded,
+        userIds: parents,
+      } as NotificationCreateEvent);
+    }
 
     if (attempt.quiz.createdByUserId) {
       this.eventEmitter.emit(NOTIFICATION_CREATE, {
