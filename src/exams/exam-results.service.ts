@@ -30,6 +30,10 @@ import {
 import { ExamSettingsService } from './exam-settings.service';
 import { canEnterMarks, canFinalize, canReopen } from './exam-status';
 import {
+  narrowToTakers,
+  takersBySubject,
+} from '../academics/section-subjects/subject-takers';
+import {
   aggregateBySession,
   assignPositions,
   GradeBandInput,
@@ -63,6 +67,7 @@ const sheetExamSelect = {
       maxScore: true,
       passingMarks: true,
       createdByTeacherId: true,
+      sectionSubjectId: true,
       sectionSubject: {
         select: {
           teacherId: true,
@@ -96,6 +101,7 @@ const cardExamSelect = {
       id: true,
       maxScore: true,
       passingMarks: true,
+      sectionSubjectId: true,
       sectionSubject: {
         select: { subject: { select: { id: true, name: true } } },
       },
@@ -177,7 +183,16 @@ export interface CardData {
     }
   >;
   bandsByScheme: Map<string | null, GradeBandInput[]>;
+  /**
+   * Takers of each paper, keyed `academicYearId:sectionSubjectId` — a
+   * SectionSubject is not session-scoped, so the same one can head papers in two
+   * sessions with different students behind it.
+   */
+  takers: Map<string, ReadonlySet<string>>;
 }
+
+const takerKey = (academicYearId: string, sectionSubjectId: string) =>
+  `${academicYearId}:${sectionSubjectId}`;
 
 type SheetExam = Prisma.ExaminationGetPayload<{
   select: typeof sheetExamSelect;
@@ -233,6 +248,12 @@ export class ExamResultsService {
       this.buildSheet(this.prisma, examinationId),
       this.prisma.examResult.count({ where: { examId: subject.id } }),
     ]);
+    const sitting = await this.sittingThisPaper(
+      this.prisma,
+      core,
+      subject,
+      sheet,
+    );
     return {
       examination: {
         id: core.id,
@@ -251,7 +272,7 @@ export class ExamResultsService {
         totalsLocked: marked > 0,
       },
       editable: mayEdit && canEnterMarks(core.status, core.resultStatus),
-      rows: sheet.students.map((student) => {
+      rows: sitting.map((student) => {
         const m = sheet.marks.get(markKey(subject.id, student.id));
         return {
           student,
@@ -340,6 +361,7 @@ export class ExamResultsService {
             'A student in this list is not on the class roster',
           );
         }
+        await this.assertSitThisPaper(tx, core, subject, ids);
         if (totalsChanged) {
           // Rescaling under entered marks would silently change every grade already given.
           if (await tx.examResult.count({ where: { examId: subject.id } })) {
@@ -490,23 +512,29 @@ export class ExamResultsService {
     }
 
     const sheet = await this.buildSheet(this.prisma, examinationId);
-    const index = sheet.exam.subjects.findIndex((s) => s.id === subjectId);
-    const column = sheet.exam.subjects[index];
-    const rows = sheet.students.map((student) => {
-      const out = sheet.outcomes.get(student.id)!.subjects[index];
+    const column = sheet.exam.subjects.find((s) => s.id === subjectId)!;
+    // By examId, not position: a student who takes fewer papers has a shorter
+    // outcome list, so the index of a column is not the index of their line.
+    const rows = sheet.students.flatMap((student) => {
+      const out = sheet.outcomes
+        .get(student.id)!
+        .subjects.find((s) => s.examId === subjectId);
+      if (!out) return [];
       const mark = sheet.marks.get(markKey(subjectId, student.id));
       const frozen =
         sheet.exam.resultStatus === 'FINALIZED' ? mark?.grade : null;
-      return {
-        student,
-        obtained: out.obtained,
-        isAbsent: mark?.isAbsent ?? false,
-        percentage: out.percentage,
-        grade: frozen ?? out.grade,
-        passed: out.passed,
-        state: out.state,
-        remarks: mark?.remarks ?? null,
-      };
+      return [
+        {
+          student,
+          obtained: out.obtained,
+          isAbsent: mark?.isAbsent ?? false,
+          percentage: out.percentage,
+          grade: frozen ?? out.grade,
+          passed: out.passed,
+          state: out.state,
+          remarks: mark?.remarks ?? null,
+        },
+      ];
     });
     const scores = rows
       .filter((r) => !r.isAbsent && r.obtained != null)
@@ -679,11 +707,25 @@ export class ExamResultsService {
           });
         }
 
-        for (const [i, subject] of sheet.exam.subjects.entries()) {
+        // Keyed by examId: an outcome list is per student, so its Nth line is
+        // not necessarily the examination's Nth subject.
+        const linesOf = new Map(
+          sheet.students.map((st) => [
+            st.id,
+            new Map(
+              sheet.outcomes.get(st.id)!.subjects.map((s) => [s.examId, s]),
+            ),
+          ]),
+        );
+        for (const subject of sheet.exam.subjects) {
           const byGrade = new Map<string | null, string[]>();
           for (const st of sheet.students) {
-            const grade = sheet.outcomes.get(st.id)!.subjects[i].grade;
-            byGrade.set(grade, [...(byGrade.get(grade) ?? []), st.id]);
+            const line = linesOf.get(st.id)!.get(subject.id);
+            if (!line) continue;
+            byGrade.set(line.grade, [
+              ...(byGrade.get(line.grade) ?? []),
+              st.id,
+            ]);
           }
           for (const [grade, studentIds] of byGrade) {
             await tx.examResult.updateMany({
@@ -1178,6 +1220,7 @@ export class ExamResultsService {
       marks: new Map(),
       snapshots: new Map(),
       bandsByScheme: new Map(),
+      takers: new Map(),
     };
   }
 
@@ -1265,6 +1308,22 @@ export class ExamResultsService {
         await this.settings.bandsFor(this.prisma, schoolId, schemeId),
       );
     }
+    // One resolution per session the cards span — normally exactly one.
+    const takers = new Map<string, ReadonlySet<string>>();
+    for (const yearId of new Set(exams.map((e) => e.academicYear.id))) {
+      const yearSubjects = exams
+        .filter((e) => e.academicYear.id === yearId)
+        .flatMap((e) => e.subjects.map((s) => s.sectionSubjectId));
+      for (const [sectionSubjectId, set] of await takersBySubject(
+        this.prisma,
+        yearSubjects,
+        studentIds,
+        yearId,
+      )) {
+        takers.set(takerKey(yearId, sectionSubjectId), set);
+      }
+    }
+
     return {
       exams,
       marks: new Map(marks.map((m) => [markKey(m.examId, m.studentId), m])),
@@ -1272,6 +1331,7 @@ export class ExamResultsService {
         snapshots.map((s) => [`${s.examinationId}:${s.studentId}`, s]),
       ),
       bandsByScheme,
+      takers,
     };
   }
 
@@ -1291,11 +1351,26 @@ export class ExamResultsService {
     };
     // A finalized examination lists exactly who sat it. An unfinished one also belongs to every
     // student placed in its section, so an unmarked student reads as incomplete, not complete.
-    const sat = data.exams.filter(
-      (e) =>
-        e.subjects.some((s) => data.marks.has(markKey(s.id, student.id))) ||
-        (e.resultStatus !== 'FINALIZED' && openSections.has(e.sectionId)),
-    );
+    // Papers the student does not take are dropped first, so an examination made
+    // up entirely of other students' subjects is not their examination at all.
+    const sat = data.exams
+      .map((e) => ({
+        ...e,
+        subjects: e.subjects.filter(
+          (s) =>
+            (data.takers
+              .get(takerKey(e.academicYear.id, s.sectionSubjectId))
+              ?.has(student.id) ??
+              true) ||
+            data.marks.has(markKey(s.id, student.id)),
+        ),
+      }))
+      .filter(
+        (e) =>
+          e.subjects.length > 0 &&
+          (e.subjects.some((s) => data.marks.has(markKey(s.id, student.id))) ||
+            (e.resultStatus !== 'FINALIZED' && openSections.has(e.sectionId))),
+      );
     if (!sat.length) {
       return {
         school,
@@ -1503,8 +1578,13 @@ export class ExamResultsService {
         passingMarks: true,
         heldAt: true,
         createdByTeacherId: true,
+        sectionSubjectId: true,
         sectionSubject: {
-          select: { teacherId: true, subject: { select: { name: true } } },
+          select: {
+            teacherId: true,
+            isElective: true,
+            subject: { select: { name: true } },
+          },
         },
       },
     });
@@ -1528,6 +1608,74 @@ export class ExamResultsService {
       subject.sectionSubject.teacherId === teacherId ||
       subject.createdByTeacherId === teacherId ||
       core.createdByTeacherId === teacherId
+    );
+  }
+
+  /** Rejects marks for a student who does not sit this paper, unless they already hold one. */
+  private async assertSitThisPaper(
+    db: Db,
+    core: Pick<ExamCore, 'academicYearId'>,
+    subject: {
+      id: string;
+      sectionSubjectId: string;
+      sectionSubject: { isElective: boolean; subject: { name: string } };
+    },
+    studentIds: string[],
+  ) {
+    if (!subject.sectionSubject.isElective) return;
+    const [takers, marked] = await Promise.all([
+      narrowToTakers(
+        db,
+        subject.sectionSubjectId,
+        studentIds,
+        core.academicYearId,
+      ),
+      db.examResult.findMany({
+        where: { examId: subject.id, studentId: { in: studentIds } },
+        select: { studentId: true },
+      }),
+    ]);
+    const allowed = new Set([...takers, ...marked.map((m) => m.studentId)]);
+    const notSitting = studentIds.filter((id) => !allowed.has(id));
+    if (!notSitting.length) return;
+
+    const names = await db.studentProfile.findMany({
+      where: { id: { in: notSitting } },
+      select: { fullName: true },
+    });
+    throw new BadRequestException(
+      `${subject.sectionSubject.subject.name} is not one of the chosen subjects for ${names
+        .map((n) => n.fullName)
+        .join(', ')}.`,
+    );
+  }
+
+  /**
+   * The examination roster minus anyone who does not take this particular paper.
+   * A student holding marks stays on regardless, so an existing mark can never
+   * become invisible and therefore uncorrectable.
+   */
+  private async sittingThisPaper(
+    db: Db,
+    core: Pick<ExamCore, 'academicYearId'>,
+    subject: {
+      id: string;
+      sectionSubjectId: string;
+      sectionSubject: { isElective: boolean };
+    },
+    sheet: Sheet,
+  ): Promise<SheetStudent[]> {
+    if (!subject.sectionSubject.isElective) return sheet.students;
+    const takers = new Set(
+      await narrowToTakers(
+        db,
+        subject.sectionSubjectId,
+        sheet.students.map((s) => s.id),
+        core.academicYearId,
+      ),
+    );
+    return sheet.students.filter(
+      (s) => takers.has(s.id) || sheet.marks.has(markKey(subject.id, s.id)),
     );
   }
 
@@ -1576,22 +1724,49 @@ export class ExamResultsService {
     const marks = new Map(
       results.map((r) => [markKey(r.examId, r.studentId), r]),
     );
+    const takers = await takersBySubject(
+      db,
+      exam.subjects.map((s) => s.sectionSubjectId),
+      studentIds,
+      exam.academicYearId,
+    );
+    /**
+     * A paper the student does not take must never reach the calculator: it
+     * would read as MISSING, which kills `complete` and inflates `totalMax`.
+     * An unknown offering keeps the paper — dropping one silently would hide
+     * marks — and so does any paper they already hold marks for.
+     */
+    const sits = (
+      s: { id: string; sectionSubjectId: string },
+      studentId: string,
+    ) =>
+      (takers.get(s.sectionSubjectId)?.has(studentId) ?? true) ||
+      marks.has(markKey(s.id, studentId));
+    // Sitting none of the papers means this examination isn't theirs: kept on
+    // the sheet, an empty outcome reads as incomplete, which blocks finalize
+    // while marks entry refuses them — a deadlock.
+    const sitting = exam.subjects.length
+      ? students.filter((st) => exam.subjects.some((s) => sits(s, st.id)))
+      : students;
+
     const outcomes = new Map<string, StudentOutcome>();
-    for (const st of students) {
+    for (const st of sitting) {
       outcomes.set(
         st.id,
         studentOutcome(
-          exam.subjects.map((s) => {
-            const m = marks.get(markKey(s.id, st.id));
-            return {
-              examId: s.id,
-              label: s.sectionSubject.subject.name,
-              maxScore: s.maxScore,
-              passingMarks: s.passingMarks,
-              score: m?.score ?? null,
-              isAbsent: m?.isAbsent ?? false,
-            };
-          }),
+          exam.subjects
+            .filter((s) => sits(s, st.id))
+            .map((s) => {
+              const m = marks.get(markKey(s.id, st.id));
+              return {
+                examId: s.id,
+                label: s.sectionSubject.subject.name,
+                maxScore: s.maxScore,
+                passingMarks: s.passingMarks,
+                score: m?.score ?? null,
+                isAbsent: m?.isAbsent ?? false,
+              };
+            }),
           bands,
         ),
       );
@@ -1607,7 +1782,7 @@ export class ExamResultsService {
     return {
       exam,
       bands,
-      students,
+      students: sitting,
       marks,
       outcomes,
       positions,
@@ -1623,11 +1798,31 @@ export class ExamResultsService {
       sheet.exam.resultStatus === 'FINALIZED' && stored?.finalizedAt
         ? stored
         : null;
+    // Keyed by examId, never by position: a student who takes fewer papers than
+    // the examination offers has a shorter outcome list, and both the sheet and
+    // the print view read these cells against the column headings by index.
+    const byExam = new Map(o.subjects.map((s) => [s.examId, s]));
     return {
       student,
-      subjects: sheet.exam.subjects.map((s, i) => {
-        const out = o.subjects[i];
+      subjects: sheet.exam.subjects.map((s) => {
+        const out = byExam.get(s.id);
         const m = sheet.marks.get(markKey(s.id, student.id));
+        if (!out) {
+          return {
+            examId: s.id,
+            label: s.sectionSubject.subject.name,
+            maxScore: null,
+            passingMarks: null,
+            obtained: null,
+            isAbsent: false,
+            percentage: null,
+            grade: null,
+            passed: null,
+            state: 'NOT_TAKEN' as const,
+            issue: null,
+            remarks: null,
+          };
+        }
         return {
           examId: s.id,
           label: out.label,

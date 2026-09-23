@@ -14,13 +14,15 @@ import { EnrollmentsController } from './enrollments/enrollments.controller';
 import { EnrollmentsService } from './enrollments/enrollments.service';
 import { SectionSubjectsController } from './section-subjects/section-subjects.controller';
 import { SectionSubjectsService } from './section-subjects/section-subjects.service';
+import { StudentSubjectsController } from './student-subjects/student-subjects.controller';
+import { StudentSubjectsService } from './student-subjects/student-subjects.service';
 import { PromotionsController } from './promotions/promotions.controller';
 import { PromotionsService } from './promotions/promotions.service';
 import { TimetableController } from './timetable/timetable.controller';
 import { TimetableService } from './timetable/timetable.service';
 
 @Module({
-  // Promotion records an audit entry per run.
+  // Promotion and student-subject changes each record an audit entry.
   imports: [AuditModule],
   controllers: [
     AcademicYearsController,
@@ -30,6 +32,7 @@ import { TimetableService } from './timetable/timetable.service';
     StudentsController,
     EnrollmentsController,
     SectionSubjectsController,
+    StudentSubjectsController,
     PromotionsController,
     TimetableController,
   ],
@@ -41,6 +44,7 @@ import { TimetableService } from './timetable/timetable.service';
     StudentsService,
     EnrollmentsService,
     SectionSubjectsService,
+    StudentSubjectsService,
     PromotionsService,
     TimetableService,
   ],
