@@ -613,6 +613,43 @@ describe('Timetable V2 (e2e)', () => {
     expect(me.body.entries).toHaveLength(1);
   });
 
+  it('builds in the session students sit in, not a newer active one', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    // Every year is created active, so a future session is routinely "active" too.
+    await prisma.academicYear.create({
+      data: {
+        schoolId: cls.school.id,
+        name: 'Future',
+        code: `F${Date.now()}`,
+        startDate: new Date('2099-01-01'),
+        endDate: new Date('2099-12-31'),
+      },
+    });
+    const token = await adminFor(cls.school.id);
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
+    await assign(cls.section.id, token, {
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+      teacherId: cls.teacherProfile.id,
+    }).expect(201);
+    await request(server())
+      .post(`/api/timetable/sections/${cls.section.id}/publish`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(201);
+
+    const me = await request(server())
+      .get('/api/timetable/me')
+      .set(
+        'Authorization',
+        `Bearer ${await tokenFor(app, cls.students[0].user)}`,
+      );
+    expect(me.body.status).toBe('PUBLISHED');
+  });
+
   it('period retime that creates a teacher conflict is rejected (reconciliation)', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const token = await adminFor(cls.school.id);
