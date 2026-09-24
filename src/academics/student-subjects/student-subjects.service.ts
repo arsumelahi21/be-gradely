@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -25,9 +24,6 @@ import {
 } from '../../common/notifications/recipients';
 import { FindStudentSubjectsQueryDto } from './dto/find-student-subjects-query.dto';
 import { UpdateStudentSubjectsDto } from './dto/update-student-subjects.dto';
-
-/** Enough names to act on; the counts tell the admin how many more there are. */
-const NAMED_IN_ERROR = 3;
 
 /** students × subjects, kept well inside Prisma's 5s interactive-transaction budget. */
 const MAX_ROWS_PER_REQUEST = 5000;
@@ -259,7 +255,7 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
       await this.resolveSubjects([...add, ...remove], actor);
     const year = await this.prisma.academicYear.findFirst({
       where: { id: dto.academicYearId, schoolId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, startDate: true, endDate: true },
     });
     if (!year) throw new NotFoundException('Academic session not found');
 
@@ -267,16 +263,20 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
     // student unenrolled, or a mark entered, between check and write would
     // otherwise slip through.
     const result = await this.prisma.$transaction(async (tx) => {
-      const { eligible, skipped } = await this.partitionStudents(
+      const placement = await this.partitionStudents(
         tx,
         studentIds,
         sectionId,
         year.id,
         schoolId,
       );
-      if (remove.length && eligible.length) {
-        await this.assertRemovable(tx, eligible, remove);
-      }
+      const kept =
+        remove.length && placement.eligible.length
+          ? await this.withRecords(tx, placement.eligible, remove, year, nameOf)
+          : [];
+      const keptIds = new Set(kept.map((k) => k.studentId));
+      const eligible = placement.eligible.filter((id) => !keptIds.has(id));
+      const skipped = [...placement.skipped, ...kept];
       const held = eligible.length
         ? await tx.studentSubject.findMany({
             where: {
@@ -545,74 +545,67 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
   }
 
   /**
-   * Refuses to drop a subject a student already has marks or attendance for.
-   * Whether a mid-session change is allowed at all is an open business rule, so
-   * this errs towards keeping academic records rather than orphaning them.
+   * Whether a mid-session change is allowed at all is an open business rule, so a
+   * student with marks or attendance this session keeps the subject — skipped, not failing the batch.
    */
-  private async assertRemovable(
+  private async withRecords(
     db: Prisma.TransactionClient,
     studentIds: string[],
     sectionSubjectIds: string[],
-  ) {
+    year: { id: string; startDate: Date; endDate: Date },
+    subjectName: Map<string, string>,
+  ): Promise<SkippedStudent[]> {
     const [marked, attended] = await Promise.all([
       db.examResult.findMany({
         where: {
           studentId: { in: studentIds },
-          exam: { sectionSubjectId: { in: sectionSubjectIds } },
+          exam: {
+            sectionSubjectId: { in: sectionSubjectIds },
+            academicYearId: year.id,
+          },
         },
         select: {
           studentId: true,
-          exam: {
-            select: {
-              sectionSubject: {
-                select: { subject: { select: { name: true } } },
-              },
-            },
-          },
+          exam: { select: { sectionSubjectId: true } },
         },
-        take: NAMED_IN_ERROR + 1,
       }),
-      db.attendance.findMany({
+      // Attendance carries no session and a section keeps its subjects across
+      // sessions, so only the session's dates keep last year's rows out.
+      db.attendance.groupBy({
+        by: ['studentId', 'sectionSubjectId'],
         where: {
           studentId: { in: studentIds },
           sectionSubjectId: { in: sectionSubjectIds },
+          date: { gte: year.startDate, lte: year.endDate },
         },
-        select: {
-          studentId: true,
-          sectionSubject: { select: { subject: { select: { name: true } } } },
-        },
-        take: NAMED_IN_ERROR + 1,
       }),
     ]);
-    const blocked = [
-      ...marked.map((m) => ({
-        studentId: m.studentId,
-        subject: m.exam.sectionSubject.subject.name,
-      })),
-      ...attended.map((a) => ({
-        studentId: a.studentId,
-        subject: a.sectionSubject.subject.name,
-      })),
-    ];
-    if (!blocked.length) return;
+    const recorded = new Map<string, Set<string>>();
+    for (const { studentId, sectionSubjectId } of [
+      ...marked.map((m) => ({ studentId: m.studentId, ...m.exam })),
+      ...attended,
+    ]) {
+      recorded.set(
+        studentId,
+        (recorded.get(studentId) ?? new Set()).add(sectionSubjectId),
+      );
+    }
+    if (!recorded.size) return [];
 
     const names = await db.studentProfile.findMany({
-      where: { id: { in: [...new Set(blocked.map((b) => b.studentId))] } },
+      where: { id: { in: [...recorded.keys()] } },
       select: { id: true, fullName: true },
     });
     const nameOf = new Map(names.map((s) => [s.id, s.fullName]));
-    const pairs = [
-      ...new Set(
-        blocked.map(
-          (b) => `${nameOf.get(b.studentId) ?? b.studentId} (${b.subject})`,
-        ),
-      ),
-    ];
-    const shown = pairs.slice(0, NAMED_IN_ERROR).join(', ');
-    const more = pairs.length > NAMED_IN_ERROR ? ', and others' : '';
-    throw new ConflictException(
-      `Marks or attendance are already recorded for ${shown}${more}. Remove those records first, or keep the subject.`,
-    );
+    return [...recorded].map(([studentId, ids]) => {
+      const studentName = nameOf.get(studentId) ?? null;
+      const subjects = [...ids].map((id) => subjectName.get(id)).join(', ');
+      return {
+        studentId,
+        studentName,
+        reason: `Marks or attendance are already recorded for ${studentName ?? 'this student'} in ${subjects} this session. Remove those records first, or keep the subject.`,
+      };
+    });
   }
 
   private async assertStudentAccess(

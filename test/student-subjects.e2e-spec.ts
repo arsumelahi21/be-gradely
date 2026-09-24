@@ -266,6 +266,108 @@ describe('Student subject enrollment (e2e)', () => {
       expect(res.body.skipped[0].studentId).toBe(outsider.id);
       expect(res.body.skipped[0].reason).toMatch(/not currently enrolled/i);
     });
+
+    it('skips a student with attendance in a subject being removed, and commits the rest', async () => {
+      const f = await seedSelectionSection();
+      const pair = [f.studentIds[0], f.studentIds[1]];
+      await patch(f.adminToken, {
+        academicYearId: f.academicYear.id,
+        studentIds: pair,
+        add: [f.electives.Physics],
+      });
+      await prisma.attendance.create({
+        data: {
+          schoolId: f.school.id,
+          studentId: f.studentIds[0],
+          sectionSubjectId: f.electives.Physics,
+          date: new Date('2026-06-01'),
+          status: 'PRESENT',
+          markedByUserId: f.admin.id,
+        },
+      });
+
+      const res = await patch(f.adminToken, {
+        academicYearId: f.academicYear.id,
+        studentIds: pair,
+        remove: [f.electives.Physics],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.removed).toBe(1);
+      expect(res.body.studentsUpdated).toBe(1);
+      expect(res.body.skipped).toHaveLength(1);
+      expect(res.body.skipped[0].studentId).toBe(f.studentIds[0]);
+      expect(res.body.skipped[0].reason).toMatch(
+        /already recorded for Student 0 in Physics-\d+/,
+      );
+      const left = await prisma.studentSubject.findMany({
+        where: { sectionSubjectId: f.electives.Physics },
+        select: { studentId: true },
+      });
+      expect(left).toEqual([{ studentId: f.studentIds[0] }]);
+    });
+
+    it('skips a student with marks this session in a subject being removed', async () => {
+      const f = await seedSelectionSection();
+      const pair = [f.studentIds[0], f.studentIds[1]];
+      await patch(f.adminToken, {
+        academicYearId: f.academicYear.id,
+        studentIds: pair,
+        add: [f.electives.Physics],
+      });
+      const { subjects } = await seedExamination({
+        schoolId: f.school.id,
+        academicYearId: f.academicYear.id,
+        sectionId: f.section.id,
+        sectionSubjectIds: [f.electives.Physics],
+        heldAt: new Date('2026-06-15'),
+      });
+      await prisma.examResult.create({
+        data: { examId: subjects[0].id, studentId: f.studentIds[0], score: 70 },
+      });
+
+      const res = await patch(f.adminToken, {
+        academicYearId: f.academicYear.id,
+        studentIds: pair,
+        remove: [f.electives.Physics],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.removed).toBe(1);
+      expect(res.body.skipped.map((s: any) => s.studentId)).toEqual([
+        f.studentIds[0],
+      ]);
+    });
+
+    it("counts attendance on the session's first and last day, not the day before", async () => {
+      const f = await seedSelectionSection();
+      await patch(f.adminToken, {
+        academicYearId: f.academicYear.id,
+        studentIds: f.studentIds,
+        add: [f.electives.Physics],
+      });
+      // The fixture session runs 2026-01-01 to 2026-12-31.
+      const days = ['2026-01-01', '2026-12-31', '2025-12-31'];
+      await prisma.attendance.createMany({
+        data: days.map((day, i) => ({
+          schoolId: f.school.id,
+          studentId: f.studentIds[i],
+          sectionSubjectId: f.electives.Physics,
+          date: new Date(day),
+          status: 'PRESENT' as const,
+          markedByUserId: f.admin.id,
+        })),
+      });
+
+      const res = await patch(f.adminToken, {
+        academicYearId: f.academicYear.id,
+        studentIds: f.studentIds,
+        remove: [f.electives.Physics],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.removed).toBe(1);
+      expect(res.body.skipped.map((s: any) => s.studentId).sort()).toEqual(
+        [f.studentIds[0], f.studentIds[1]].sort(),
+      );
+    });
   });
 
   describe('integrity', () => {
@@ -332,6 +434,22 @@ describe('Student subject enrollment (e2e)', () => {
       expect(res.status).toBe(404);
     });
 
+    it('refuses a teacher reading or editing selections', async () => {
+      const f = await seedSelectionSection();
+      const token = await tokenFor(app, f.teacherUser);
+
+      expect(
+        (await matrix(token, f.section.id, f.academicYear.id)).status,
+      ).toBe(403);
+      const res = await patch(token, {
+        academicYearId: f.academicYear.id,
+        studentIds: f.studentIds,
+        add: [f.electives.Physics],
+      });
+      expect(res.status).toBe(403);
+      expect(await prisma.studentSubject.count()).toBe(0);
+    });
+
     it("404s another school's section on the matrix", async () => {
       const f = await seedSelectionSection();
       const other = await seedSelectionSection();
@@ -394,6 +512,120 @@ describe('Student subject enrollment (e2e)', () => {
         rows.find((r) => r.academicYearId === f.academicYear.id)
           ?.sectionSubjectId,
       ).toBe(f.electives.Physics);
+    });
+
+    it("does not let last session's marks or attendance block a removal this session", async () => {
+      const f = await seedSelectionSection();
+      const [studentId] = f.studentIds;
+      await prisma.attendance.create({
+        data: {
+          schoolId: f.school.id,
+          studentId,
+          sectionSubjectId: f.electives.Physics,
+          date: new Date('2026-06-01'),
+          status: 'PRESENT',
+          markedByUserId: f.admin.id,
+        },
+      });
+      const { subjects } = await seedExamination({
+        schoolId: f.school.id,
+        academicYearId: f.academicYear.id,
+        sectionId: f.section.id,
+        sectionSubjectIds: [f.electives.Physics],
+        heldAt: new Date('2026-06-15'),
+      });
+      await prisma.examResult.create({
+        data: { examId: subjects[0].id, studentId, score: 70 },
+      });
+
+      // Same section, next session — the shape where history used to leak in.
+      const nextYear = await prisma.academicYear.create({
+        data: {
+          schoolId: f.school.id,
+          name: `AY-${uniq()}`,
+          code: `AY${uniq()}`,
+          startDate: new Date('2027-01-01'),
+          endDate: new Date('2027-12-31'),
+        },
+      });
+      await prisma.enrollment.updateMany({
+        where: { studentId, academicYearId: f.academicYear.id },
+        data: { status: 'COMPLETED' },
+      });
+      await prisma.enrollment.create({
+        data: {
+          studentId,
+          sectionId: f.section.id,
+          academicYearId: nextYear.id,
+          status: 'ACTIVE',
+        },
+      });
+      const body = { academicYearId: nextYear.id, studentIds: [studentId] };
+      await patch(f.adminToken, { ...body, add: [f.electives.Physics] });
+
+      const res = await patch(f.adminToken, {
+        ...body,
+        remove: [f.electives.Physics],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.removed).toBe(1);
+      expect(res.body.skipped).toEqual([]);
+    });
+
+    it('lets a compulsory subject with last session’s attendance be narrowed after switching to student selection', async () => {
+      const f = await seedSelectionSection();
+      const [studentId] = f.studentIds;
+      await prisma.attendance.create({
+        data: {
+          schoolId: f.school.id,
+          studentId,
+          sectionSubjectId: f.maths,
+          date: new Date('2026-06-01'),
+          status: 'PRESENT',
+          markedByUserId: f.admin.id,
+        },
+      });
+      const nextYear = await prisma.academicYear.create({
+        data: {
+          schoolId: f.school.id,
+          name: `AY-${uniq()}`,
+          code: `AY${uniq()}`,
+          startDate: new Date('2027-01-01'),
+          endDate: new Date('2027-12-31'),
+        },
+      });
+      await prisma.enrollment.updateMany({
+        where: { studentId, academicYearId: f.academicYear.id },
+        data: { status: 'COMPLETED' },
+      });
+      await prisma.enrollment.create({
+        data: {
+          studentId,
+          sectionId: f.section.id,
+          academicYearId: nextYear.id,
+          status: 'ACTIVE',
+        },
+      });
+
+      await request(app.getHttpServer())
+        .patch(`/api/section-subjects/${f.maths}`)
+        .set('Authorization', `Bearer ${f.adminToken}`)
+        .send({ isElective: true })
+        .expect(200);
+      const res = await patch(f.adminToken, {
+        academicYearId: nextYear.id,
+        studentIds: [studentId],
+        remove: [f.maths],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.removed).toBe(1);
+      expect(res.body.skipped).toEqual([]);
+      // Last session's attendance is history, never touched by the change.
+      expect(
+        await prisma.attendance.count({
+          where: { studentId, sectionSubjectId: f.maths },
+        }),
+      ).toBe(1);
     });
   });
 
