@@ -12,6 +12,7 @@ import {
   studentUserIds,
 } from '../common/notifications/recipients';
 import { formatMinutes } from '../exams/exam-mappers';
+import { narrowToTakers } from '../academics/section-subjects/subject-takers';
 
 /**
  * Daily "due tomorrow" reminders, windowed to tomorrow so each assignment/exam reminds once.
@@ -37,13 +38,25 @@ export class RemindersScheduler {
       select: {
         id: true,
         title: true,
+        sectionSubjectId: true,
+        academicYearId: true,
         sectionSubject: { select: { sectionId: true } },
       },
     });
     for (const a of items) {
+      const roster = await sectionStudentIds(
+        this.prisma,
+        a.sectionSubject.sectionId,
+      );
+      // Only the students who actually took the elective owe this assignment.
       const userIds = await studentUserIds(
         this.prisma,
-        await sectionStudentIds(this.prisma, a.sectionSubject.sectionId),
+        await narrowToTakers(
+          this.prisma,
+          a.sectionSubjectId,
+          roster,
+          a.academicYearId,
+        ),
       );
       if (!userIds.length) continue;
       this.eventEmitter.emit(NOTIFICATION_CREATE, {

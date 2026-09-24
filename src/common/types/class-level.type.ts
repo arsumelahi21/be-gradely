@@ -1,28 +1,29 @@
 /**
- * The class ladder, in order.
+ * The class ladder, in order — a SORT position only. Nothing may branch on it:
+ * "O1" places a class after Class 12; it says nothing about its students.
  *
- * The stored value IS the sort key, which is why the numeric grades map to
- * their own number (Grade 5 -> 5) and the pre-primary years take the negative
- * slots below them. That keeps `ORDER BY level` correct without a lookup table.
+ * The stored value is the sort key. Numbered classes map to their own number
+ * (Class 5 -> 5), pre-primary takes the negative slots, and the lettered rungs
+ * take gapped blocks above 12 so a rung can be added later without renumbering
+ * a persisted value.
  *
  * Mirrored on the frontend in `fe-gradely/src/lib/class-level.ts` — keep the two
  * in step; the values are persisted, so never renumber an existing one.
  */
-export const CLASS_LEVELS = [
-  { value: -3, label: 'PG' },
+export const CLASS_LEVELS: { value: number; label: string }[] = [
+  { value: -3, label: 'Kindergarten' }, // was "PG": same slot, so existing classes keep their place
   { value: -2, label: 'Nursery' },
   { value: -1, label: 'Prep' },
-  { value: 1, label: '1' },
-  { value: 2, label: '2' },
-  { value: 3, label: '3' },
-  { value: 4, label: '4' },
-  { value: 5, label: '5' },
-  { value: 6, label: '6' },
-  { value: 7, label: '7' },
-  { value: 8, label: '8' },
-  { value: 9, label: '9' },
-  { value: 10, label: '10' },
-] as const;
+  ...Array.from({ length: 12 }, (_, i) => ({
+    value: i + 1,
+    label: `Class ${i + 1}`,
+  })),
+  { value: 21, label: 'O1' },
+  { value: 22, label: 'O2' },
+  { value: 23, label: 'O3' },
+  { value: 31, label: 'A1' },
+  { value: 32, label: 'A2' },
+];
 
 export const CLASS_LEVEL_VALUES: number[] = CLASS_LEVELS.map((l) => l.value);
 

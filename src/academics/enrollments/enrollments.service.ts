@@ -16,6 +16,10 @@ import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { FindEnrollmentsQueryDto } from './dto/find-enrollments-query.dto';
 import { FindPlacementsQueryDto } from './dto/find-placements-query.dto';
+import {
+  clearSelections,
+  selectAllElectives,
+} from '../section-subjects/subject-takers';
 
 type UpdateEnrollmentInput = UpdateEnrollmentDto & Partial<CreateEnrollmentDto>;
 
@@ -155,16 +159,22 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       }
     }
 
-    const created = await this.prisma.enrollment.create({
-      data: {
-        studentId: student.id,
-        sectionId: section.id,
-        academicYearId: academicYear.id,
-        status: dto.status ?? 'ACTIVE',
-        startDate: this.toDate(dto.startDate),
-        endDate: this.toDate(dto.endDate),
-      },
-      include: this.defaultInclude(),
+    const created = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.enrollment.create({
+        data: {
+          studentId: student.id,
+          sectionId: section.id,
+          academicYearId: academicYear.id,
+          status: dto.status ?? 'ACTIVE',
+          startDate: this.toDate(dto.startDate),
+          endDate: this.toDate(dto.endDate),
+        },
+        include: this.defaultInclude(),
+      });
+      if (row.status === EnrollmentStatus.ACTIVE) {
+        await selectAllElectives(tx, [row]);
+      }
+      return row;
     });
     await this.invalidate(section.schoolId);
     return created;
@@ -263,6 +273,18 @@ export class EnrollmentsService extends BaseSchoolScopedService {
             })),
             skipDuplicates: true,
           });
+          if (status === EnrollmentStatus.ACTIVE) {
+            await selectAllElectives(
+              tx,
+              eligible
+                .filter((studentId) => !placements.has(studentId))
+                .map((studentId) => ({
+                  studentId,
+                  sectionId: section.id,
+                  academicYearId: academicYear.id,
+                })),
+            );
+          }
           return reopened.count + inserted.count;
         })
       : 0;
@@ -499,19 +521,39 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       }
     }
 
-    const updated = await this.prisma.enrollment.update({
-      where: { id },
-      data: {
-        studentId: student.id,
-        sectionId: section.id,
-        academicYearId: academicYear.id,
-        ...(dto.status !== undefined && { status: dto.status }),
-        ...(dto.startDate !== undefined && {
-          startDate: this.toDate(dto.startDate),
-        }),
-        ...(dto.endDate !== undefined && { endDate: this.toDate(dto.endDate) }),
-      },
-      include: this.defaultInclude(),
+    const moved =
+      student.id !== enrollment.studentId ||
+      section.id !== enrollment.sectionId ||
+      academicYear.id !== enrollment.academicYearId;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // Selections hang off the old section's subjects, so they leave with it.
+      if (moved) await clearSelections(tx, enrollment);
+      const row = await tx.enrollment.update({
+        where: { id },
+        data: {
+          studentId: student.id,
+          sectionId: section.id,
+          academicYearId: academicYear.id,
+          ...(dto.status !== undefined && { status: dto.status }),
+          ...(dto.startDate !== undefined && {
+            startDate: this.toDate(dto.startDate),
+          }),
+          ...(dto.endDate !== undefined && {
+            endDate: this.toDate(dto.endDate),
+          }),
+        },
+        include: this.defaultInclude(),
+      });
+      // Only a new placement gets the default; re-saving one must not re-tick
+      // subjects the admin unticked.
+      if (
+        row.status === EnrollmentStatus.ACTIVE &&
+        (moved || enrollment.status !== EnrollmentStatus.ACTIVE)
+      ) {
+        await selectAllElectives(tx, [row]);
+      }
+      return row;
     });
     await this.invalidate(section.schoolId);
     return updated;
@@ -519,7 +561,10 @@ export class EnrollmentsService extends BaseSchoolScopedService {
 
   async remove(id: string, actor: Actor) {
     const existing = await this.getOrThrow(id, actor);
-    const removed = await this.prisma.enrollment.delete({ where: { id } });
+    const removed = await this.prisma.$transaction(async (tx) => {
+      await clearSelections(tx, existing);
+      return tx.enrollment.delete({ where: { id } });
+    });
     await this.invalidate(existing.section.schoolId);
     return removed;
   }

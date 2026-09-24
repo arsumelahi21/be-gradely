@@ -26,6 +26,10 @@ export class CreateSectionSubjectDto {
   isPrimary?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  isElective?: boolean;
+
+  @IsOptional()
   @IsString()
   schedule?: string;
 }

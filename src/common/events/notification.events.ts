@@ -40,7 +40,8 @@ export type NotificationType =
   | 'FEE_PAYMENT_REJECTED'
   // Timetable publish/update — ride the existing notifyAnnouncements preference.
   | 'TIMETABLE_PUBLISHED'
-  | 'TIMETABLE_UPDATED';
+  | 'TIMETABLE_UPDATED'
+  | 'SUBJECTS_UPDATED';
 
 /** Which UserSettings notify* flag gates the EMAIL side (in-app always writes). */
 export type NotifyPreferenceKey =

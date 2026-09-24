@@ -180,7 +180,7 @@ describe('Class grade default monthly fee (e2e)', () => {
 
 /**
  * Class level: the ladder position that orders classes and their sections
- * everywhere. PG/Nursery/Prep take the negative slots so numeric grades can map
+ * everywhere. Kindergarten/Nursery/Prep take the negative slots so numeric grades can map
  * to their own number, which is what keeps `ORDER BY level` correct.
  */
 describe('Class level ordering (e2e)', () => {
@@ -230,7 +230,7 @@ describe('Class level ordering (e2e)', () => {
   it('accepts every level on the ladder and rejects anything else', async () => {
     const { token } = await seedAdmin();
 
-    for (const level of [-3, -2, -1, 1, 5, 10]) {
+    for (const level of [-3, -2, -1, 1, 5, 10, 11, 12, 21, 22, 23, 31, 32]) {
       await request(app.getHttpServer())
         .post('/api/class-grades')
         .set('Authorization', `Bearer ${token}`)
@@ -238,8 +238,8 @@ describe('Class level ordering (e2e)', () => {
         .expect(201);
     }
 
-    // 11 and 0 are not rungs; neither is a string.
-    for (const level of [0, 11, 'five']) {
+    // 0 and 13 are not rungs (13 sits in the gap below the lettered rungs); nor is a string.
+    for (const level of [0, 13, 'five']) {
       await request(app.getHttpServer())
         .post('/api/class-grades')
         .set('Authorization', `Bearer ${token}`)
