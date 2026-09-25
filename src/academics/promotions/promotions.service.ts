@@ -13,6 +13,7 @@ import { Actor } from '../../common/types/actor.type';
 import { FindPromotionStudentsQueryDto } from './dto/find-promotion-students-query.dto';
 import { FindDestinationQueryDto } from './dto/find-destination-query.dto';
 import { PromotionPlanDto } from './dto/promotion-plan.dto';
+import { selectAllElectives } from '../section-subjects/subject-takers';
 import {
   DestinationSection,
   PromotionPlan,
@@ -556,6 +557,18 @@ export class PromotionsService extends BaseSchoolScopedService {
         const created = toCreate.length
           ? await tx.enrollment.createMany({ data: toCreate })
           : { count: 0 };
+
+        const revived = reactivateIds.length
+          ? await tx.enrollment.findMany({
+              where: { id: { in: reactivateIds } },
+              select: {
+                studentId: true,
+                sectionId: true,
+                academicYearId: true,
+              },
+            })
+          : [];
+        await selectAllElectives(tx, [...toCreate, ...revived]);
 
         // 5. Prepare any section this run left EMPTY for its next intake.
         //    Automatic: a section nobody is left sitting in should not keep

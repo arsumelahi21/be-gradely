@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EnrollmentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CacheService } from '../../common/services/cache.service';
 import { uniqueConflict } from '../../common/utils/prisma-errors';
@@ -14,6 +15,7 @@ import { UpdateSectionSubjectDto } from './dto/update-section-subject.dto';
 import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { ensureOnRoster, pruneSectionRoster } from './section-roster';
+import { selectAllElectives } from './subject-takers';
 import { FindSectionSubjectsQueryDto } from './dto/find-section-subjects-query.dto';
 import { assertNoExaminationHistory } from '../../common/services/exam-history-guard';
 
@@ -32,6 +34,18 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
     return this.invalidateSchoolCache(schoolId, 'sections', 'classes');
   }
 
+  /** A subject newly opened to student selection starts ticked for everyone already enrolled. */
+  private async selectForRoster(
+    tx: Prisma.TransactionClient,
+    offering: { id: string; sectionId: string },
+  ) {
+    const placements = await tx.enrollment.findMany({
+      where: { sectionId: offering.sectionId, status: EnrollmentStatus.ACTIVE },
+      select: { studentId: true, sectionId: true, academicYearId: true },
+    });
+    await selectAllElectives(tx, placements, [offering.id]);
+  }
+
   async create(dto: CreateSectionSubjectDto, actor: Actor) {
     const { section, subject, teacher } = await this.resolveEntities(
       dto.sectionId,
@@ -47,11 +61,13 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
             subjectId: subject.id,
             teacherId: teacher?.id ?? null,
             isPrimary: dto.isPrimary ?? false,
+            isElective: dto.isElective ?? false,
             schedule: dto.schedule ?? null,
           },
           include: this.defaultInclude(),
         });
         if (teacher?.id) await ensureOnRoster(tx, section.id, teacher.id);
+        if (row.isElective) await this.selectForRoster(tx, row);
         return row;
       })
       // @@unique([sectionId, subjectId]) — allocating the same subject twice.
@@ -261,6 +277,7 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
           subjectId: subject.id,
           teacherId: nextTeacherId,
           ...(dto.isPrimary !== undefined && { isPrimary: dto.isPrimary }),
+          ...(dto.isElective !== undefined && { isElective: dto.isElective }),
           ...(dto.schedule !== undefined && { schedule: dto.schedule }),
         },
         include: this.defaultInclude(),
@@ -270,6 +287,14 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
         await ensureOnRoster(tx, section.id, nextTeacherId);
       }
       await pruneSectionRoster(tx, current.sectionId);
+      if (updated.isElective && !current.isElective) {
+        await this.selectForRoster(tx, updated);
+      }
+      // Choices mean nothing once the whole class takes it; left behind they
+      // would silently reappear if the subject is ever opened to selection again.
+      if (!updated.isElective && current.isElective) {
+        await tx.studentSubject.deleteMany({ where: { sectionSubjectId: id } });
+      }
       return updated;
     });
     await this.invalidate(current.section.schoolId);

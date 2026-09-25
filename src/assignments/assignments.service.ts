@@ -18,6 +18,10 @@ import { MarkSubmissionDto } from './dto/mark-submission.dto';
 import { S3PresignService } from '../common/services/s3-presign.service';
 import { CacheService } from '../common/services/cache.service';
 import { invalidateSchoolStats } from '../common/cache/stats-cache';
+import {
+  narrowToTakers,
+  subjectsOf,
+} from '../academics/section-subjects/subject-takers';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   NOTIFICATION_CREATE,
@@ -303,7 +307,12 @@ export class AssignmentsService {
   private async computeSchoolStats(schoolId: string) {
     const assignments = await (this.prisma as any).assignment.findMany({
       where: { schoolId, status: 'PUBLISHED' },
-      select: { id: true, sectionSubject: { select: { sectionId: true } } },
+      select: {
+        id: true,
+        academicYearId: true,
+        sectionSubjectId: true,
+        sectionSubject: { select: { sectionId: true, isElective: true } },
+      },
     });
     if (assignments.length === 0) {
       return {
@@ -331,9 +340,43 @@ export class AssignmentsService {
     const enrolledBySection = new Map<string, number>(
       enrolledGroups.map((g) => [g.sectionId, g._count._all]),
     );
+
+    // An elective is taken by a subset of its section, so counting the whole
+    // section would understate every completion rate it appears in.
+    const electiveIds = [
+      ...new Set(
+        assignments
+          .filter((a: any) => a.sectionSubject.isElective)
+          .map((a: any) => a.sectionSubjectId),
+      ),
+    ] as string[];
+    const takerCounts = new Map<string, number>();
+    if (electiveIds.length) {
+      // Joined to an ACTIVE placement in that section and session: a deactivated
+      // placement keeps its choices, so counting bare rows would overstate.
+      const groups = await this.prisma.$queryRaw<
+        { sectionSubjectId: string; academicYearId: string; takers: number }[]
+      >`
+        SELECT s."sectionSubjectId", s."academicYearId", COUNT(*)::int AS takers
+        FROM "StudentSubject" s
+        JOIN "SectionSubject" o ON o.id = s."sectionSubjectId"
+        JOIN "Enrollment" e ON e."studentId" = s."studentId"
+          AND e."sectionId" = o."sectionId"
+          AND e."academicYearId" = s."academicYearId"
+          AND e.status = 'ACTIVE'
+        WHERE s."sectionSubjectId" IN (${Prisma.join(electiveIds)})
+        GROUP BY s."sectionSubjectId", s."academicYearId"`;
+      for (const g of groups) {
+        takerCounts.set(`${g.sectionSubjectId}:${g.academicYearId}`, g.takers);
+      }
+    }
+
     const expected = assignments.reduce(
       (sum: number, a: any) =>
-        sum + (enrolledBySection.get(a.sectionSubject.sectionId) ?? 0),
+        sum +
+        (a.sectionSubject.isElective
+          ? (takerCounts.get(`${a.sectionSubjectId}:${a.academicYearId}`) ?? 0)
+          : (enrolledBySection.get(a.sectionSubject.sectionId) ?? 0)),
       0,
     );
 
@@ -487,11 +530,23 @@ export class AssignmentsService {
   private async notifyAssignmentPublished(a: {
     id: string;
     title: string;
+    sectionSubjectId?: string | null;
+    academicYearId?: string | null;
     sectionSubject?: { sectionId: string } | null;
   }) {
     const sectionId = a.sectionSubject?.sectionId;
     if (!sectionId) return;
-    const studentIds = await sectionStudentIds(this.prisma, sectionId);
+    const roster = await sectionStudentIds(this.prisma, sectionId);
+    // An elective's work belongs to the students who chose it, not the section.
+    const studentIds =
+      a.sectionSubjectId && a.academicYearId
+        ? await narrowToTakers(
+            this.prisma,
+            a.sectionSubjectId,
+            roster,
+            a.academicYearId,
+          )
+        : roster;
     const userIds = await studentUserIds(this.prisma, studentIds);
     if (!userIds.length) return;
     this.eventEmitter.emit(NOTIFICATION_CREATE, {
@@ -1434,23 +1489,9 @@ export class AssignmentsService {
         ...(academicYearId ? { academicYearId } : {}),
         status: 'ACTIVE',
       } as any,
-      select: { sectionId: true, startDate: true },
+      select: { sectionId: true, startDate: true, academicYearId: true },
     });
     if (!enrollments.length) return { sectionSubjectId: { in: [] } };
-
-    const sectionSubjects = await this.prisma.sectionSubject.findMany({
-      where: {
-        sectionId: { in: [...new Set(enrollments.map((e) => e.sectionId))] },
-      },
-      select: { id: true, sectionId: true },
-    });
-
-    const bySection = new Map<string, string[]>();
-    for (const ss of sectionSubjects) {
-      const list = bySection.get(ss.sectionId) ?? [];
-      list.push(ss.id);
-      bySection.set(ss.sectionId, list);
-    }
 
     // Newest placement wins per section, so a re-enrolled student is not held
     // to an older join date than the one they are actually sitting under.
@@ -1462,10 +1503,20 @@ export class AssignmentsService {
       }
     }
 
+    // One branch per placement, over the subjects that placement actually
+    // carries — an elective nobody chose for them is not their work.
     const or: Prisma.AssignmentWhereInput[] = [];
-    for (const [sectionId, ids] of bySection) {
+    for (const e of enrollments) {
+      const ids = [
+        ...(await subjectsOf(
+          this.prisma,
+          studentId,
+          e.sectionId,
+          e.academicYearId,
+        )),
+      ];
       if (!ids.length) continue;
-      const since = joinedAt.get(sectionId) ?? null;
+      const since = joinedAt.get(e.sectionId) ?? null;
       or.push({
         sectionSubjectId: { in: ids },
         // An undated assignment has no deadline to have missed, so it stays.

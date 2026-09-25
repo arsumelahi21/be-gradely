@@ -63,6 +63,7 @@ model School {
   timetablePeriods              TimetablePeriod[]
   timetables                    Timetable[]
   timetableEntries              TimetableEntry[]
+  studentSubjects               StudentSubject[]
   logo                          SchoolLogo?
 }
 
@@ -271,6 +272,7 @@ model StudentProfile {
   feeHeadOverrides       StudentFeeHeadOverride[]
   installmentPlans       FeeInstallmentPlan[]
   paymentSubmissions     PaymentSubmission[]
+  studentSubjects        StudentSubject[]
 
   @@unique([schoolId, admissionNo])
   @@unique([schoolId, rollNo])
@@ -334,6 +336,7 @@ model AcademicYear {
   challans         Challan[]
   installmentPlans FeeInstallmentPlan[]
   timetables       Timetable[]
+  studentSubjects  StudentSubject[]
 
   @@unique([schoolId, code])
   @@index([schoolId])
@@ -436,6 +439,9 @@ model SectionSubject {
   teacherId        String?
   schedule         String?
   isPrimary        Boolean          @default(false)
+  /// Defaults false so every existing allocation stays whole-class, which is what
+  /// regular classes rely on; true narrows it to the StudentSubject rows.
+  isElective       Boolean          @default(false)
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
   section          Section          @relation(fields: [sectionId], references: [id], onDelete: Cascade)
@@ -445,10 +451,34 @@ model SectionSubject {
   exams            Exam[]
   attendances      Attendance[]
   timetableEntries TimetableEntry[]
+  studentSubjects  StudentSubject[]
 
   @@unique([sectionId, subjectId])
   @@index([teacherId])
   @@index([createdAt])
+}
+
+/// Takers of an ELECTIVE section-subject. A compulsory offering has no rows here —
+/// the section roster answers it, exactly as today. Keyed on sectionSubjectId, not
+/// sectionId + subjectId, so a subject the section doesn't offer can't be stored.
+model StudentSubject {
+  id               String   @id @default(uuid())
+  schoolId         String // denormalized for tenant scoping only, like TimetableEntry
+  academicYearId   String
+  studentId        String
+  sectionSubjectId String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  school         School         @relation(fields: [schoolId], references: [id])
+  academicYear   AcademicYear   @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  student        StudentProfile @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sectionSubject SectionSubject @relation(fields: [sectionSubjectId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, sectionSubjectId, academicYearId]) // one subject once per student per session
+  @@index([sectionSubjectId, academicYearId]) // roster scan: who takes this subject this session
+  @@index([studentId, academicYearId]) // result card / portal: what does this student take
+  @@index([schoolId])
 }
 
 enum AttendanceStatus {

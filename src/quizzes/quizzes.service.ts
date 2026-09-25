@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BaseSchoolScopedService } from '../common/services/base-school.service';
 import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
+import { subjectsOf } from '../academics/section-subjects/subject-takers';
 import {
   NOTIFICATION_CREATE,
   NotificationCreateEvent,
@@ -551,6 +552,12 @@ export class QuizzesService extends BaseSchoolScopedService {
     return this.getQuizForAuthor(quizId, actor);
   }
 
+  /**
+   * Section-wide even for an elective: Quiz carries neither a session nor a
+   * sectionSubject, so narrowing would mean guessing one for a notification.
+   * The quiz itself is gated in available()/startAttempt(), so the worst case is
+   * an extra notification, not access.
+   */
   private async notifyQuizPublished(quiz: {
     id: string;
     title: string;
@@ -666,10 +673,31 @@ export class QuizzesService extends BaseSchoolScopedService {
 
     const enrollments = await this.prisma.enrollment.findMany({
       where: { studentId: student.id, status: 'ACTIVE' },
-      select: { sectionId: true },
+      select: { sectionId: true, academicYearId: true },
     });
     const sectionIds = enrollments.map((e) => e.sectionId);
     if (sectionIds.length === 0) return [];
+
+    const taken = new Set<string>();
+    for (const e of enrollments) {
+      for (const id of await subjectsOf(
+        this.prisma,
+        student.id,
+        e.sectionId,
+        e.academicYearId,
+      )) {
+        taken.add(id);
+      }
+    }
+    // Quiz carries a subjectId, not a sectionSubjectId, so the offering has to
+    // be looked up before it can be matched against what the student takes.
+    const offerings = await this.prisma.sectionSubject.findMany({
+      where: { sectionId: { in: sectionIds } },
+      select: { id: true, sectionId: true, subjectId: true },
+    });
+    const offeringOf = new Map(
+      offerings.map((o) => [`${o.sectionId}:${o.subjectId}`, o.id]),
+    );
 
     // NOT filtered by when the student joined, unlike assignments: `Quiz` has
     // no deadline column, and `createdAt` is a poor stand-in — it would hide a
@@ -691,16 +719,32 @@ export class QuizzesService extends BaseSchoolScopedService {
     });
 
     // No correctAnswer here — this is only quiz metadata.
-    return quizzes.map((q) => ({
-      id: q.id,
-      title: q.title,
-      description: q.description,
-      durationMins: q.durationMins,
-      subject: q.subject,
-      section: q.section,
-      questionCount: q._count.questions,
-      attempt: q.attempts[0] ?? null,
-    }));
+    return quizzes
+      .filter((q) => this.takesQuizSubject(q, offeringOf, taken))
+      .map((q) => ({
+        id: q.id,
+        title: q.title,
+        description: q.description,
+        durationMins: q.durationMins,
+        subject: q.subject,
+        section: q.section,
+        questionCount: q._count.questions,
+        attempt: q.attempts[0] ?? null,
+      }));
+  }
+
+  /**
+   * A quiz whose subject the section does not offer keeps its old behaviour —
+   * the subject link is informational there, so it stays a section-wide quiz.
+   */
+  private takesQuizSubject(
+    quiz: { sectionId: string; subjectId: string | null },
+    offeringOf: Map<string, string>,
+    taken: Set<string>,
+  ): boolean {
+    if (!quiz.subjectId) return true;
+    const offeringId = offeringOf.get(`${quiz.sectionId}:${quiz.subjectId}`);
+    return !offeringId || taken.has(offeringId);
   }
 
   async startAttempt(quizId: string, actor: Actor) {
@@ -723,10 +767,29 @@ export class QuizzesService extends BaseSchoolScopedService {
         sectionId: quiz.sectionId,
         status: 'ACTIVE',
       },
-      select: { id: true },
+      select: { id: true, academicYearId: true },
     });
     if (!enrolled) {
       throw new ForbiddenException('You are not enrolled in this quiz');
+    }
+    if (quiz.subjectId) {
+      const offering = await this.prisma.sectionSubject.findFirst({
+        where: { sectionId: quiz.sectionId, subjectId: quiz.subjectId },
+        select: { id: true },
+      });
+      const taken = offering
+        ? await subjectsOf(
+            this.prisma,
+            student.id,
+            quiz.sectionId,
+            enrolled.academicYearId,
+          )
+        : null;
+      if (offering && taken && !taken.has(offering.id)) {
+        throw new ForbiddenException(
+          'This quiz is for a subject you do not take',
+        );
+      }
     }
 
     let attempt = await this.prisma.quizAttempt.findUnique({
@@ -788,15 +851,26 @@ export class QuizzesService extends BaseSchoolScopedService {
 
     // Notify the student + their parents of the score, and the teacher that the
     // quiz was completed (decoupled via the event bus).
-    const parents = await parentUserIds(this.prisma, [student.id]);
-    this.eventEmitter.emit(NOTIFICATION_CREATE, {
-      userIds: [actor.userId, ...parents].filter((id): id is string => !!id),
+    const graded = {
       type: 'QUIZ_GRADED',
       title: `Quiz completed: ${attempt.quiz.title}`,
       body: `Scored ${score}/${maxScore} on "${attempt.quiz.title}".`,
-      link: `/quizzes/${attempt.quiz.id}`,
       notifyPreferenceKey: 'notifyGrades',
+    } as const;
+    // The quiz page itself starts a new attempt, so the score lives on the attempt page.
+    this.eventEmitter.emit(NOTIFICATION_CREATE, {
+      ...graded,
+      userIds: [actor.userId],
+      link: `/quizzes/attempt/${updated.id}`,
     } as NotificationCreateEvent);
+    // The parent portal has no quiz page; the score is in the body.
+    const parents = await parentUserIds(this.prisma, [student.id]);
+    if (parents.length) {
+      this.eventEmitter.emit(NOTIFICATION_CREATE, {
+        ...graded,
+        userIds: parents,
+      } as NotificationCreateEvent);
+    }
 
     if (attempt.quiz.createdByUserId) {
       this.eventEmitter.emit(NOTIFICATION_CREATE, {

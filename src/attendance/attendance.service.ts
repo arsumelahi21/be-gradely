@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CacheService } from '../common/services/cache.service';
 import { BaseSchoolScopedService } from '../common/services/base-school.service';
 import { resolveTeacherStudentIds } from '../common/services/teacher-scope';
+import { narrowToTakers } from '../academics/section-subjects/subject-takers';
 import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
 import { MarkAttendanceDto } from './dto/mark-attendance.dto';
@@ -31,6 +32,12 @@ import {
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
+
+type SubjectContext = {
+  id: string;
+  isElective: boolean;
+  section: { id: string; schoolId: string };
+};
 
 @Injectable()
 export class AttendanceService extends BaseSchoolScopedService {
@@ -156,7 +163,7 @@ export class AttendanceService extends BaseSchoolScopedService {
     // Only students enrolled in this section may be marked for its subjects.
     const enrolled = await this.prisma.enrollment.findMany({
       where: { sectionId: sectionSubject.section.id, status: 'ACTIVE' },
-      select: { studentId: true },
+      select: { studentId: true, academicYearId: true },
     });
     const enrolledIds = new Set(enrolled.map((e) => e.studentId));
 
@@ -168,6 +175,12 @@ export class AttendanceService extends BaseSchoolScopedService {
           .join(', ')}`,
       );
     }
+    await this.assertAllTakeSubject(
+      sectionSubject,
+      enrolled,
+      dto.entries,
+      date,
+    );
 
     // Whole batch is atomic — no half-marked class (CLAUDE.md standing rule).
     const results = await this.prisma.$transaction(
@@ -254,8 +267,9 @@ export class AttendanceService extends BaseSchoolScopedService {
     const byStudent = new Map(marks.map((m) => [m.studentId, m]));
 
     const roster = await this.rosterFor(
-      sectionSubject.section.id,
+      sectionSubject,
       marks.map((m) => m.studentId),
+      date,
     );
 
     return {
@@ -275,6 +289,69 @@ export class AttendanceService extends BaseSchoolScopedService {
   }
 
   /**
+   * Attendance rows carry no session of their own, so narrowing an elective
+   * roster needs one derived. The section's own ACTIVE placements answer it;
+   * only a section holding two sessions at once needs the date to break the tie.
+   */
+  private async sessionFor(
+    placements: { academicYearId: string }[],
+    schoolId: string,
+    date: Date,
+  ): Promise<string | null> {
+    const years = [...new Set(placements.map((p) => p.academicYearId))];
+    if (years.length <= 1) return years[0] ?? null;
+    // ponytail: a section spanning two sessions with neither covering the date
+    // keeps the whole roster, as it did before electives existed; upgrade path
+    // is an academicYearId on Attendance itself.
+    const covering = await this.prisma.academicYear.findFirst({
+      where: {
+        id: { in: years },
+        schoolId,
+        startDate: { lte: date },
+        endDate: { gte: date },
+      },
+      select: { id: true },
+    });
+    return covering?.id ?? null;
+  }
+
+  private async assertAllTakeSubject(
+    sectionSubject: SubjectContext & { subject: { name: string } },
+    placements: { studentId: string; academicYearId: string }[],
+    entries: { studentId: string }[],
+    date: Date,
+  ) {
+    if (!sectionSubject.isElective) return;
+    const academicYearId = await this.sessionFor(
+      placements,
+      sectionSubject.section.schoolId,
+      date,
+    );
+    if (!academicYearId) return;
+
+    const takers = new Set(
+      await narrowToTakers(
+        this.prisma,
+        sectionSubject.id,
+        placements.map((p) => p.studentId),
+        academicYearId,
+      ),
+    );
+    const notTaking = entries.filter((e) => !takers.has(e.studentId));
+    if (!notTaking.length) return;
+
+    const names = await this.prisma.studentProfile.findMany({
+      where: { id: { in: notTaking.map((e) => e.studentId) } },
+      select: { fullName: true },
+    });
+    throw new BadRequestException(
+      `${sectionSubject.subject.name} is not one of the chosen subjects for ${names
+        .map((n) => n.fullName)
+        .join(', ')}.`,
+    );
+  }
+
+  /**
    * Current roster plus anyone already marked in the window. Promotion closes a
    * placement (COMPLETED) rather than deleting it, so an ACTIVE-only roster
    * silently dropped a promoted student's existing marks from past sheets.
@@ -283,15 +360,40 @@ export class AttendanceService extends BaseSchoolScopedService {
    * academicYearId, so ACTIVE+COMPLETED returns everyone who ever sat in the
    * section, in any year.
    */
-  private async rosterFor(sectionId: string, markedStudentIds: string[]) {
+  private async rosterFor(
+    sectionSubject: SubjectContext,
+    markedStudentIds: string[],
+    date: Date,
+  ) {
     const enrollments = await this.prisma.enrollment.findMany({
-      where: { sectionId, status: 'ACTIVE' },
+      where: { sectionId: sectionSubject.section.id, status: 'ACTIVE' },
       include: {
         student: { select: { id: true, fullName: true, rollNo: true } },
       },
       orderBy: { student: { fullName: 'asc' } },
     });
-    const roster = enrollments.map((e) => e.student);
+    let roster = enrollments.map((e) => e.student);
+
+    // Guarded so a compulsory subject — every subject of a regular class — runs
+    // the exact queries it ran before, and no extra one.
+    if (sectionSubject.isElective) {
+      const academicYearId = await this.sessionFor(
+        enrollments,
+        sectionSubject.section.schoolId,
+        date,
+      );
+      if (academicYearId) {
+        const takers = new Set(
+          await narrowToTakers(
+            this.prisma,
+            sectionSubject.id,
+            roster.map((s) => s.id),
+            academicYearId,
+          ),
+        );
+        roster = roster.filter((s) => takers.has(s.id));
+      }
+    }
 
     const current = new Set(roster.map((s) => s.id));
     const missing = [...new Set(markedStudentIds)].filter(
@@ -557,9 +659,16 @@ export class AttendanceService extends BaseSchoolScopedService {
       tally.set(m.studentId, t);
     }
 
+    // A summary spans a range, so its session is the one the window ends in.
+    const asOf = query.to
+      ? this.toDateOnly(query.to)
+      : query.from
+        ? this.toDateOnly(query.from)
+        : new Date();
     const roster = await this.rosterFor(
-      sectionSubject.section.id,
+      sectionSubject,
       marks.map((m) => m.studentId),
+      asOf,
     );
 
     return {

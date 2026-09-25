@@ -486,7 +486,7 @@ export class UsersService {
           type: 'USER_ENROLLED',
           title: `New ${dto.role === Role.TEACHER ? 'teacher' : 'student'} added`,
           body: `${dto.fullName ?? 'A new user'} was added to your school.`,
-          link: dto.role === Role.TEACHER ? '/teacher' : '/student',
+          link: `/${dto.role === Role.TEACHER ? 'teacher' : 'student'}/${user.id}`,
           notifyPreferenceKey: 'notifyGrades',
         } as NotificationCreateEvent);
       }
