@@ -5,12 +5,21 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import {
+  InjectThrottlerStorage,
+  ThrottlerException,
+  type ThrottlerStorage,
+} from '@nestjs/throttler';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService } from '../audit/audit.service';
+import { tooManyAttempts } from './guards/user-throttler.guard';
 import type { StringValue } from 'ms';
 
+// ponytail: counts successful sign-ins too, so a class of more than 30 on one
+// network waits up to a minute; count only failures if that bites.
+const LOGINS_PER_NETWORK_PER_MINUTE = 30;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 const GENERIC_RESET_RESPONSE = {
   message: 'If an account exists for that email, a reset link has been sent.',
@@ -22,6 +31,7 @@ export class AuthService {
     private prisma: PrismaService,
     private jwt: JwtService,
     private audit: AuditLogService,
+    @InjectThrottlerStorage() private throttle: ThrottlerStorage,
   ) {}
 
   private getAccessSecret(): string {
@@ -75,7 +85,19 @@ export class AuthService {
     );
   }
 
-  async login(email: string, password: string) {
+  async login(email: string, password: string, ip: string) {
+    // The route limits each account; this stops one network guessing across
+    // many accounts (password spraying), which a per-account limit never sees.
+    const { isBlocked, timeToBlockExpire } = await this.throttle.increment(
+      `login-network:${ip}`,
+      60_000,
+      LOGINS_PER_NETWORK_PER_MINUTE,
+      60_000,
+      'login-network',
+    );
+    if (isBlocked)
+      throw new ThrottlerException(tooManyAttempts(timeToBlockExpire));
+
     const user = await (this.prisma as any).user.findUnique({
       where: { email },
       omit: { passwordHash: false },

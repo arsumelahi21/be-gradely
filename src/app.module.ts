@@ -3,7 +3,11 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import {
+  tooManyAttempts,
+  UserThrottlerGuard,
+} from './auth/guards/user-throttler.guard';
 import { Redis } from 'ioredis';
 import { ThrottlerRedisStorage } from './common/services/throttler-redis.storage';
 import { PrismaModule } from './prisma/prisma.module';
@@ -32,8 +36,9 @@ import { ChatbotModule } from './chatbot/chatbot.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
-    // Global rate limiting (PLAN.md P0-13a / Phase 1 §1.5.1). Sane default of
-    // 100 req/min/IP; auth-sensitive routes tighten this with @Throttle.
+    // Global rate limiting (PLAN.md P0-13a / Phase 1 §1.5.1): 100 req/min per
+    // signed-in user, or per IP when anonymous (UserThrottlerGuard); auth-sensitive
+    // routes tighten this with @Throttle.
     // THROTTLE_LIMIT is how the e2e suite lifts the cap — an APP_GUARD cannot
     // be replaced with overrideGuard().
     // Counters live in Redis when one is configured, so the limit is per
@@ -46,6 +51,8 @@ import { ChatbotModule } from './chatbot/chatbot.module';
           limit: Number(process.env.THROTTLE_LIMIT ?? 100),
         },
       ],
+      errorMessage: (_context, { timeToBlockExpire }) =>
+        tooManyAttempts(timeToBlockExpire),
       ...(process.env.REDIS_URL
         ? {
             storage: new ThrottlerRedisStorage(
@@ -86,7 +93,7 @@ import { ChatbotModule } from './chatbot/chatbot.module';
   providers: [
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: UserThrottlerGuard,
     },
   ],
 })
