@@ -61,7 +61,9 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
             subjectId: subject.id,
             teacherId: teacher?.id ?? null,
             isPrimary: dto.isPrimary ?? false,
-            isElective: dto.isElective ?? false,
+            // Every subject is selectable now; selectForRoster below ticks the
+            // whole class, so nobody starts without it.
+            isElective: dto.isElective ?? true,
             schedule: dto.schedule ?? null,
           },
           include: this.defaultInclude(),
