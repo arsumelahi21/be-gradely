@@ -39,6 +39,7 @@ import {
   FindTimetableQueryDto,
   MyTimetableQueryDto,
 } from './dto/find-timetable-query.dto';
+import { subjectsOf } from '../section-subjects/subject-takers';
 import {
   generatePeriodSlots,
   minToHHMM,
@@ -2151,13 +2152,7 @@ export class TimetableService extends BaseSchoolScopedService {
         select: { id: true, schoolId: true },
       });
       if (!student) throw new ForbiddenException('Student profile not found');
-      const sectionId = await this.activeSectionFor(
-        student.id,
-        query.academicYearId,
-        student.schoolId,
-      );
-      if (!sectionId) return this.emptyTimetable(student.schoolId);
-      return this.getClassTimetable(sectionId, actor, query);
+      return this.studentTimetable(student, actor, query);
     }
     if (actor.role === Role.PARENT) {
       const studentId = await this.resolveParentChild(actor, query.studentId);
@@ -2166,15 +2161,36 @@ export class TimetableService extends BaseSchoolScopedService {
         select: { id: true, schoolId: true },
       });
       if (!student) throw new NotFoundException('Student not found');
-      const sectionId = await this.activeSectionFor(
-        student.id,
-        query.academicYearId,
-        student.schoolId,
-      );
-      if (!sectionId) return this.emptyTimetable(student.schoolId);
-      return this.getClassTimetable(sectionId, actor, query);
+      return this.studentTimetable(student, actor, query);
     }
     throw new ForbiddenException('Not allowed');
+  }
+
+  /** The student's class timetable, narrowed to the subjects they take. */
+  private async studentTimetable(
+    student: { id: string; schoolId: string },
+    actor: Actor,
+    query: MyTimetableQueryDto,
+  ) {
+    const sectionId = await this.activeSectionFor(
+      student.id,
+      query.academicYearId,
+      student.schoolId,
+    );
+    if (!sectionId) return this.emptyTimetable(student.schoolId);
+    const timetable = await this.getClassTimetable(sectionId, actor, query);
+    const taken = await subjectsOf(
+      this.prisma,
+      student.id,
+      sectionId,
+      timetable.academicYearId,
+    );
+    return {
+      ...timetable,
+      entries: [...timetable.entries].filter((e) =>
+        taken.has(e.sectionSubjectId),
+      ),
+    };
   }
 
   async getTeacherTimetable(
