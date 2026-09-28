@@ -649,6 +649,42 @@ describe('Student subject enrollment (e2e)', () => {
       expect(ids).toEqual([f.maths, f.electives.Physics].sort());
     });
 
+    it("gives each subject its code and teacher's name, and no teacher contact details", async () => {
+      const f = await seedSelectionSection();
+      await patch(f.adminToken, {
+        academicYearId: f.academicYear.id,
+        studentIds: [f.studentIds[0]],
+        add: [f.electives.Physics],
+      });
+      const physics = await prisma.sectionSubject.findUniqueOrThrow({
+        where: { id: f.electives.Physics },
+      });
+      await prisma.subject.update({
+        where: { id: physics.subjectId },
+        data: { code: 'PHY-101' },
+      });
+      await prisma.teacherProfile.update({
+        where: { id: f.teacherProfile.id },
+        data: { phone: '0300-0000000', email: 'private@teacher.test' },
+      });
+
+      const res = await combination(
+        await tokenFor(app, f.students[0].user),
+        f.studentIds[0],
+      );
+      const byId = new Map<string, any>(
+        res.body.subjects.map((s: any) => [s.sectionSubjectId, s]),
+      );
+      expect(byId.get(f.maths).teacher).toEqual({
+        id: f.teacherProfile.id,
+        fullName: f.teacherProfile.fullName,
+      });
+      expect(byId.get(f.electives.Physics)).toMatchObject({
+        subject: { code: 'PHY-101' },
+        teacher: null,
+      });
+    });
+
     it('lets a student read their own combination', async () => {
       const f = await seedSelectionSection();
       const token = await tokenFor(app, f.students[0].user);
