@@ -20,13 +20,21 @@ const apply = process.argv.includes('--apply');
 const target = (process.env.DATABASE_URL ?? '').match(/@([^/?]+)\/([^?]+)/);
 console.log(`target: ${target ? `${target[1]}/${target[2]}` : 'unknown'}`);
 
+// Each count mirrors the statement it previews: the UPDATE flips every
+// compulsory subject, while the INSERT reaches only enrolled students. Counting
+// both over one LEFT JOIN promised a tick for every subject in an empty section
+// — the row is (NULL, id, NULL), which count(DISTINCT ...) happily counts — so
+// the dry run reported more than --apply then wrote.
 const [plan] = await prisma.$queryRaw`
   SELECT
-    count(DISTINCT ss."id")::int AS subjects,
-    count(DISTINCT (e."studentId", ss."id", e."academicYearId"))::int AS ticks
-  FROM "SectionSubject" ss
-  LEFT JOIN "Enrollment" e ON e."sectionId" = ss."sectionId"
-  WHERE ss."isElective" = false`;
+    (SELECT count(*)::int FROM "SectionSubject" WHERE "isElective" = false)
+      AS subjects,
+    (SELECT count(*)::int FROM (
+      SELECT DISTINCT e."studentId", ss."id", e."academicYearId"
+      FROM "SectionSubject" ss
+      JOIN "Enrollment" e ON e."sectionId" = ss."sectionId"
+      WHERE ss."isElective" = false
+    ) t) AS ticks`;
 console.log(
   `${plan.subjects} compulsory subject${plan.subjects === 1 ? '' : 's'} to make selectable · ${plan.ticks} student ticks to add`,
 );

@@ -167,6 +167,19 @@ describe('make-subjects-selectable script (e2e)', () => {
     ]);
   });
 
+  it('promises exactly the ticks it writes, empty sections included', async () => {
+    await seedHistory();
+    // Nobody enrolled here, so this subject earns no ticks — but its LEFT JOIN
+    // row was (NULL, id, NULL), which counted, and the dry run over-promised.
+    await seedClass({ studentCount: 0 });
+
+    const promised = Number(/· (\d+) student ticks/.exec(run())?.[1]);
+    const before = await prisma.studentSubject.count();
+    run('--apply');
+
+    expect((await prisma.studentSubject.count()) - before).toBe(promised);
+  });
+
   it('is safe to run twice', async () => {
     const f = await seedHistory();
     run('--apply');
