@@ -82,7 +82,7 @@ describe('Rate limiting (e2e)', () => {
       expect((await login('case@login.test', WRONG)).status).toBe(429);
     });
 
-    it('lets a class sign in together, but caps attempts across accounts per network', async () => {
+    it('caps failed attempts across accounts on one network', async () => {
       const statuses: number[] = [];
       for (let i = 0; i < 31; i++) {
         statuses.push((await login(`pupil${i}@login.test`, WRONG)).status);
@@ -90,6 +90,24 @@ describe('Rate limiting (e2e)', () => {
 
       expect(statuses.slice(0, 30).every((s) => s === 401)).toBe(true);
       expect(statuses[30]).toBe(429);
+    });
+
+    it('lets a whole class sign in at once, past the network cap', async () => {
+      const school = await createTestSchool();
+      const pupils = await Promise.all(
+        Array.from({ length: 31 }, () =>
+          createTestUser({ role: Role.STUDENT, schoolId: school.id }),
+        ),
+      );
+
+      const statuses: number[] = [];
+      for (const pupil of pupils) {
+        statuses.push((await login(pupil.email, pupil.password)).status);
+      }
+
+      // Every one a success: only failures count, so morning registration on a
+      // school's single IP never locks the class out.
+      expect(statuses.every((s) => s === 201)).toBe(true);
     });
   });
 
