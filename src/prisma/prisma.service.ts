@@ -13,8 +13,6 @@ export class PrismaService
         user: {
           passwordHash: true,
           refreshTokenHash: true,
-          resetTokenHash: true,
-          resetTokenExpiresAt: true,
         },
       },
     });

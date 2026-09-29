@@ -2,19 +2,12 @@ import {
   Injectable,
   UnauthorizedException,
   ForbiddenException,
-  BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService } from '../audit/audit.service';
 import type { StringValue } from 'ms';
-
-const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
-const GENERIC_RESET_RESPONSE = {
-  message: 'If an account exists for that email, a reset link has been sent.',
-};
 
 @Injectable()
 export class AuthService {
@@ -50,6 +43,7 @@ export class AuthService {
     role: string;
     schoolId: string | null;
     email: string;
+    mustChangePassword: boolean;
   }) {
     return this.jwt.signAsync(
       {
@@ -57,6 +51,8 @@ export class AuthService {
         role: user.role,
         schoolId: user.schoolId,
         email: user.email,
+        // Carried in the token so MustChangePasswordInterceptor costs no query.
+        mustChangePassword: user.mustChangePassword,
       },
       {
         secret: this.getAccessSecret(),
@@ -93,6 +89,7 @@ export class AuthService {
       role: user.role,
       schoolId: user.schoolId ?? null,
       email: user.email,
+      mustChangePassword: user.mustChangePassword,
     });
 
     const refreshToken = await this.signRefreshToken({ id: user.id });
@@ -164,6 +161,7 @@ export class AuthService {
       role: user.role,
       schoolId: user.schoolId ?? null,
       email: user.email,
+      mustChangePassword: user.mustChangePassword,
     });
 
     const newRefreshToken = await this.signRefreshToken({ id: user.id });
@@ -180,68 +178,6 @@ export class AuthService {
     await (this.prisma as any).user.update({
       where: { id: userId },
       data: { refreshTokenHash: null },
-    });
-    return { success: true };
-  }
-
-  /** Start a password reset; same response whether or not the email exists (no enumeration — Phase 1 §1.5.6). Logs the link only when NODE_ENV=development. */
-  async forgotPassword(email: string) {
-    const user = await this.prisma.user.findUnique({ where: { email } });
-    if (user && user.isActive) {
-      const rawToken = randomBytes(32).toString('hex');
-      const resetTokenHash = await bcrypt.hash(rawToken, 10);
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: {
-          resetTokenHash,
-          resetTokenExpiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
-        },
-      });
-      // Token embeds the userId so reset can look the user up (the raw token
-      // is never stored — only its bcrypt hash is).
-      const token = `${user.id}.${rawToken}`;
-      const base = process.env.FRONTEND_URL ?? 'http://localhost:3000';
-      const link = `${base}/reset-password?token=${encodeURIComponent(token)}`;
-      // TODO(Phase 3): send via the chosen email vendor. Dev: log the link.
-      // Opt in, never opt out: production sets no NODE_ENV, and this link grants account takeover.
-      if (process.env.NODE_ENV === 'development')
-        console.log(`[password-reset] ${email} -> ${link}`);
-    }
-    return GENERIC_RESET_RESPONSE;
-  }
-
-  async resetPassword(token: string, newPassword: string) {
-    const sep = token.indexOf('.');
-    if (sep <= 0) throw new BadRequestException('Invalid or expired token');
-    const userId = token.slice(0, sep);
-    const rawToken = token.slice(sep + 1);
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      omit: { resetTokenHash: false, resetTokenExpiresAt: false },
-    });
-    if (
-      !user ||
-      !user.resetTokenHash ||
-      !user.resetTokenExpiresAt ||
-      user.resetTokenExpiresAt.getTime() < Date.now()
-    ) {
-      throw new BadRequestException('Invalid or expired token');
-    }
-
-    const ok = await bcrypt.compare(rawToken, user.resetTokenHash);
-    if (!ok) throw new BadRequestException('Invalid or expired token');
-
-    const passwordHash = await bcrypt.hash(newPassword, 10);
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        passwordHash,
-        resetTokenHash: null,
-        resetTokenExpiresAt: null,
-        // Kill any existing sessions on password reset.
-        refreshTokenHash: null,
-      },
     });
     return { success: true };
   }

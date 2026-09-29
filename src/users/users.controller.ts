@@ -28,6 +28,7 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { FindUsersQueryDto } from './dto/find-users-query.dto';
 import { LinkParentStudentDto } from './dto/link-parent-student.dto';
 import { SetActiveDto } from './dto/set-active.dto';
+import { AllowWithTemporaryPassword } from '../auth/decorators/allow-with-temporary-password.decorator';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('users')
@@ -109,6 +110,7 @@ export class UsersController {
 
   // Self-service password change (verifies current password). Two-segment path,
   // so it never collides with @Patch(':id').
+  @AllowWithTemporaryPassword()
   @Roles(
     Role.SUPER_ADMIN,
     Role.SCHOOL_ADMIN,
@@ -119,6 +121,14 @@ export class UsersController {
   @Patch('me/password')
   changePassword(@Body() dto: ChangePasswordDto, @Req() req: any) {
     return this.users.changeMyPassword(req.user, dto);
+  }
+
+  // Replaces self-service password recovery: the temporary password is in the
+  // response and nowhere else, so it is shown to the admin once and never again.
+  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
+  @Post(':id/password-reset')
+  resetPassword(@Param('id') id: string, @Req() req: any) {
+    return this.users.resetPassword(req.user, id);
   }
 
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)

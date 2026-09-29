@@ -119,11 +119,7 @@ export class SchoolsService {
     if (dto.isActive === false)
       await this.prisma.user.updateMany({
         where: { schoolId: id },
-        data: {
-          refreshTokenHash: null,
-          resetTokenHash: null,
-          resetTokenExpiresAt: null,
-        },
+        data: { refreshTokenHash: null },
       });
 
     const updated = await (this.prisma as any).school.update({

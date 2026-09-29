@@ -85,8 +85,7 @@ model User {
   isActive              Boolean              @default(true)
   schoolId              String?
   refreshTokenHash      String?
-  resetTokenHash        String?
-  resetTokenExpiresAt   DateTime?
+  mustChangePassword    Boolean              @default(false)
   fullName              String?
   phone                 String?
   phoneDialCode         String?

@@ -12,9 +12,8 @@ import { JwtService } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
-import { ForgotPasswordDto } from './dto/forgot-password.dto';
-import { ResetPasswordDto } from './dto/reset-password.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { AllowWithTemporaryPassword } from './decorators/allow-with-temporary-password.decorator';
 
 @Controller('auth')
 export class AuthController {
@@ -24,24 +23,10 @@ export class AuthController {
   ) {}
 
   // Tight limit on the brute-force target: 5 attempts/min/IP (PLAN.md P0-13a / Phase 1 §1.5.1).
-  // forgot/reset-password (§1.3) must carry the same tight throttle.
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('login')
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto.email, dto.password);
-  }
-
-  // Brute-force / email-bomb targets — same tight limit as login.
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @Post('forgot-password')
-  forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.auth.forgotPassword(dto.email);
-  }
-
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @Post('reset-password')
-  resetPassword(@Body() dto: ResetPasswordDto) {
-    return this.auth.resetPassword(dto.token, dto.newPassword);
   }
 
   @Post('refresh')
@@ -56,12 +41,14 @@ export class AuthController {
     return this.auth.refresh(payload.sub, dto.refreshToken);
   }
 
+  @AllowWithTemporaryPassword()
   @UseGuards(JwtAuthGuard)
   @Post('logout')
   logout(@Req() req: any) {
     return this.auth.logout(req.user.userId);
   }
 
+  @AllowWithTemporaryPassword()
   @UseGuards(JwtAuthGuard)
   @Get('me')
   me(@Req() req: any) {
