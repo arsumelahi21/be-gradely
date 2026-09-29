@@ -708,6 +708,28 @@ describe('Student subject enrollment (e2e)', () => {
   });
 
   describe('default selection', () => {
+    it('makes a newly added subject selectable, ticked for everyone already enrolled', async () => {
+      const f = await seedSelectionSection();
+      const subject = await prisma.subject.create({
+        data: { schoolId: f.school.id, name: `History-${uniq()}` },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post('/api/section-subjects')
+        .set('Authorization', `Bearer ${f.adminToken}`)
+        .send({ sectionId: f.section.id, subjectId: subject.id });
+      expect(res.status).toBe(201);
+      expect(res.body.isElective).toBe(true);
+
+      const takers = await prisma.studentSubject.findMany({
+        where: { sectionSubjectId: res.body.id },
+        select: { studentId: true },
+      });
+      expect(takers.map((t) => t.studentId).sort()).toEqual(
+        [...f.studentIds].sort(),
+      );
+    });
+
     const chosen = (studentId: string) =>
       prisma.studentSubject
         .findMany({ where: { studentId }, select: { sectionSubjectId: true } })
