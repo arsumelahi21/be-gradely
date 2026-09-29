@@ -30,6 +30,7 @@ import {
 import { ExamSettingsService } from './exam-settings.service';
 import { canEnterMarks, canFinalize, canReopen } from './exam-status';
 import {
+  crossSectionPlacements,
   narrowToTakers,
   takersBySubject,
 } from '../academics/section-subjects/subject-takers';
@@ -1051,8 +1052,20 @@ export class ExamResultsService {
     if (!placements.length) {
       return this.composeCard(school, student, placement, this.noCardData());
     }
+    // Subjects picked from sibling sections live in those sections' examinations.
+    const sections = [
+      ...placements,
+      ...(
+        await crossSectionPlacements(
+          this.prisma,
+          [student.id],
+          HISTORY_ENROLLMENT,
+          academicYearId,
+        )
+      ).map((p) => ({ ...p, status: placements[0].status })),
+    ];
     const data = await this.loadCardData(student.schoolId, [student.id], {
-      OR: placements.map((p) => ({
+      OR: sections.map((p) => ({
         sectionId: p.sectionId,
         academicYearId: p.academicYearId,
       })),
@@ -1063,7 +1076,7 @@ export class ExamResultsService {
       student,
       placement,
       data,
-      openSectionsOf(placements),
+      openSectionsOf(sections),
     );
   }
 
@@ -1143,10 +1156,28 @@ export class ExamResultsService {
         p,
       ]);
     }
+    // Each student's picks from sibling sections sit in those sections' examinations.
+    const picked = await crossSectionPlacements(
+      this.prisma,
+      students.map((s) => s.id),
+      HISTORY_ENROLLMENT,
+      year.id,
+    );
+    for (const p of picked) {
+      const own = placementsOf.get(p.studentId) ?? [];
+      placementsOf.set(p.studentId, [
+        ...own,
+        { sectionId: p.sectionId, status: own[0]?.status ?? 'ACTIVE' },
+      ]);
+    }
     const data = await this.loadCardData(
       section.schoolId,
       students.map((s) => s.id),
-      { sectionId, academicYearId: year.id, termId },
+      {
+        sectionId: { in: [sectionId, ...picked.map((p) => p.sectionId)] },
+        academicYearId: year.id,
+        termId,
+      },
     );
     return {
       school,
@@ -1488,10 +1519,13 @@ export class ExamResultsService {
   }
 
   private async finalizedResultsFor(sid: string) {
-    const placements = await this.prisma.enrollment.findMany({
-      where: { studentId: sid, status: { in: HISTORY_ENROLLMENT } },
-      select: { sectionId: true, academicYearId: true },
-    });
+    const placements = [
+      ...(await this.prisma.enrollment.findMany({
+        where: { studentId: sid, status: { in: HISTORY_ENROLLMENT } },
+        select: { sectionId: true, academicYearId: true },
+      })),
+      ...(await crossSectionPlacements(this.prisma, [sid], HISTORY_ENROLLMENT)),
+    ];
     if (!placements.length) return [];
     const exams = await this.prisma.examination.findMany({
       where: {
@@ -1618,11 +1652,10 @@ export class ExamResultsService {
     subject: {
       id: string;
       sectionSubjectId: string;
-      sectionSubject: { isElective: boolean; subject: { name: string } };
+      sectionSubject: { subject: { name: string } };
     },
     studentIds: string[],
   ) {
-    if (!subject.sectionSubject.isElective) return;
     const [takers, marked] = await Promise.all([
       narrowToTakers(
         db,
@@ -1658,14 +1691,9 @@ export class ExamResultsService {
   private async sittingThisPaper(
     db: Db,
     core: Pick<ExamCore, 'academicYearId'>,
-    subject: {
-      id: string;
-      sectionSubjectId: string;
-      sectionSubject: { isElective: boolean };
-    },
+    subject: { id: string; sectionSubjectId: string },
     sheet: Sheet,
   ): Promise<SheetStudent[]> {
-    if (!subject.sectionSubject.isElective) return sheet.students;
     const takers = new Set(
       await narrowToTakers(
         db,

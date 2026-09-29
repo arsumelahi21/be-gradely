@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { EnrollmentStatus, Prisma } from '@prisma/client';
 
 type Db = Prisma.TransactionClient;
 
@@ -7,11 +7,16 @@ type Db = Prisma.TransactionClient;
  *
  * Every caller passes the roster IT already resolved — attendance uses ACTIVE
  * only, exams use ACTIVE+COMPLETED minus transfers-out — and these helpers only
- * narrow it. A compulsory offering therefore returns that roster untouched, so a
- * regular class runs exactly the query it ran before this feature existed.
+ * narrow it. A compulsory offering returns that roster minus anyone placed in a
+ * sibling section who didn't pick it, so a regular class keeps its whole roster.
+ *
+ * A student's subjects may come from any section of their own class: a
+ * StudentSubject row on another section's offering is how a student placed in
+ * A1 takes Chemistry from A2. `crossSectionTakers` finds those students, since
+ * no section roster lists them.
  */
 
-/** Takers of each subject, in two queries whatever the subject count. */
+/** Takers of each subject, in a handful of queries whatever the subject count. */
 export async function takersBySubject(
   db: Db,
   sectionSubjectIds: string[],
@@ -23,36 +28,75 @@ export async function takersBySubject(
 
   const offerings = await db.sectionSubject.findMany({
     where: { id: { in: sectionSubjectIds } },
-    select: { id: true, isElective: true },
+    select: {
+      id: true,
+      isElective: true,
+      sectionId: true,
+      section: { select: { classGradeId: true } },
+    },
   });
-
-  // Shared between compulsory subjects; the ReadonlySet return type is what
-  // stops a caller mutating one subject's takers into another's.
-  const roster = new Set(candidateStudentIds);
-  const electiveIds: string[] = [];
-  for (const offering of offerings) {
-    if (!offering.isElective) {
-      takers.set(offering.id, roster);
-      continue;
-    }
-    electiveIds.push(offering.id);
-    takers.set(offering.id, new Set());
-  }
   // An id with no offering row is left out entirely, so a caller defaulting to
   // an empty set gets nobody rather than the whole class.
-  if (!electiveIds.length || !candidateStudentIds.length) return takers;
+  for (const o of offerings) takers.set(o.id, new Set());
+  if (!offerings.length || !candidateStudentIds.length) return takers;
 
+  // Only a compulsory offering needs to know where each candidate sits: one
+  // placed in a SIBLING section is on the roster for a pick, not for everything
+  // this section teaches.
+  const compulsory = offerings.filter((o) => !o.isElective);
+  const placements = compulsory.length
+    ? await db.enrollment.findMany({
+        where: {
+          studentId: { in: candidateStudentIds },
+          academicYearId,
+          section: {
+            classGradeId: {
+              in: [...new Set(compulsory.map((o) => o.section.classGradeId))],
+            },
+          },
+        },
+        select: {
+          studentId: true,
+          sectionId: true,
+          status: true,
+          section: { select: { classGradeId: true } },
+        },
+      })
+    : [];
+  const fromSibling = new Set<string>();
+  for (const o of compulsory) {
+    const placedHere = new Set<string>();
+    const placedInSibling = new Set<string>();
+    for (const p of placements) {
+      if (p.section.classGradeId !== o.section.classGradeId) continue;
+      if (p.sectionId === o.sectionId) placedHere.add(p.studentId);
+      else if (p.status !== EnrollmentStatus.INACTIVE)
+        placedInSibling.add(p.studentId);
+    }
+    const set = takers.get(o.id)!;
+    for (const id of candidateStudentIds) {
+      if (placedHere.has(id) || !placedInSibling.has(id)) set.add(id);
+      else fromSibling.add(id);
+    }
+  }
+
+  // Rows matter for every candidate of an elective, but for a compulsory
+  // offering only for sibling-placed candidates — so a regular class with no
+  // cross-section picks reads none.
+  const anyElective = offerings.some((o) => o.isElective);
+  if (!anyElective && !fromSibling.size) return takers;
   const chosen = await db.studentSubject.findMany({
     where: {
-      sectionSubjectId: { in: electiveIds },
+      sectionSubjectId: { in: offerings.map((o) => o.id) },
       academicYearId,
-      studentId: { in: candidateStudentIds },
+      studentId: {
+        in: anyElective ? candidateStudentIds : [...fromSibling],
+      },
     },
     select: { sectionSubjectId: true, studentId: true },
   });
-  for (const row of chosen) {
+  for (const row of chosen)
     takers.get(row.sectionSubjectId)?.add(row.studentId);
-  }
   return takers;
 }
 
@@ -75,30 +119,261 @@ export async function narrowToTakers(
   return candidateStudentIds.filter((id) => takers.has(id));
 }
 
-/** The section-subjects one student takes: every compulsory one, plus their own electives. */
+/**
+ * Students taking any of these offerings from a sibling section of their class:
+ * they hold the row but are not placed in the offering's own section that year.
+ * Callers add them to their section roster, then narrow per subject as usual.
+ * A closed placement keeps its picks, so a pick counts only while the student
+ * holds a placement in `statuses` in the offering's class.
+ */
+export async function crossSectionTakers(
+  db: Db,
+  sectionSubjectIds: string[],
+  academicYearId: string,
+  statuses: EnrollmentStatus[] = [EnrollmentStatus.ACTIVE],
+): Promise<string[]> {
+  if (!sectionSubjectIds.length) return [];
+  const rows = await db.studentSubject.findMany({
+    where: { sectionSubjectId: { in: sectionSubjectIds }, academicYearId },
+    select: {
+      studentId: true,
+      sectionSubject: {
+        select: {
+          sectionId: true,
+          section: { select: { classGradeId: true } },
+        },
+      },
+    },
+  });
+  if (!rows.length) return [];
+  const placements = await db.enrollment.findMany({
+    where: {
+      studentId: { in: [...new Set(rows.map((r) => r.studentId))] },
+      academicYearId,
+    },
+    select: {
+      studentId: true,
+      sectionId: true,
+      status: true,
+      section: { select: { classGradeId: true } },
+    },
+  });
+  const placedHere = new Set(
+    placements.map((p) => `${p.studentId}:${p.sectionId}`),
+  );
+  const openIn = new Set(
+    placements
+      .filter((p) => statuses.includes(p.status))
+      .map((p) => `${p.studentId}:${p.section.classGradeId}`),
+  );
+  return [
+    ...new Set(
+      rows
+        .filter(
+          (r) =>
+            !placedHere.has(`${r.studentId}:${r.sectionSubject.sectionId}`) &&
+            openIn.has(
+              `${r.studentId}:${r.sectionSubject.section.classGradeId}`,
+            ),
+        )
+        .map((r) => r.studentId),
+    ),
+  ];
+}
+
+/**
+ * The sections a student reaches through picks from sibling sections, as
+ * `{ sectionId, academicYearId }` pairs — so anything a student sees "for their
+ * section" also covers the section each of their subjects actually comes from.
+ * As with `crossSectionTakers`, only a placement in `statuses` in the pick's
+ * class that session counts.
+ */
+export async function crossSectionPlacements(
+  db: Db,
+  studentIds: string[],
+  statuses: EnrollmentStatus[],
+  academicYearId?: string,
+): Promise<{ studentId: string; sectionId: string; academicYearId: string }[]> {
+  if (!studentIds.length) return [];
+  const [rows, placements] = await Promise.all([
+    db.studentSubject.findMany({
+      where: {
+        studentId: { in: studentIds },
+        ...(academicYearId && { academicYearId }),
+      },
+      select: {
+        studentId: true,
+        academicYearId: true,
+        sectionSubject: {
+          select: {
+            sectionId: true,
+            section: { select: { classGradeId: true } },
+          },
+        },
+      },
+    }),
+    db.enrollment.findMany({
+      where: {
+        studentId: { in: studentIds },
+        ...(academicYearId && { academicYearId }),
+      },
+      select: {
+        studentId: true,
+        sectionId: true,
+        academicYearId: true,
+        status: true,
+        section: { select: { classGradeId: true } },
+      },
+    }),
+  ]);
+  const placed = new Set(
+    placements.map((p) => `${p.studentId}:${p.sectionId}:${p.academicYearId}`),
+  );
+  const open = new Set(
+    placements
+      .filter((p) => statuses.includes(p.status))
+      .map(
+        (p) => `${p.studentId}:${p.section.classGradeId}:${p.academicYearId}`,
+      ),
+  );
+  const out = new Map<
+    string,
+    { studentId: string; sectionId: string; academicYearId: string }
+  >();
+  for (const r of rows) {
+    const key = `${r.studentId}:${r.sectionSubject.sectionId}:${r.academicYearId}`;
+    if (placed.has(key) || out.has(key)) continue;
+    const classKey = `${r.studentId}:${r.sectionSubject.section.classGradeId}:${r.academicYearId}`;
+    if (!open.has(classKey)) continue;
+    out.set(key, {
+      studentId: r.studentId,
+      sectionId: r.sectionSubject.sectionId,
+      academicYearId: r.academicYearId,
+    });
+  }
+  return [...out.values()];
+}
+
+/**
+ * Whether a student not placed in an offering's section still sits it that
+ * year, by a pick from a sibling section. The row alone is not enough: a
+ * placement that closed keeps its choices, and those must not reopen access —
+ * so the placement must be open, and in the offering's class.
+ */
+export async function picksFromSibling(
+  db: Db,
+  studentId: string,
+  sectionSubjectId: string,
+  academicYearId: string,
+  statuses: EnrollmentStatus[] = [EnrollmentStatus.ACTIVE],
+): Promise<boolean> {
+  const row = await db.studentSubject.findFirst({
+    where: {
+      studentId,
+      sectionSubjectId,
+      academicYearId,
+      student: {
+        enrollments: {
+          some: {
+            academicYearId,
+            status: { in: statuses },
+            section: {
+              classGrade: {
+                sections: {
+                  some: { subjects: { some: { id: sectionSubjectId } } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    select: { id: true },
+  });
+  return !!row;
+}
+
+/**
+ * The section-subjects one student takes in a placement: every compulsory one
+ * of their section, plus their own picks — which may come from any section of
+ * the same class.
+ */
 export async function subjectsOf(
   db: Db,
   studentId: string,
   sectionId: string,
   academicYearId: string,
 ): Promise<Set<string>> {
-  const offerings = await db.sectionSubject.findMany({
-    where: { sectionId },
-    select: { id: true, isElective: true },
-  });
+  const [compulsory, chosen] = await Promise.all([
+    db.sectionSubject.findMany({
+      where: { sectionId, isElective: false },
+      select: { id: true },
+    }),
+    db.studentSubject.findMany({
+      where: {
+        studentId,
+        academicYearId,
+        sectionSubject: {
+          section: { classGrade: { sections: { some: { id: sectionId } } } },
+        },
+      },
+      select: { sectionSubjectId: true },
+    }),
+  ]);
+  return new Set([
+    ...compulsory.map((o) => o.id),
+    ...chosen.map((r) => r.sectionSubjectId),
+  ]);
+}
 
-  const taken = new Set(
-    offerings.filter((o) => !o.isElective).map((o) => o.id),
-  );
-  const electiveIds = offerings.filter((o) => o.isElective).map((o) => o.id);
-  if (!electiveIds.length) return taken;
-
-  const chosen = await db.studentSubject.findMany({
-    where: { studentId, academicYearId, sectionSubjectId: { in: electiveIds } },
-    select: { sectionSubjectId: true },
-  });
-  for (const row of chosen) taken.add(row.sectionSubjectId);
-  return taken;
+/**
+ * Subjects each student already has marks or attendance in this session.
+ * Whether a mid-session change may drop them is an open business rule, so
+ * callers keep those subjects rather than removing them.
+ */
+export async function recordedSubjects(
+  db: Db,
+  studentIds: string[],
+  sectionSubjectIds: string[],
+  year: { id: string; startDate: Date; endDate: Date },
+): Promise<Map<string, Set<string>>> {
+  const recorded = new Map<string, Set<string>>();
+  if (!studentIds.length || !sectionSubjectIds.length) return recorded;
+  const [marked, attended] = await Promise.all([
+    db.examResult.findMany({
+      where: {
+        studentId: { in: studentIds },
+        exam: {
+          sectionSubjectId: { in: sectionSubjectIds },
+          academicYearId: year.id,
+        },
+      },
+      select: {
+        studentId: true,
+        exam: { select: { sectionSubjectId: true } },
+      },
+    }),
+    // Attendance carries no session and a section keeps its subjects across
+    // sessions, so only the session's dates keep last year's rows out.
+    db.attendance.groupBy({
+      by: ['studentId', 'sectionSubjectId'],
+      where: {
+        studentId: { in: studentIds },
+        sectionSubjectId: { in: sectionSubjectIds },
+        date: { gte: year.startDate, lte: year.endDate },
+      },
+    }),
+  ]);
+  for (const { studentId, sectionSubjectId } of [
+    ...marked.map((m) => ({ studentId: m.studentId, ...m.exam })),
+    ...attended,
+  ]) {
+    recorded.set(
+      studentId,
+      (recorded.get(studentId) ?? new Set()).add(sectionSubjectId),
+    );
+  }
+  return recorded;
 }
 
 /**
@@ -173,7 +448,11 @@ export async function selectAllElectives(
   });
 }
 
-/** Clears one placement's selections — they describe a section the student is leaving. */
+/**
+ * Clears one placement's selections — every pick in that session from any
+ * section of the class, since they were all made against the placement the
+ * student is leaving.
+ */
 export async function clearSelections(
   db: Db,
   placement: { studentId: string; sectionId: string; academicYearId: string },
@@ -182,7 +461,11 @@ export async function clearSelections(
     where: {
       studentId: placement.studentId,
       academicYearId: placement.academicYearId,
-      sectionSubject: { sectionId: placement.sectionId },
+      sectionSubject: {
+        section: {
+          classGrade: { sections: { some: { id: placement.sectionId } } },
+        },
+      },
     },
   });
 }

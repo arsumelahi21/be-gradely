@@ -13,7 +13,10 @@ import { AuditLogService } from '../../audit/audit.service';
 import { resolvePagination } from '../../common/dto/pagination-query.dto';
 import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
-import { subjectsOf } from '../section-subjects/subject-takers';
+import {
+  recordedSubjects,
+  subjectsOf,
+} from '../section-subjects/subject-takers';
 import {
   NOTIFICATION_CREATE_BATCH,
   NotificationCreateBatchEvent,
@@ -153,7 +156,7 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
   }
 
   /** One student's combination — the read the student and parent portals use. */
-  async forStudent(studentId: string, actor: Actor) {
+  async forStudent(studentId: string, actor: Actor, academicYearId?: string) {
     // Bound to the caller's school so another school's student 404s: fetching by
     // id and then throwing 403 would confirm that id exists.
     const student = await this.prisma.studentProfile.findFirst({
@@ -170,7 +173,11 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
     await this.assertStudentAccess(actor, student);
 
     const placement = await this.prisma.enrollment.findFirst({
-      where: { studentId, status: EnrollmentStatus.ACTIVE },
+      where: {
+        studentId,
+        status: EnrollmentStatus.ACTIVE,
+        ...(academicYearId && { academicYearId }),
+      },
       orderBy: { createdAt: 'desc' },
       select: {
         sectionId: true,
@@ -211,6 +218,8 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
             subject: { select: { id: true, name: true, code: true } },
             // Students and parents read this: a teacher's name, never contact details.
             teacher: { select: { id: true, fullName: true } },
+            // A subject may come from a sibling section, so the card can't assume the placement's.
+            section: { select: { id: true, name: true } },
           },
           orderBy: { subject: { name: 'asc' } },
         })
@@ -225,6 +234,7 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
         isElective: r.isElective,
         subject: r.subject,
         teacher: r.teacher,
+        section: r.section,
       })),
     };
   }
@@ -558,41 +568,12 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
     year: { id: string; startDate: Date; endDate: Date },
     subjectName: Map<string, string>,
   ): Promise<SkippedStudent[]> {
-    const [marked, attended] = await Promise.all([
-      db.examResult.findMany({
-        where: {
-          studentId: { in: studentIds },
-          exam: {
-            sectionSubjectId: { in: sectionSubjectIds },
-            academicYearId: year.id,
-          },
-        },
-        select: {
-          studentId: true,
-          exam: { select: { sectionSubjectId: true } },
-        },
-      }),
-      // Attendance carries no session and a section keeps its subjects across
-      // sessions, so only the session's dates keep last year's rows out.
-      db.attendance.groupBy({
-        by: ['studentId', 'sectionSubjectId'],
-        where: {
-          studentId: { in: studentIds },
-          sectionSubjectId: { in: sectionSubjectIds },
-          date: { gte: year.startDate, lte: year.endDate },
-        },
-      }),
-    ]);
-    const recorded = new Map<string, Set<string>>();
-    for (const { studentId, sectionSubjectId } of [
-      ...marked.map((m) => ({ studentId: m.studentId, ...m.exam })),
-      ...attended,
-    ]) {
-      recorded.set(
-        studentId,
-        (recorded.get(studentId) ?? new Set()).add(sectionSubjectId),
-      );
-    }
+    const recorded = await recordedSubjects(
+      db,
+      studentIds,
+      sectionSubjectIds,
+      year,
+    );
     if (!recorded.size) return [];
 
     const names = await db.studentProfile.findMany({

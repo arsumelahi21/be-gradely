@@ -30,6 +30,10 @@ import {
   studentUserIds,
 } from '../common/notifications/recipients';
 import {
+  crossSectionPlacements,
+  crossSectionTakers,
+} from '../academics/section-subjects/subject-takers';
+import {
   ExamAccessService,
   ExamCore,
   HISTORY_ENROLLMENT,
@@ -1429,10 +1433,18 @@ export class ExamsService extends BaseSchoolScopedService {
       actor,
       query.studentId,
     );
-    const placements = await this.prisma.enrollment.findMany({
-      where: { studentId, status: { in: HISTORY_ENROLLMENT } },
-      select: { sectionId: true, academicYearId: true },
-    });
+    const placements = [
+      ...(await this.prisma.enrollment.findMany({
+        where: { studentId, status: { in: HISTORY_ENROLLMENT } },
+        select: { sectionId: true, academicYearId: true },
+      })),
+      // Papers picked from sibling sections belong to those sections' examinations.
+      ...(await crossSectionPlacements(
+        this.prisma,
+        [studentId],
+        HISTORY_ENROLLMENT,
+      )),
+    ];
     const { page, pageSize, skip, take } = resolvePagination(query);
     if (!placements.length) return { items: [], total: 0, page, pageSize };
 
@@ -1539,6 +1551,7 @@ export class ExamsService extends BaseSchoolScopedService {
             endMin: true,
             venue: true,
             invigilator: { select: { userId: true } },
+            sectionSubjectId: true,
             sectionSubject: { select: { subject: { select: { name: true } } } },
           },
         },
@@ -1562,11 +1575,18 @@ export class ExamsService extends BaseSchoolScopedService {
     });
     const more =
       exam.subjects.length > 3 ? `; +${exam.subjects.length - 3} more` : '';
-    const studentIds = await sectionYearStudentIds(
-      this.prisma,
-      exam.sectionId,
-      exam.academicYearId,
-    );
+    const studentIds = [
+      ...(await sectionYearStudentIds(
+        this.prisma,
+        exam.sectionId,
+        exam.academicYearId,
+      )),
+      ...(await crossSectionTakers(
+        this.prisma,
+        exam.subjects.map((s) => s.sectionSubjectId),
+        exam.academicYearId,
+      )),
+    ];
     const userIds = await studentUserIds(this.prisma, studentIds);
     if (userIds.length) {
       this.eventEmitter.emit(NOTIFICATION_CREATE, {

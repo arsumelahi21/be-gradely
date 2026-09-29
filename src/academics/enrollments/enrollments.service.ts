@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EnrollmentStatus } from '@prisma/client';
+import { EnrollmentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CacheService } from '../../common/services/cache.service';
 import { BaseSchoolScopedService } from '../../common/services/base-school.service';
@@ -18,6 +18,7 @@ import { FindEnrollmentsQueryDto } from './dto/find-enrollments-query.dto';
 import { FindPlacementsQueryDto } from './dto/find-placements-query.dto';
 import {
   clearSelections,
+  recordedSubjects,
   selectAllElectives,
 } from '../section-subjects/subject-takers';
 
@@ -142,13 +143,22 @@ export class EnrollmentsService extends BaseSchoolScopedService {
   }
 
   async create(dto: CreateEnrollmentDto, actor: Actor) {
+    const status = dto.status ?? EnrollmentStatus.ACTIVE;
+    if (dto.sectionSubjectIds && status !== EnrollmentStatus.ACTIVE) {
+      throw new BadRequestException(
+        'Subjects can only be chosen for an active enrollment',
+      );
+    }
     const { student, section, academicYear } = await this.resolveEntities(
       dto.studentId,
       dto.sectionId,
       dto.academicYearId,
       actor,
     );
-    if ((dto.status ?? EnrollmentStatus.ACTIVE) === EnrollmentStatus.ACTIVE) {
+    const picks = dto.sectionSubjectIds
+      ? await this.resolvePicks(section, dto.sectionSubjectIds)
+      : null;
+    if (status === EnrollmentStatus.ACTIVE) {
       const placed = (
         await this.findActivePlacements([student.id], academicYear.id)
       ).get(student.id);
@@ -165,19 +175,87 @@ export class EnrollmentsService extends BaseSchoolScopedService {
           studentId: student.id,
           sectionId: section.id,
           academicYearId: academicYear.id,
-          status: dto.status ?? 'ACTIVE',
+          status,
           startDate: this.toDate(dto.startDate),
           endDate: this.toDate(dto.endDate),
         },
         include: this.defaultInclude(),
       });
-      if (row.status === EnrollmentStatus.ACTIVE) {
+      if (picks) {
+        // Replace, not add: a closed placement in this class keeps its picks.
+        await this.replacePicks(tx, row, section.classGradeId, academicYear, {
+          name: student.fullName,
+          picks,
+        });
+      } else if (row.status === EnrollmentStatus.ACTIVE) {
         await selectAllElectives(tx, [row]);
       }
       return row;
     });
     await this.invalidate(section.schoolId);
     return created;
+  }
+
+  /**
+   * The StudentSubject rows a subject choice writes. Any section of the
+   * placement's class may supply a subject; only the placement's own compulsory
+   * subjects need no row, since everyone placed there takes them already.
+   */
+  private async resolvePicks(
+    section: { id: string; classGradeId: string; schoolId: string },
+    sectionSubjectIds: string[],
+  ) {
+    const [chosen, ownCompulsory] = await Promise.all([
+      this.prisma.sectionSubject.findMany({
+        where: {
+          id: { in: sectionSubjectIds },
+          section: {
+            classGradeId: section.classGradeId,
+            schoolId: section.schoolId,
+          },
+        },
+        select: {
+          id: true,
+          isElective: true,
+          sectionId: true,
+          subjectId: true,
+          subject: { select: { name: true } },
+        },
+      }),
+      this.prisma.sectionSubject.findMany({
+        where: { sectionId: section.id, isElective: false },
+        select: {
+          id: true,
+          subjectId: true,
+          subject: { select: { name: true } },
+        },
+      }),
+    ]);
+    if (chosen.length !== sectionSubjectIds.length) {
+      throw new BadRequestException(
+        'One or more of the chosen subjects are not taught in this class',
+      );
+    }
+
+    // ponytail: enforced here rather than by a constraint — StudentSubject has
+    // no subjectId column to key one on; a concurrent enrolment of the same
+    // student is already stopped by the one-ACTIVE-placement index.
+    const offeringsOf = new Map<string, { name: string; ids: Set<string> }>();
+    for (const o of [...chosen, ...ownCompulsory]) {
+      const entry = offeringsOf.get(o.subjectId) ?? {
+        name: o.subject.name,
+        ids: new Set<string>(),
+      };
+      entry.ids.add(o.id);
+      offeringsOf.set(o.subjectId, entry);
+    }
+    const repeated = [...offeringsOf.values()].filter((s) => s.ids.size > 1);
+    if (repeated.length) {
+      throw new BadRequestException(
+        `${repeated.map((s) => s.name).join(', ')} can only be taken from one section`,
+      );
+    }
+    return chosen.filter((o) => o.isElective || o.sectionId !== section.id);
   }
 
   async createMany(dto: BatchCreateEnrollmentDto, actor: Actor) {
@@ -510,6 +588,14 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     );
     // Re-activating or re-pointing a row is the other way into two classes.
     const nextStatus = dto.status ?? enrollment.status;
+    if (dto.sectionSubjectIds && nextStatus !== EnrollmentStatus.ACTIVE) {
+      throw new BadRequestException(
+        'Subjects can only be chosen for an active enrollment',
+      );
+    }
+    const picks = dto.sectionSubjectIds
+      ? await this.resolvePicks(section, dto.sectionSubjectIds)
+      : null;
     if (nextStatus === EnrollmentStatus.ACTIVE) {
       const placed = (
         await this.findActivePlacements([student.id], academicYear.id, id)
@@ -525,10 +611,17 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       student.id !== enrollment.studentId ||
       section.id !== enrollment.sectionId ||
       academicYear.id !== enrollment.academicYearId;
+    // Picks within the same class and session are diffed by replacePicks, which
+    // keeps a recorded subject from being dropped by a move.
+    const repicksInClass =
+      !!picks &&
+      student.id === enrollment.studentId &&
+      academicYear.id === enrollment.academicYearId &&
+      section.classGradeId === enrollment.section.classGradeId;
 
     const updated = await this.prisma.$transaction(async (tx) => {
       // Selections hang off the old section's subjects, so they leave with it.
-      if (moved) await clearSelections(tx, enrollment);
+      if (moved && !repicksInClass) await clearSelections(tx, enrollment);
       const row = await tx.enrollment.update({
         where: { id },
         data: {
@@ -545,9 +638,14 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         },
         include: this.defaultInclude(),
       });
-      // Only a new placement gets the default; re-saving one must not re-tick
-      // subjects the admin unticked.
-      if (
+      if (picks) {
+        await this.replacePicks(tx, row, section.classGradeId, academicYear, {
+          name: student.fullName,
+          picks,
+        });
+      } else if (
+        // Only a new placement gets the default; re-saving one must not re-tick
+        // subjects the admin unticked.
         row.status === EnrollmentStatus.ACTIVE &&
         (moved || enrollment.status !== EnrollmentStatus.ACTIVE)
       ) {
@@ -557,6 +655,82 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     });
     await this.invalidate(section.schoolId);
     return updated;
+  }
+
+  /**
+   * Makes the placement's picks for the session exactly `picks`, across every
+   * section of the class. A subject with marks or attendance this session can't
+   * be dropped here — the same rule the section subject grid applies.
+   */
+  private async replacePicks(
+    tx: Prisma.TransactionClient,
+    placement: { studentId: string; academicYearId: string; sectionId: string },
+    classGradeId: string,
+    year: { id: string; startDate: Date; endDate: Date; schoolId: string },
+    choice: {
+      name: string;
+      picks: { id: string; subject: { name: string } }[];
+    },
+  ) {
+    const held = await tx.studentSubject.findMany({
+      where: {
+        studentId: placement.studentId,
+        academicYearId: placement.academicYearId,
+        sectionSubject: { section: { classGradeId } },
+      },
+      select: {
+        sectionSubjectId: true,
+        sectionSubject: {
+          select: {
+            sectionId: true,
+            isElective: true,
+            subject: { select: { name: true } },
+          },
+        },
+      },
+    });
+    const wanted = new Set(choice.picks.map((p) => p.id));
+    const dropped = held.filter((h) => !wanted.has(h.sectionSubjectId));
+    // A row on the placement's own compulsory subject goes, but isn't a loss:
+    // the student still takes it (after a move into that section).
+    const lost = dropped.filter(
+      (d) =>
+        d.sectionSubject.isElective ||
+        d.sectionSubject.sectionId !== placement.sectionId,
+    );
+    const kept = (
+      await recordedSubjects(
+        tx,
+        [placement.studentId],
+        lost.map((d) => d.sectionSubjectId),
+        year,
+      )
+    ).get(placement.studentId);
+    if (kept?.size) {
+      const names = lost
+        .filter((d) => kept.has(d.sectionSubjectId))
+        .map((d) => d.sectionSubject.subject.name)
+        .join(', ');
+      throw new ConflictException(
+        `Marks or attendance are already recorded for ${choice.name} in ${names} this session. Keep those subjects, or remove the records first.`,
+      );
+    }
+    await tx.studentSubject.deleteMany({
+      where: {
+        studentId: placement.studentId,
+        academicYearId: placement.academicYearId,
+        sectionSubjectId: { in: dropped.map((d) => d.sectionSubjectId) },
+      },
+    });
+    await tx.studentSubject.createMany({
+      data: choice.picks.map((p) => ({
+        schoolId: year.schoolId,
+        academicYearId: placement.academicYearId,
+        studentId: placement.studentId,
+        sectionSubjectId: p.id,
+      })),
+      skipDuplicates: true,
+    });
   }
 
   async remove(id: string, actor: Actor) {

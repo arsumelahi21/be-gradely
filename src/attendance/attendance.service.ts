@@ -8,7 +8,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CacheService } from '../common/services/cache.service';
 import { BaseSchoolScopedService } from '../common/services/base-school.service';
 import { resolveTeacherStudentIds } from '../common/services/teacher-scope';
-import { narrowToTakers } from '../academics/section-subjects/subject-takers';
+import {
+  crossSectionTakers,
+  narrowToTakers,
+} from '../academics/section-subjects/subject-takers';
 import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
 import { MarkAttendanceDto } from './dto/mark-attendance.dto';
@@ -160,11 +163,16 @@ export class AttendanceService extends BaseSchoolScopedService {
     const period = dto.period ?? 1;
     const date = this.toDateOnly(dto.date);
 
-    // Only students enrolled in this section may be marked for its subjects.
-    const enrolled = await this.prisma.enrollment.findMany({
+    // Only students enrolled in this section — or who picked this subject from a
+    // sibling section — may be marked for it.
+    const placed = await this.prisma.enrollment.findMany({
       where: { sectionId: sectionSubject.section.id, status: 'ACTIVE' },
       select: { studentId: true, academicYearId: true },
     });
+    const enrolled = [
+      ...placed,
+      ...(await this.siblingTakers(sectionSubject, placed, date)),
+    ];
     const enrolledIds = new Set(enrolled.map((e) => e.studentId));
 
     const unknown = dto.entries.filter((e) => !enrolledIds.has(e.studentId));
@@ -299,13 +307,14 @@ export class AttendanceService extends BaseSchoolScopedService {
     date: Date,
   ): Promise<string | null> {
     const years = [...new Set(placements.map((p) => p.academicYearId))];
-    if (years.length <= 1) return years[0] ?? null;
+    if (years.length === 1) return years[0];
     // ponytail: a section spanning two sessions with neither covering the date
     // keeps the whole roster, as it did before electives existed; upgrade path
-    // is an academicYearId on Attendance itself.
+    // is an academicYearId on Attendance itself. With nobody placed, the session
+    // covering the date is still needed for students picking in from siblings.
     const covering = await this.prisma.academicYear.findFirst({
       where: {
-        id: { in: years },
+        ...(years.length && { id: { in: years } }),
         schoolId,
         startDate: { lte: date },
         endDate: { gte: date },
@@ -313,6 +322,23 @@ export class AttendanceService extends BaseSchoolScopedService {
       select: { id: true },
     });
     return covering?.id ?? null;
+  }
+
+  /** Students placed in a sibling section who picked this subject; no section roster lists them. */
+  private async siblingTakers(
+    sectionSubject: SubjectContext,
+    placements: { academicYearId: string }[],
+    date: Date,
+  ): Promise<{ studentId: string; academicYearId: string }[]> {
+    const academicYearId = await this.sessionFor(
+      placements,
+      sectionSubject.section.schoolId,
+      date,
+    );
+    if (!academicYearId) return [];
+    return (
+      await crossSectionTakers(this.prisma, [sectionSubject.id], academicYearId)
+    ).map((studentId) => ({ studentId, academicYearId }));
   }
 
   private async assertAllTakeSubject(
@@ -374,8 +400,7 @@ export class AttendanceService extends BaseSchoolScopedService {
     });
     let roster = enrollments.map((e) => e.student);
 
-    // Guarded so a compulsory subject — every subject of a regular class — runs
-    // the exact queries it ran before, and no extra one.
+    // A compulsory subject needs no narrowing: everyone placed here takes it.
     if (sectionSubject.isElective) {
       const academicYearId = await this.sessionFor(
         enrollments,
@@ -393,6 +418,21 @@ export class AttendanceService extends BaseSchoolScopedService {
         );
         roster = roster.filter((s) => takers.has(s.id));
       }
+    }
+
+    const siblings = await this.siblingTakers(
+      sectionSubject,
+      enrollments,
+      date,
+    );
+    if (siblings.length) {
+      roster = [
+        ...roster,
+        ...(await this.prisma.studentProfile.findMany({
+          where: { id: { in: siblings.map((s) => s.studentId) } },
+          select: { id: true, fullName: true, rollNo: true },
+        })),
+      ].sort((a, b) => a.fullName.localeCompare(b.fullName));
     }
 
     const current = new Set(roster.map((s) => s.id));

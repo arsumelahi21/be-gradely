@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { EnrollmentStatus, ExaminationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { crossSectionTakers } from '../academics/section-subjects/subject-takers';
 import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
 
@@ -201,7 +202,10 @@ export class ExamAccessService {
     throw new ForbiddenException('Not allowed');
   }
 
-  /** Students/parents see only a PUBLISHED exam of a section + session the student belongs to. */
+  /**
+   * Students/parents see only a PUBLISHED exam of a section + session the student
+   * belongs to — or one with a paper they picked from that section as a sibling.
+   */
   async assertAudienceCanView(
     actor: Actor,
     exam: ExamCore,
@@ -213,16 +217,35 @@ export class ExamAccessService {
     if (exam.status !== ExaminationStatus.PUBLISHED) {
       throw new ForbiddenException('This examination is not available');
     }
-    const placed = await this.prisma.enrollment.findFirst({
-      where: {
-        studentId: sid,
-        sectionId: exam.sectionId,
-        academicYearId: exam.academicYearId,
-        status: { in: HISTORY_ENROLLMENT },
-      },
-      select: { id: true },
-    });
-    if (!placed)
+    const [placed, picked] = await Promise.all([
+      this.prisma.enrollment.findFirst({
+        where: {
+          studentId: sid,
+          sectionId: exam.sectionId,
+          academicYearId: exam.academicYearId,
+          status: { in: HISTORY_ENROLLMENT },
+        },
+        select: { id: true },
+      }),
+      this.prisma.studentSubject.findFirst({
+        where: {
+          studentId: sid,
+          academicYearId: exam.academicYearId,
+          sectionSubject: { exams: { some: { examinationId: exam.id } } },
+          student: {
+            enrollments: {
+              some: {
+                academicYearId: exam.academicYearId,
+                status: { in: HISTORY_ENROLLMENT },
+                section: { classGradeId: exam.classGradeId },
+              },
+            },
+          },
+        },
+        select: { id: true },
+      }),
+    ]);
+    if (!placed && !picked)
       throw new ForbiddenException('This examination is not available');
     return sid;
   }
@@ -269,18 +292,33 @@ export class ExamAccessService {
       });
       movedOut = new Set(moved.map((m) => m.studentId));
     }
-    const marked = examIds.length
-      ? await db.examResult.findMany({
-          where: { examId: { in: examIds } },
-          select: { studentId: true },
-          distinct: ['studentId'],
-        })
-      : [];
+    const [marked, papers] = examIds.length
+      ? await Promise.all([
+          db.examResult.findMany({
+            where: { examId: { in: examIds } },
+            select: { studentId: true },
+            distinct: ['studentId'],
+          }),
+          db.exam.findMany({
+            where: { id: { in: examIds } },
+            select: { sectionSubjectId: true },
+          }),
+        ])
+      : [[], []];
+    // Students who picked one of these papers from a sibling section; each paper
+    // narrows to its own takers, so they only ever sit the ones they picked.
+    const siblings = await crossSectionTakers(
+      db,
+      papers.map((p) => p.sectionSubjectId),
+      exam.academicYearId,
+      HISTORY_ENROLLMENT,
+    );
     return [
       ...new Set([
         ...active,
         ...closed.filter((id) => !movedOut.has(id)),
         ...marked.map((m) => m.studentId),
+        ...siblings,
       ]),
     ];
   }

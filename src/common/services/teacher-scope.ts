@@ -36,11 +36,40 @@ export async function resolveTeacherStudentIds(
 ): Promise<string[]> {
   const sectionIds = await resolveTeacherSectionIds(prisma, teacherProfileId);
   if (!sectionIds.length) return [];
-  const enrollments = await prisma.enrollment.findMany({
-    where: { sectionId: { in: sectionIds }, status: 'ACTIVE' },
+  const [enrollments, running] = await Promise.all([
+    prisma.enrollment.findMany({
+      where: { sectionId: { in: sectionIds }, status: 'ACTIVE' },
+      select: { studentId: true },
+    }),
+    // The sessions these classes run now — a section may itself be empty and
+    // hold only students picking in from its siblings.
+    prisma.enrollment.findMany({
+      where: {
+        status: 'ACTIVE',
+        section: {
+          classGrade: { sections: { some: { id: { in: sectionIds } } } },
+        },
+      },
+      select: { academicYearId: true },
+      distinct: ['academicYearId'],
+    }),
+  ]);
+  // Students placed in a sibling section who take one of these sections' subjects.
+  const picks = await prisma.studentSubject.findMany({
+    where: {
+      sectionSubject: { sectionId: { in: sectionIds } },
+      academicYearId: { in: running.map((r) => r.academicYearId) },
+      student: { enrollments: { some: { status: 'ACTIVE' } } },
+    },
     select: { studentId: true },
+    distinct: ['studentId'],
   });
-  return [...new Set(enrollments.map((e) => e.studentId))];
+  return [
+    ...new Set([
+      ...enrollments.map((e) => e.studentId),
+      ...picks.map((p) => p.studentId),
+    ]),
+  ];
 }
 
 export async function resolveTeacherProfileId(

@@ -239,6 +239,10 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       } else {
         where.section = { schoolId: actor.schoolId! };
       }
+      // Every section of a class at once — enrolment picks subjects across them.
+      if (query.classGradeId) {
+        where.section = { ...where.section, classGradeId: query.classGradeId };
+      }
     }
 
     // This list is open to students and parents, and `teacher: true` is the whole
@@ -292,10 +296,36 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       if (updated.isElective && !current.isElective) {
         await this.selectForRoster(tx, updated);
       }
-      // Choices mean nothing once the whole class takes it; left behind they
+      // Choices mean nothing once the whole section takes it; left behind they
       // would silently reappear if the subject is ever opened to selection again.
+      // Picks from sibling sections stay: compulsory doesn't cover those students.
       if (!updated.isElective && current.isElective) {
-        await tx.studentSubject.deleteMany({ where: { sectionSubjectId: id } });
+        const rows = await tx.studentSubject.findMany({
+          where: { sectionSubjectId: id },
+          select: { id: true, studentId: true, academicYearId: true },
+        });
+        const placedHere = new Set(
+          (
+            await tx.enrollment.findMany({
+              where: {
+                sectionId: current.sectionId,
+                studentId: { in: rows.map((r) => r.studentId) },
+              },
+              select: { studentId: true, academicYearId: true },
+            })
+          ).map((p) => `${p.studentId}:${p.academicYearId}`),
+        );
+        await tx.studentSubject.deleteMany({
+          where: {
+            id: {
+              in: rows
+                .filter((r) =>
+                  placedHere.has(`${r.studentId}:${r.academicYearId}`),
+                )
+                .map((r) => r.id),
+            },
+          },
+        });
       }
       return updated;
     });
