@@ -23,12 +23,21 @@ export class AuthController {
     private jwt: JwtService,
   ) {}
 
-  // Tight limit on the brute-force target: 5 attempts/min/IP (PLAN.md P0-13a / Phase 1 §1.5.1).
-  // forgot/reset-password (§1.3) must carry the same tight throttle.
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  // Per account on each network: per IP alone, one pupil's typos locked out the
+  // whole school behind that address. AuthService.login adds the per-network cap.
+  @Throttle({
+    default: {
+      limit: 5,
+      ttl: 60_000,
+      getTracker: (req) =>
+        `${req.ip}:${String(req.body?.email ?? '')
+          .trim()
+          .toLowerCase()}`,
+    },
+  })
   @Post('login')
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto.email, dto.password);
+  login(@Body() dto: LoginDto, @Req() req: any) {
+    return this.auth.login(dto.email, dto.password, req.ip);
   }
 
   // Brute-force / email-bomb targets — same tight limit as login.

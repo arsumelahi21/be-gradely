@@ -5,12 +5,21 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import {
+  InjectThrottlerStorage,
+  ThrottlerException,
+  type ThrottlerStorage,
+} from '@nestjs/throttler';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService } from '../audit/audit.service';
+import { tooManyAttempts } from './guards/user-throttler.guard';
 import type { StringValue } from 'ms';
 
+// Failures only: a spray is all failures, while a class arriving together is
+// not, and counting their successes locked out everyone behind the school's IP.
+const FAILED_LOGINS_PER_NETWORK_PER_MINUTE = 30;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 const GENERIC_RESET_RESPONSE = {
   message: 'If an account exists for that email, a reset link has been sent.',
@@ -22,6 +31,7 @@ export class AuthService {
     private prisma: PrismaService,
     private jwt: JwtService,
     private audit: AuditLogService,
+    @InjectThrottlerStorage() private throttle: ThrottlerStorage,
   ) {}
 
   private getAccessSecret(): string {
@@ -75,7 +85,24 @@ export class AuthService {
     );
   }
 
-  async login(email: string, password: string) {
+  /**
+   * The route limits each account; this counts a network's failures across all
+   * of them, which is what a per-account limit can never see (password spraying).
+   */
+  private async rejectFailedLogin(ip: string): Promise<never> {
+    const { isBlocked, timeToBlockExpire } = await this.throttle.increment(
+      `login-network:${ip}`,
+      60_000,
+      FAILED_LOGINS_PER_NETWORK_PER_MINUTE,
+      60_000,
+      'login-network',
+    );
+    if (isBlocked)
+      throw new ThrottlerException(tooManyAttempts(timeToBlockExpire));
+    throw new UnauthorizedException('Invalid credentials');
+  }
+
+  async login(email: string, password: string, ip: string) {
     const user = await (this.prisma as any).user.findUnique({
       where: { email },
       omit: { passwordHash: false },
@@ -83,10 +110,10 @@ export class AuthService {
     });
     // Super admins have no school, so only an explicit `false` locks a user out.
     if (!user?.isActive || user.school?.isActive === false)
-      throw new UnauthorizedException('Invalid credentials');
+      await this.rejectFailedLogin(ip);
 
     const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) throw new UnauthorizedException('Invalid credentials');
+    if (!ok) await this.rejectFailedLogin(ip);
 
     const accessToken = await this.signAccessToken({
       id: user.id,
