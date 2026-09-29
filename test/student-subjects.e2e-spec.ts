@@ -1312,6 +1312,33 @@ describe('Student subject enrollment (e2e)', () => {
       expect(row.primarySection).toBeNull();
     });
 
+    it('skips ticking a subject on the grid for a student who takes it from a sibling section', async () => {
+      const f = await seedSiblings();
+      const student = await newStudent(f.school.id);
+      // Placed in B, taking Maths from A.
+      await enrol(f.adminToken, {
+        studentId: student.id,
+        sectionId: f.sectionB.id,
+        academicYearId: f.academicYear.id,
+        sectionSubjectIds: [f.maths],
+      }).expect(201);
+
+      const res = await patch(f.adminToken, {
+        academicYearId: f.academicYear.id,
+        studentIds: [student.id],
+        add: [f.mathsB],
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.added).toBe(0);
+      expect(res.body.skipped).toEqual([
+        expect.objectContaining({
+          studentId: student.id,
+          reason: expect.stringMatching(/already takes .* from/i),
+        }),
+      ]);
+    });
+
     it('lists a sibling pick under the section it comes from', async () => {
       const f = await seedSiblings();
       const student = await enrolAcross(f);
@@ -1670,6 +1697,87 @@ describe('Student subject enrollment (e2e)', () => {
         expect(await picksOf(student.id, f.academicYear.id)).toEqual([
           f.electives.Physics,
         ]);
+      });
+
+      // B's electives by default; A's picks belonged to the closed placement.
+      const freshInB = (f: Siblings) => [f.chemistryB, f.artB, f.mathsB].sort();
+
+      it('starts a new placement in a sibling section fresh, without the old picks', async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        await withdraw(f, student.id);
+
+        await enrol(f.adminToken, {
+          studentId: student.id,
+          sectionId: f.sectionB.id,
+          academicYearId: f.academicYear.id,
+        }).expect(201);
+
+        expect(await picksOf(student.id, f.academicYear.id)).toEqual(
+          freshInB(f),
+        );
+      });
+
+      it('starts a batch placement in a sibling section fresh too', async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        await withdraw(f, student.id);
+
+        await request(app.getHttpServer())
+          .post('/api/enrollments/batch')
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .send({
+            sectionId: f.sectionB.id,
+            academicYearId: f.academicYear.id,
+            studentIds: [student.id],
+          })
+          .expect(201);
+
+        expect(await picksOf(student.id, f.academicYear.id)).toEqual(
+          freshInB(f),
+        );
+      });
+
+      it('keeps a withdrawn student on an old-section subject they pick again from a sibling', async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        await withdraw(f, student.id);
+
+        await enrol(f.adminToken, {
+          studentId: student.id,
+          sectionId: f.sectionB.id,
+          academicYearId: f.academicYear.id,
+          sectionSubjectIds: [f.electives.Physics],
+        }).expect(201);
+
+        expect(await onRoster(f, student.id, f.electives.Physics)).toBe(true);
+      });
+
+      it("hides the student from a sibling section's teacher once they move to another class", async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        await withdraw(f, student.id);
+        const otherClass = await prisma.classGrade.create({
+          data: { schoolId: f.school.id, name: `Class 9-${uniq()}` },
+        });
+        const otherSection = await prisma.section.create({
+          data: {
+            schoolId: f.school.id,
+            classGradeId: otherClass.id,
+            name: `A-${uniq()}`,
+          },
+        });
+        await enrol(f.adminToken, {
+          studentId: student.id,
+          sectionId: otherSection.id,
+          academicYearId: f.academicYear.id,
+        }).expect(201);
+
+        const res = await get(
+          f.teacherBToken,
+          `/api/attendance/student/${student.id}`,
+        );
+        expect(res.status).toBe(403);
       });
     });
 
@@ -2107,6 +2215,336 @@ describe('Student subject enrollment (e2e)', () => {
       });
       // B's own students take it as compulsory now; the pick from A must stay.
       expect(takers).toEqual([{ studentId: student.id }]);
+    });
+
+    describe('edge cases', () => {
+      const closeA = async (studentId: string, status: string) =>
+        prisma.enrollment.updateMany({
+          where: { studentId, status: 'ACTIVE' },
+          data: { status: status as 'INACTIVE' | 'COMPLETED' },
+        });
+      const markPresent = (
+        f: Siblings,
+        studentId: string,
+        sectionSubjectId: string,
+      ) =>
+        prisma.attendance.create({
+          data: {
+            schoolId: f.school.id,
+            studentId,
+            sectionSubjectId,
+            date: new Date('2026-06-01'),
+            status: 'PRESENT',
+            markedByUserId: f.admin.id,
+          },
+        });
+      /** Placed in B, taking A's Maths (the subject B also offers) from A. */
+      async function placedInBWithMathsFromA(f: Siblings) {
+        const student = await newStudent(f.school.id);
+        await enrol(f.adminToken, {
+          studentId: student.id,
+          sectionId: f.sectionB.id,
+          academicYearId: f.academicYear.id,
+          sectionSubjectIds: [f.maths],
+        }).expect(201);
+        return student;
+      }
+
+      it("enrols a withdrawn student elsewhere in the class despite their old section's records", async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        await markPresent(f, student.id, f.electives.Physics);
+        await closeA(student.id, 'INACTIVE');
+
+        await enrol(f.adminToken, {
+          studentId: student.id,
+          sectionId: f.sectionB.id,
+          academicYearId: f.academicYear.id,
+          sectionSubjectIds: [f.artB],
+        }).expect(201);
+
+        expect(await picksOf(student.id, f.academicYear.id)).toEqual([f.artB]);
+        // The record itself stays as history.
+        expect(
+          await prisma.attendance.count({ where: { studentId: student.id } }),
+        ).toBe(1);
+      });
+
+      it('keeps a student who moved on this session on the sheet of an old-section paper they picked again', async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        await closeA(student.id, 'COMPLETED');
+        await enrol(f.adminToken, {
+          studentId: student.id,
+          sectionId: f.sectionB.id,
+          academicYearId: f.academicYear.id,
+          sectionSubjectIds: [f.electives.Physics],
+        }).expect(201);
+        const { examination, subjects } = await seedExamination({
+          schoolId: f.school.id,
+          academicYearId: f.academicYear.id,
+          sectionId: f.section.id,
+          sectionSubjectIds: [f.electives.Physics],
+          heldAt: new Date('2026-06-15'),
+        });
+
+        await request(app.getHttpServer())
+          .put(`/api/exams/${examination.id}/subjects/${subjects[0].id}/marks`)
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .send({ entries: [{ studentId: student.id, score: 70 }] })
+          .expect(200);
+      });
+
+      it('does not tick a newly offered subject for a student who takes it from a sibling', async () => {
+        const f = await seedSiblings();
+        const picker = await newStudent(f.school.id);
+        await enrol(f.adminToken, {
+          studentId: picker.id,
+          sectionId: f.sectionB.id,
+          academicYearId: f.academicYear.id,
+          sectionSubjectIds: [f.electives.Physics],
+        }).expect(201);
+        const physics = await prisma.sectionSubject.findUniqueOrThrow({
+          where: { id: f.electives.Physics },
+        });
+
+        const res = await request(app.getHttpServer())
+          .post('/api/section-subjects')
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .send({ sectionId: f.sectionB.id, subjectId: physics.subjectId })
+          .expect(201);
+
+        expect(
+          await prisma.studentSubject.count({
+            where: { sectionSubjectId: res.body.id, studentId: picker.id },
+          }),
+        ).toBe(0);
+      });
+
+      it('refuses to make a subject compulsory for a section whose student takes it from a sibling', async () => {
+        const f = await seedSiblings();
+        await placedInBWithMathsFromA(f);
+
+        const res = await request(app.getHttpServer())
+          .patch(`/api/section-subjects/${f.mathsB}`)
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .send({ isElective: false });
+
+        expect(res.status).toBe(409);
+      });
+
+      it('refuses a move within the class, without picks, that would drop a recorded subject', async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        await markPresent(f, student.id, f.electives.Physics);
+        const placement = await prisma.enrollment.findFirstOrThrow({
+          where: { studentId: student.id, status: 'ACTIVE' },
+        });
+        const before = await picksOf(student.id, f.academicYear.id);
+
+        const res = await request(app.getHttpServer())
+          .patch(`/api/enrollments/${placement.id}`)
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .send({ sectionId: f.sectionB.id });
+
+        expect(res.status).toBe(409);
+        expect(await picksOf(student.id, f.academicYear.id)).toEqual(before);
+      });
+
+      it("gives a subject moved to another section that section's students", async () => {
+        const f = await seedSiblings();
+        await enrolAcross(f);
+        const placedInA = f.studentIds;
+
+        await request(app.getHttpServer())
+          .patch(`/api/section-subjects/${f.chemistryB}`)
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .send({ sectionId: f.section.id })
+          .expect(200);
+
+        const takers = await prisma.studentSubject.findMany({
+          where: { sectionSubjectId: f.chemistryB },
+          select: { studentId: true },
+        });
+        expect(takers.map((t) => t.studentId)).toEqual(
+          expect.arrayContaining(placedInA),
+        );
+      });
+
+      it('refuses to move a section to another class while it shares subject picks with its siblings', async () => {
+        const f = await seedSiblings();
+        await enrolAcross(f);
+        const otherClass = await prisma.classGrade.create({
+          data: { schoolId: f.school.id, name: `Class 9-${uniq()}` },
+        });
+
+        const res = await request(app.getHttpServer())
+          .patch(`/api/sections/${f.sectionB.id}`)
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .send({ classGradeId: otherClass.id });
+
+        expect(res.status).toBe(409);
+      });
+
+      it("keeps a section's teacher when a promotion empties it but siblings still pick its subjects", async () => {
+        const f = await seedSiblings();
+        await enrolAcross(f);
+        const leaver = await newStudent(f.school.id);
+        await enrol(f.adminToken, {
+          studentId: leaver.id,
+          sectionId: f.sectionB.id,
+          academicYearId: f.academicYear.id,
+        }).expect(201);
+        const nextYear = await prisma.academicYear.create({
+          data: {
+            schoolId: f.school.id,
+            name: `AY-${uniq()}`,
+            code: `AY${uniq()}`,
+            startDate: new Date('2027-01-01'),
+            endDate: new Date('2027-12-31'),
+          },
+        });
+        const nextClass = await prisma.classGrade.create({
+          data: { schoolId: f.school.id, name: `Next-${uniq()}` },
+        });
+        const nextSection = await prisma.section.create({
+          data: {
+            schoolId: f.school.id,
+            classGradeId: nextClass.id,
+            name: `N-${uniq()}`,
+          },
+        });
+
+        const res = await request(app.getHttpServer())
+          .post('/api/promotions/execute')
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .send({
+            sourceAcademicYearId: f.academicYear.id,
+            targetAcademicYearId: nextYear.id,
+            students: [
+              {
+                studentId: leaver.id,
+                destinationClassGradeId: nextClass.id,
+                destinationSectionId: nextSection.id,
+              },
+            ],
+          })
+          .expect(201);
+
+        expect(res.body.sectionsReset).toBe(0);
+        const chemistry = await prisma.sectionSubject.findUniqueOrThrow({
+          where: { id: f.chemistryB },
+        });
+        expect(chemistry.teacherId).toBe(f.teacherB.id);
+      });
+
+      it('tells sibling pickers when the section they pick from publishes its timetable', async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        const timetable = await prisma.timetable.create({
+          data: {
+            schoolId: f.school.id,
+            academicYearId: f.academicYear.id,
+            sectionId: f.sectionB.id,
+            workingDays: ['MONDAY'],
+          },
+        });
+        const period = await prisma.timetablePeriod.create({
+          data: {
+            timetableId: timetable.id,
+            schoolId: f.school.id,
+            index: 1,
+            startMin: 480,
+            endMin: 520,
+          },
+        });
+        await prisma.timetableEntry.create({
+          data: {
+            timetableId: timetable.id,
+            schoolId: f.school.id,
+            sectionId: f.sectionB.id,
+            academicYearId: f.academicYear.id,
+            dayOfWeek: 'MONDAY',
+            periodId: period.id,
+            startMin: 480,
+            endMin: 520,
+            sectionSubjectId: f.chemistryB,
+            teacherId: f.teacherB.id,
+          },
+        });
+
+        await request(app.getHttpServer())
+          .post(`/api/timetable/sections/${f.sectionB.id}/publish`)
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .query({ academicYearId: f.academicYear.id })
+          .expect(201);
+
+        // The listener writes asynchronously.
+        const deadline = Date.now() + 5000;
+        let count = 0;
+        while (!count && Date.now() < deadline) {
+          count = await prisma.notification.count({
+            where: { userId: student.userId!, type: 'TIMETABLE_PUBLISHED' },
+          });
+          if (!count) await new Promise((r) => setTimeout(r, 100));
+        }
+        expect(count).toBe(1);
+      });
+
+      it("opens a sibling section's quiz to a picker who is also enrolled for another session", async () => {
+        const f = await seedSiblings();
+        const student = await newStudent(f.school.id);
+        // Enrolled early for next session. The lowest possible id makes that
+        // placement the one an unordered lookup returns first, by index or heap.
+        const nextYear = await prisma.academicYear.create({
+          data: {
+            id: '00000000-0000-4000-8000-000000000001',
+            schoolId: f.school.id,
+            name: `AY-${uniq()}`,
+            code: `AY${uniq()}`,
+            startDate: new Date('2027-01-01'),
+            endDate: new Date('2027-12-31'),
+          },
+        });
+        await prisma.enrollment.create({
+          data: {
+            studentId: student.id,
+            sectionId: f.section.id,
+            academicYearId: nextYear.id,
+            status: 'ACTIVE',
+          },
+        });
+        await enrol(f.adminToken, {
+          studentId: student.id,
+          sectionId: f.section.id,
+          academicYearId: f.academicYear.id,
+          sectionSubjectIds: [f.chemistryB],
+        }).expect(201);
+        const quiz = await prisma.quiz.create({
+          data: {
+            schoolId: f.school.id,
+            sectionId: f.sectionB.id,
+            subjectId: f.chemistrySubjectId,
+            title: 'Chemistry quiz',
+            createdByUserId: f.admin.id,
+            isPublished: true,
+            questions: {
+              create: {
+                type: 'TRUE_FALSE',
+                text: 'True?',
+                correctAnswer: true,
+                points: 1,
+                order: 0,
+              },
+            },
+          },
+        });
+
+        const res = await request(app.getHttpServer())
+          .post(`/api/quizzes/${quiz.id}/attempts`)
+          .set('Authorization', `Bearer ${student.token}`);
+        expect(res.status).toBe(201);
+      });
     });
   });
 });
