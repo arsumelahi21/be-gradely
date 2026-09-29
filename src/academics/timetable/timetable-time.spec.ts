@@ -7,6 +7,7 @@ import {
   validatePeriodSet,
   periodMinutesForCount,
   generatePeriodSlots,
+  mergeStudentRows,
 } from './timetable-time';
 
 describe('timetable-time', () => {
@@ -235,6 +236,59 @@ describe('timetable-time', () => {
           4,
         ),
       ).toThrow();
+    });
+  });
+
+  describe('mergeStudentRows', () => {
+    // Section A is the placement; B is a sibling whose bell schedule may differ.
+    const aP1 = { id: 'a-p1', startMin: 480, endMin: 520 };
+    const aP2 = { id: 'a-p2', startMin: 520, endMin: 560 };
+    const bP1 = { id: 'b-p1', startMin: 480, endMin: 520 };
+    const bP3 = { id: 'b-p3', startMin: 500, endMin: 540 };
+    const entry = (id: string, dayOfWeek: string, period: typeof aP1) => ({
+      id,
+      dayOfWeek,
+      periodId: period.id,
+      period,
+    });
+
+    it('puts a sibling class on the placement row with the same times', () => {
+      const { periods, entries } = mergeStudentRows(
+        [aP1, aP2],
+        [entry('maths', 'MONDAY', aP1), entry('chem', 'TUESDAY', bP1)],
+      );
+      expect(periods.map((p) => p.id)).toEqual(['a-p1', 'a-p2']);
+      expect(entries.find((e) => e.id === 'chem')?.periodId).toBe('a-p1');
+    });
+
+    it('keeps both classes of a clash, on rows of their own', () => {
+      const { periods, entries } = mergeStudentRows(
+        [aP1, aP2],
+        [entry('chem', 'MONDAY', bP1), entry('maths', 'MONDAY', aP1)],
+      );
+      expect(entries.map((e) => [e.id, e.periodId])).toEqual([
+        ['maths', 'a-p1'],
+        ['chem', 'b-p1'],
+      ]);
+      expect(periods.map((p) => p.id)).toEqual(['a-p1', 'b-p1', 'a-p2']);
+    });
+
+    it('adds a row, in time order, for a sibling period that matches none', () => {
+      const { periods } = mergeStudentRows(
+        [aP1, aP2],
+        [entry('eco', 'WEDNESDAY', bP3)],
+      );
+      expect(periods.map((p) => p.id)).toEqual(['a-p1', 'b-p3', 'a-p2']);
+    });
+
+    it('builds the rows from the classes alone when the placement has none', () => {
+      const none: (typeof aP1)[] = [];
+      const { periods, entries } = mergeStudentRows(none, [
+        entry('chem', 'MONDAY', bP1),
+        entry('eco', 'MONDAY', bP3),
+      ]);
+      expect(periods.map((p) => p.id)).toEqual(['b-p1', 'b-p3']);
+      expect(entries.map((e) => e.periodId)).toEqual(['b-p1', 'b-p3']);
     });
   });
 });

@@ -39,14 +39,15 @@ import {
   FindTimetableQueryDto,
   MyTimetableQueryDto,
 } from './dto/find-timetable-query.dto';
-import { subjectsOf } from '../section-subjects/subject-takers';
 import {
   generatePeriodSlots,
+  mergeStudentRows,
   minToHHMM,
   overlaps,
   periodMinutesForCount,
   validatePeriodSet,
 } from './timetable-time';
+import { subjectsOf } from '../section-subjects/subject-takers';
 import { PublishTimetableDto } from './dto/publish-timetable.dto';
 
 export interface EntryConflict {
@@ -2166,7 +2167,12 @@ export class TimetableService extends BaseSchoolScopedService {
     throw new ForbiddenException('Not allowed');
   }
 
-  /** The student's class timetable, narrowed to the subjects they take. */
+  /**
+   * Only the subjects the student takes — their section's compulsory ones plus
+   * their own picks, which may come from any section of the class — from every
+   * published timetable of the session, each with its own section's teacher,
+   * room and times.
+   */
   private async studentTimetable(
     student: { id: string; schoolId: string },
     actor: Actor,
@@ -2185,11 +2191,24 @@ export class TimetableService extends BaseSchoolScopedService {
       sectionId,
       timetable.academicYearId,
     );
+    const entries = await this.prisma.timetableEntry.findMany({
+      where: {
+        schoolId: student.schoolId,
+        academicYearId: timetable.academicYearId,
+        sectionSubjectId: { in: [...taken] },
+        timetable: { status: 'PUBLISHED' },
+      },
+      include: this.entryInclude(),
+    });
+    const rows = mergeStudentRows(timetable.periods, entries);
     return {
       ...timetable,
-      entries: [...timetable.entries].filter((e) =>
-        taken.has(e.sectionSubjectId),
-      ),
+      periods: rows.periods,
+      entries: rows.entries,
+      workingDays: this.workingDaysFromEntries([
+        ...rows.entries,
+        ...timetable.workingDays.map((dayOfWeek) => ({ dayOfWeek })),
+      ]),
     };
   }
 

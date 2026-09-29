@@ -206,3 +206,48 @@ export function periodMinutesForCount(
   }
   return Math.floor(available / periodCount);
 }
+
+export interface GridPeriod {
+  id: string;
+  startMin: number;
+  endMin: number;
+}
+
+/**
+ * Lays one student's classes — which may come from several sections, each with
+ * its own bell schedule — onto a single set of period rows. A class joins the
+ * row with its exact clock times; a second class in an occupied slot keeps its
+ * own row, so a clash shows instead of one class hiding the other.
+ */
+export function mergeStudentRows<
+  P extends GridPeriod,
+  E extends { periodId: string; dayOfWeek: string; period: P },
+>(basePeriods: P[], entries: E[]): { periods: P[]; entries: E[] } {
+  const slot = (p: GridPeriod) => `${p.startMin}-${p.endMin}`;
+  const periods = [...basePeriods];
+  const byId = new Map(periods.map((p) => [p.id, p]));
+  const rowAt = new Map<string, P>();
+  for (const p of periods) if (!rowAt.has(slot(p))) rowAt.set(slot(p), p);
+  const used = new Set<string>();
+
+  // The placement's own classes first: they already sit in the base rows.
+  const ordered = [
+    ...entries.filter((e) => byId.has(e.periodId)),
+    ...entries.filter((e) => !byId.has(e.periodId)),
+  ];
+  const placed = ordered.map((e) => {
+    let row = byId.get(e.periodId) ?? rowAt.get(slot(e.period));
+    if (!row || used.has(`${e.dayOfWeek}|${row.id}`)) {
+      row = e.period;
+      if (!byId.has(row.id)) {
+        byId.set(row.id, row);
+        periods.push(row);
+      }
+      if (!rowAt.has(slot(row))) rowAt.set(slot(row), row);
+    }
+    used.add(`${e.dayOfWeek}|${row.id}`);
+    return row.id === e.periodId ? e : { ...e, periodId: row.id };
+  });
+  periods.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+  return { periods, entries: placed };
+}
