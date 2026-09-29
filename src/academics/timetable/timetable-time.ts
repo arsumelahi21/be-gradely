@@ -211,6 +211,7 @@ export interface GridPeriod {
   id: string;
   startMin: number;
   endMin: number;
+  kind?: string;
 }
 
 /**
@@ -227,7 +228,10 @@ export function mergeStudentRows<
   const periods = [...basePeriods];
   const byId = new Map(periods.map((p) => [p.id, p]));
   const rowAt = new Map<string, P>();
-  for (const p of periods) if (!rowAt.has(slot(p))) rowAt.set(slot(p), p);
+  // A break or assembly renders as one band across the week, hiding any class put on it.
+  for (const p of periods)
+    if ((p.kind ?? 'CLASS') === 'CLASS' && !rowAt.has(slot(p)))
+      rowAt.set(slot(p), p);
   const used = new Set<string>();
 
   // The placement's own classes first: they already sit in the base rows.

@@ -290,5 +290,21 @@ describe('timetable-time', () => {
       expect(periods.map((p) => p.id)).toEqual(['b-p1', 'b-p3']);
       expect(entries.map((e) => e.periodId)).toEqual(['b-p1', 'b-p3']);
     });
+
+    it('never puts a sibling class on the placement’s break, which renders as a band', () => {
+      const aBreak = {
+        id: 'a-break',
+        startMin: 520,
+        endMin: 540,
+        kind: 'BREAK',
+      };
+      const bP2 = { id: 'b-p2', startMin: 520, endMin: 540, kind: 'CLASS' };
+      const { periods, entries } = mergeStudentRows(
+        [aP1, aBreak],
+        [entry('chem', 'MONDAY', bP2)],
+      );
+      expect(entries[0].periodId).toBe('b-p2');
+      expect(periods.map((p) => p.id)).toEqual(['a-p1', 'a-break', 'b-p2']);
+    });
   });
 });
