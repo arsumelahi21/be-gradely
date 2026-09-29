@@ -1,4 +1,5 @@
 import { PrismaService } from '../../prisma/prisma.service';
+import { crossSectionTakers } from '../../academics/section-subjects/subject-takers';
 
 /**
  * A teacher's student visibility, resolved the same way TeachersService
@@ -54,21 +55,23 @@ export async function resolveTeacherStudentIds(
       distinct: ['academicYearId'],
     }),
   ]);
-  // Students placed in a sibling section who take one of these sections' subjects.
-  const picks = await prisma.studentSubject.findMany({
-    where: {
-      sectionSubject: { sectionId: { in: sectionIds } },
-      academicYearId: { in: running.map((r) => r.academicYearId) },
-      student: { enrollments: { some: { status: 'ACTIVE' } } },
-    },
-    select: { studentId: true },
-    distinct: ['studentId'],
+  // Students placed in a sibling section who take one of these sections'
+  // subjects — the same takers the sections' attendance and exam sheets list.
+  const offerings = await prisma.sectionSubject.findMany({
+    where: { sectionId: { in: sectionIds } },
+    select: { id: true },
   });
+  const picks = await Promise.all(
+    running.map((r) =>
+      crossSectionTakers(
+        prisma,
+        offerings.map((o) => o.id),
+        r.academicYearId,
+      ),
+    ),
+  );
   return [
-    ...new Set([
-      ...enrollments.map((e) => e.studentId),
-      ...picks.map((p) => p.studentId),
-    ]),
+    ...new Set([...enrollments.map((e) => e.studentId), ...picks.flat()]),
   ];
 }
 

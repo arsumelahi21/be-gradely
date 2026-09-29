@@ -457,9 +457,10 @@ model SectionSubject {
   @@index([createdAt])
 }
 
-/// Takers of an ELECTIVE section-subject. A compulsory offering has no rows here —
-/// the section roster answers it, exactly as today. Keyed on sectionSubjectId, not
-/// sectionId + subjectId, so a subject the section doesn't offer can't be stored.
+/// Who takes a section-subject, per session. A student placed in the section needs
+/// no row for its compulsory subjects (the roster answers those); every other pick,
+/// including one from a sibling section of the class, is a row. Keyed on
+/// sectionSubjectId, so a subject the section doesn't offer can't be stored.
 model StudentSubject {
   id               String   @id @default(uuid())
   schoolId         String // denormalized for tenant scoping only, like TimetableEntry

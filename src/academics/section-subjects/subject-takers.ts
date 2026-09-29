@@ -158,8 +158,13 @@ export async function crossSectionTakers(
       section: { select: { classGradeId: true } },
     },
   });
+  // Only an open placement counts as "placed here": a student who left this
+  // section can still pick its subject from a sibling. A history caller loses
+  // nobody by it — its own roster already holds the closed placements.
   const placedHere = new Set(
-    placements.map((p) => `${p.studentId}:${p.sectionId}`),
+    placements
+      .filter((p) => p.status === EnrollmentStatus.ACTIVE)
+      .map((p) => `${p.studentId}:${p.sectionId}`),
   );
   const openIn = new Set(
     placements
@@ -227,7 +232,9 @@ export async function crossSectionPlacements(
     }),
   ]);
   const placed = new Set(
-    placements.map((p) => `${p.studentId}:${p.sectionId}:${p.academicYearId}`),
+    placements
+      .filter((p) => statuses.includes(p.status))
+      .map((p) => `${p.studentId}:${p.sectionId}:${p.academicYearId}`),
   );
   const open = new Set(
     placements
@@ -381,8 +388,8 @@ export async function recordedSubjects(
  * selection: the student takes every selectable subject until an admin unticks
  * it. A regular section has none, so nothing is written for it.
  *
- * A placement that already holds choices (a reactivated one) keeps them rather
- * than having unticked subjects ticked again.
+ * A reopened placement keeps its choices rather than having unticked subjects
+ * ticked again — unless another placement in the class came between.
  */
 export async function selectAllElectives(
   db: Db,
@@ -394,6 +401,59 @@ export async function selectAllElectives(
   onlySectionSubjectIds?: string[],
 ): Promise<void> {
   if (!placements.length) return;
+  const keyOf = (p: {
+    studentId: string;
+    sectionId: string;
+    academicYearId: string;
+  }) => `${p.studentId}:${p.sectionId}:${p.academicYearId}`;
+  const fresh = new Set<string>();
+  if (!onlySectionSubjectIds) {
+    // A placement opening after another in the same class and session starts
+    // fresh: the class's rows were that earlier placement's picks, not these.
+    const sectionIds = [...new Set(placements.map((p) => p.sectionId))];
+    const [sections, earlier] = await Promise.all([
+      db.section.findMany({
+        where: { id: { in: sectionIds } },
+        select: { id: true, classGradeId: true },
+      }),
+      db.enrollment.findMany({
+        where: {
+          studentId: { in: placements.map((p) => p.studentId) },
+          academicYearId: { in: placements.map((p) => p.academicYearId) },
+        },
+        select: {
+          studentId: true,
+          sectionId: true,
+          academicYearId: true,
+          section: { select: { classGradeId: true } },
+        },
+      }),
+    ]);
+    const classOf = new Map(sections.map((s) => [s.id, s.classGradeId]));
+    const restarting = placements.filter((p) =>
+      earlier.some(
+        (e) =>
+          e.studentId === p.studentId &&
+          e.academicYearId === p.academicYearId &&
+          e.sectionId !== p.sectionId &&
+          e.section.classGradeId === classOf.get(p.sectionId),
+      ),
+    );
+    if (restarting.length) {
+      await db.studentSubject.deleteMany({
+        where: {
+          OR: restarting.map((p) => ({
+            studentId: p.studentId,
+            academicYearId: p.academicYearId,
+            sectionSubject: {
+              section: { classGradeId: classOf.get(p.sectionId) },
+            },
+          })),
+        },
+      });
+      for (const p of restarting) fresh.add(keyOf(p));
+    }
+  }
   const offerings = await db.sectionSubject.findMany({
     where: {
       sectionId: { in: [...new Set(placements.map((p) => p.sectionId))] },
@@ -403,10 +463,64 @@ export async function selectAllElectives(
     select: {
       id: true,
       sectionId: true,
-      section: { select: { schoolId: true } },
+      subjectId: true,
+      section: { select: { schoolId: true, classGradeId: true } },
     },
   });
   if (!offerings.length) return;
+
+  // A subject is taken from one section only: never tick a student into it here
+  // while they take the same subject from a sibling section.
+  const takenFrom = new Map<string, Set<string>>();
+  const subjectKey = (
+    studentId: string,
+    academicYearId: string,
+    classGradeId: string,
+    subjectId: string,
+  ) => `${studentId}:${academicYearId}:${classGradeId}:${subjectId}`;
+  for (const r of await db.studentSubject.findMany({
+    where: {
+      studentId: { in: placements.map((p) => p.studentId) },
+      academicYearId: { in: placements.map((p) => p.academicYearId) },
+      sectionSubject: { subjectId: { in: offerings.map((o) => o.subjectId) } },
+    },
+    select: {
+      studentId: true,
+      academicYearId: true,
+      sectionSubject: {
+        select: {
+          sectionId: true,
+          subjectId: true,
+          section: { select: { classGradeId: true } },
+        },
+      },
+    },
+  })) {
+    const key = subjectKey(
+      r.studentId,
+      r.academicYearId,
+      r.sectionSubject.section.classGradeId,
+      r.sectionSubject.subjectId,
+    );
+    takenFrom.set(
+      key,
+      (takenFrom.get(key) ?? new Set()).add(r.sectionSubject.sectionId),
+    );
+  }
+  const pickedFromSibling = (
+    p: { studentId: string; academicYearId: string },
+    o: (typeof offerings)[number],
+  ) =>
+    [
+      ...(takenFrom.get(
+        subjectKey(
+          p.studentId,
+          p.academicYearId,
+          o.section.classGradeId,
+          o.subjectId,
+        ),
+      ) ?? []),
+    ].some((sectionId) => sectionId !== o.sectionId);
 
   const sectionOf = new Map(offerings.map((o) => [o.id, o.sectionId]));
   const held = onlySectionSubjectIds
@@ -431,12 +545,12 @@ export async function selectAllElectives(
       );
   await db.studentSubject.createMany({
     data: placements
-      .filter(
-        (p) => !held.has(`${p.studentId}:${p.sectionId}:${p.academicYearId}`),
-      )
+      .filter((p) => fresh.has(keyOf(p)) || !held.has(keyOf(p)))
       .flatMap((p) =>
         offerings
-          .filter((o) => o.sectionId === p.sectionId)
+          .filter(
+            (o) => o.sectionId === p.sectionId && !pickedFromSibling(p, o),
+          )
           .map((o) => ({
             schoolId: o.section.schoolId,
             academicYearId: p.academicYearId,
