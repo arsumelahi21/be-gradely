@@ -613,6 +613,89 @@ describe('Timetable V2 (e2e)', () => {
     expect(me.body.entries).toHaveLength(1);
   });
 
+  it("shows a student only the subjects they take, and a parent only their child's", async () => {
+    const cls = await seedClass({ studentCount: 2 });
+    const token = await adminFor(cls.school.id);
+    const [a, b] = cls.students.map((s) => s.profile.id);
+    const electives = await Promise.all(
+      ['Physics', 'Economics'].map(async (name) => {
+        const subject = await prisma.subject.create({
+          data: { schoolId: cls.school.id, name: `${name}-${uniq()}` },
+        });
+        return prisma.sectionSubject.create({
+          data: {
+            sectionId: cls.section.id,
+            subjectId: subject.id,
+            teacherId: cls.teacherProfile.id,
+            isElective: true,
+          },
+        });
+      }),
+    );
+    await prisma.studentSubject.createMany({
+      data: [
+        [a, electives[0].id],
+        [b, electives[1].id],
+      ].map(([studentId, sectionSubjectId]) => ({
+        schoolId: cls.school.id,
+        academicYearId: cls.academicYear.id,
+        studentId,
+        sectionSubjectId,
+      })),
+    });
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 600 + 45 * 3,
+    });
+    const all = [cls.sectionSubject, ...electives];
+    for (const [i, ss] of all.entries()) {
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: periods[i].id,
+        sectionSubjectId: ss.id,
+        teacherId: cls.teacherProfile.id,
+      }).expect(201);
+    }
+    await request(server())
+      .post(`/api/timetable/sections/${cls.section.id}/publish`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(201);
+    const parentUser = await createTestUser({
+      role: Role.PARENT,
+      schoolId: cls.school.id,
+    });
+    const parent = await prisma.parentProfile.create({
+      data: { userId: parentUser.id, fullName: 'Parent' },
+    });
+    await prisma.parentStudent.create({
+      data: { parentId: parent.id, studentId: b },
+    });
+    const mine = (userToken: string, query: Record<string, string> = {}) =>
+      request(server())
+        .get('/api/timetable/me')
+        .query(query)
+        .set('Authorization', `Bearer ${userToken}`);
+    const subjectsIn = (res: request.Response) =>
+      res.body.entries.map((e: any) => e.sectionSubjectId).sort();
+
+    const student = await mine(await tokenFor(app, cls.students[0].user));
+    expect(subjectsIn(student)).toEqual(
+      [cls.sectionSubject.id, electives[0].id].sort(),
+    );
+    // Free periods stay on the grid as empty cells.
+    expect(student.body.periods).toHaveLength(3);
+
+    const child = await mine(await tokenFor(app, parentUser), { studentId: b });
+    expect(subjectsIn(child)).toEqual(
+      [cls.sectionSubject.id, electives[1].id].sort(),
+    );
+
+    const classView = await request(server())
+      .get(`/api/timetable/class/${cls.section.id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(classView.body.entries).toHaveLength(3);
+  });
+
   it('builds in the session students sit in, not a newer active one', async () => {
     const cls = await seedClass({ studentCount: 1 });
     // Every year is created active, so a future session is routinely "active" too.
