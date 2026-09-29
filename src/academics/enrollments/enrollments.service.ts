@@ -633,13 +633,23 @@ export class EnrollmentsService extends BaseSchoolScopedService {
       student.id !== enrollment.studentId ||
       section.id !== enrollment.sectionId ||
       academicYear.id !== enrollment.academicYearId;
-    // Picks within the same class and session are diffed by replacePicks, which
-    // keeps a recorded subject from being dropped by a move.
-    const repicksInClass =
-      !!picks &&
+    const withinClass =
       student.id === enrollment.studentId &&
       academicYear.id === enrollment.academicYearId &&
       section.classGradeId === enrollment.section.classGradeId;
+    // A move within the class without picks takes the new section's defaults,
+    // through the same records guard as a move that names its picks.
+    const choice =
+      picks ??
+      (moved && withinClass && nextStatus === EnrollmentStatus.ACTIVE
+        ? await this.prisma.sectionSubject.findMany({
+            where: { sectionId: section.id, isElective: true },
+            select: { id: true, subject: { select: { name: true } } },
+          })
+        : null);
+    // Picks within the same class and session are diffed by replacePicks, which
+    // keeps a recorded subject from being dropped by a move.
+    const repicksInClass = !!choice && withinClass;
 
     const updated = await this.prisma.$transaction(async (tx) => {
       // Selections hang off the old section's subjects, so they leave with it.
@@ -660,10 +670,10 @@ export class EnrollmentsService extends BaseSchoolScopedService {
         },
         include: this.defaultInclude(),
       });
-      if (picks) {
+      if (choice) {
         await this.replacePicks(tx, row, section.classGradeId, academicYear, {
           name: student.fullName,
-          picks,
+          picks: choice,
         });
       } else if (
         // Only a new placement gets the default; re-saving one must not re-tick
@@ -686,7 +696,12 @@ export class EnrollmentsService extends BaseSchoolScopedService {
    */
   private async replacePicks(
     tx: Prisma.TransactionClient,
-    placement: { studentId: string; academicYearId: string; sectionId: string },
+    placement: {
+      id: string;
+      studentId: string;
+      academicYearId: string;
+      sectionId: string;
+    },
     classGradeId: string,
     year: { id: string; startDate: Date; endDate: Date; schoolId: string },
     choice: {
@@ -713,12 +728,28 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     });
     const wanted = new Set(choice.picks.map((p) => p.id));
     const dropped = held.filter((h) => !wanted.has(h.sectionSubjectId));
+    // A closed placement's picks leave with it; its marks and attendance stay as
+    // history, so they must not block the student's new placement.
+    const closedIn = new Set(
+      (
+        await tx.enrollment.findMany({
+          where: {
+            studentId: placement.studentId,
+            academicYearId: placement.academicYearId,
+            status: { not: EnrollmentStatus.ACTIVE },
+            id: { not: placement.id },
+          },
+          select: { sectionId: true },
+        })
+      ).map((e) => e.sectionId),
+    );
     // A row on the placement's own compulsory subject goes, but isn't a loss:
     // the student still takes it (after a move into that section).
     const lost = dropped.filter(
       (d) =>
-        d.sectionSubject.isElective ||
-        d.sectionSubject.sectionId !== placement.sectionId,
+        (d.sectionSubject.isElective ||
+          d.sectionSubject.sectionId !== placement.sectionId) &&
+        !closedIn.has(d.sectionSubject.sectionId),
     );
     const kept = (
       await recordedSubjects(
