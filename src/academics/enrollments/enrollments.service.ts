@@ -736,7 +736,17 @@ export class EnrollmentsService extends BaseSchoolScopedService {
   async remove(id: string, actor: Actor) {
     const existing = await this.getOrThrow(id, actor);
     const removed = await this.prisma.$transaction(async (tx) => {
-      await clearSelections(tx, existing);
+      // Picks belong to the student's class and session, not to one row: while
+      // another placement in that class remains, they are its picks.
+      const remaining = await tx.enrollment.count({
+        where: {
+          id: { not: id },
+          studentId: existing.studentId,
+          academicYearId: existing.academicYearId,
+          section: { classGradeId: existing.section.classGradeId },
+        },
+      });
+      if (!remaining) await clearSelections(tx, existing);
       return tx.enrollment.delete({ where: { id } });
     });
     await this.invalidate(existing.section.schoolId);

@@ -1599,6 +1599,28 @@ describe('Student subject enrollment (e2e)', () => {
         expect(res.status).toBe(201);
         expect(await picksOf(student.id, f.academicYear.id)).toEqual([f.artB]);
       });
+
+      it('keeps the current picks when a closed placement in the class is deleted', async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        await withdraw(f, student.id);
+        await enrol(f.adminToken, {
+          studentId: student.id,
+          sectionId: f.sectionB.id,
+          academicYearId: f.academicYear.id,
+          sectionSubjectIds: [f.artB],
+        }).expect(201);
+        const closed = await prisma.enrollment.findFirstOrThrow({
+          where: { studentId: student.id, sectionId: f.section.id },
+        });
+
+        await request(app.getHttpServer())
+          .delete(`/api/enrollments/${closed.id}`)
+          .set('Authorization', `Bearer ${f.adminToken}`)
+          .expect(200);
+
+        expect(await picksOf(student.id, f.academicYear.id)).toEqual([f.artB]);
+      });
     });
 
     it('notifies sibling pickers of a quiz in a section nobody is placed in', async () => {
