@@ -16,18 +16,31 @@ if (worker > WORKER_COUNT) {
 }
 process.env.DATABASE_URL = workerDatabaseUrl(worker);
 
-// When a Redis is configured, pin the suite to database index 1 so it never
-// reads or flushes the dev cache on index 0. Set here, before anything else
-// loads, because ConfigModule.forRoot() reads .env during app construction and
-// dotenv only fills variables that are still undefined — so this value wins.
-// Cleared between tests by resetDb(); without that, a cached response outlives
-// the TRUNCATE and leaks into the next test.
+// One Redis index per worker, for the same reason as the database above:
+// resetDb() FLUSHDBs between tests, so workers sharing an index wipe each
+// other's throttle counters and cached responses mid-test — which reads as a
+// rate-limit test that "randomly" sees 401 where it expected 429. Index 0 is
+// never used, so the dev cache is left alone either way.
+//
+// Set here, before anything else loads, because ConfigModule.forRoot() reads
+// .env during app construction and dotenv only fills variables that are still
+// undefined — so this value wins.
 //
 // Left UNSET when there is none: CacheService then uses its in-memory backend.
 // Pointing at a Redis that isn't there hangs the whole suite — CacheService
-// reconnects forever — which is what CI does, having no redis service.
+// reconnects forever.
 if (process.env.REDIS_URL) {
-  process.env.REDIS_URL = process.env.REDIS_URL.replace(/\/\d+$/, '') + '/1';
+  if (worker > 15) {
+    // Redis ships 16 databases, so a higher index fails SELECT — and because
+    // both cache and throttler fail open, the suite would run on with rate
+    // limiting silently off rather than say why.
+    throw new Error(
+      `Jest worker ${worker} has no Redis index: only 0-15 exist. ` +
+        `Lower maxWorkers in jest-e2e.json (and E2E_WORKERS to match).`,
+    );
+  }
+  process.env.REDIS_URL =
+    process.env.REDIS_URL.replace(/\/\d+$/, '') + `/${worker}`;
 }
 
 process.env.JWT_ACCESS_SECRET =
