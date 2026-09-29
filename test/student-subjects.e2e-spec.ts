@@ -649,6 +649,42 @@ describe('Student subject enrollment (e2e)', () => {
       expect(ids).toEqual([f.maths, f.electives.Physics].sort());
     });
 
+    it("gives each subject its code and teacher's name, and no teacher contact details", async () => {
+      const f = await seedSelectionSection();
+      await patch(f.adminToken, {
+        academicYearId: f.academicYear.id,
+        studentIds: [f.studentIds[0]],
+        add: [f.electives.Physics],
+      });
+      const physics = await prisma.sectionSubject.findUniqueOrThrow({
+        where: { id: f.electives.Physics },
+      });
+      await prisma.subject.update({
+        where: { id: physics.subjectId },
+        data: { code: 'PHY-101' },
+      });
+      await prisma.teacherProfile.update({
+        where: { id: f.teacherProfile.id },
+        data: { phone: '0300-0000000', email: 'private@teacher.test' },
+      });
+
+      const res = await combination(
+        await tokenFor(app, f.students[0].user),
+        f.studentIds[0],
+      );
+      const byId = new Map<string, any>(
+        res.body.subjects.map((s: any) => [s.sectionSubjectId, s]),
+      );
+      expect(byId.get(f.maths).teacher).toEqual({
+        id: f.teacherProfile.id,
+        fullName: f.teacherProfile.fullName,
+      });
+      expect(byId.get(f.electives.Physics)).toMatchObject({
+        subject: { code: 'PHY-101' },
+        teacher: null,
+      });
+    });
+
     it('lets a student read their own combination', async () => {
       const f = await seedSelectionSection();
       const token = await tokenFor(app, f.students[0].user);
@@ -672,6 +708,28 @@ describe('Student subject enrollment (e2e)', () => {
   });
 
   describe('default selection', () => {
+    it('makes a newly added subject selectable, ticked for everyone already enrolled', async () => {
+      const f = await seedSelectionSection();
+      const subject = await prisma.subject.create({
+        data: { schoolId: f.school.id, name: `History-${uniq()}` },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post('/api/section-subjects')
+        .set('Authorization', `Bearer ${f.adminToken}`)
+        .send({ sectionId: f.section.id, subjectId: subject.id });
+      expect(res.status).toBe(201);
+      expect(res.body.isElective).toBe(true);
+
+      const takers = await prisma.studentSubject.findMany({
+        where: { sectionSubjectId: res.body.id },
+        select: { studentId: true },
+      });
+      expect(takers.map((t) => t.studentId).sort()).toEqual(
+        [...f.studentIds].sort(),
+      );
+    });
+
     const chosen = (studentId: string) =>
       prisma.studentSubject
         .findMany({ where: { studentId }, select: { sectionSubjectId: true } })
