@@ -1,5 +1,5 @@
 import { INestApplication } from '@nestjs/common';
-import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import request from 'supertest';
 import { createTestApp } from './utils/app';
@@ -8,16 +8,31 @@ import { createTestUser, tokenFor } from './utils/factories';
 import { seedClass } from './utils/class-fixture';
 import { Role } from '../src/common/types/role.type';
 
-// setup-env points DATABASE_URL at this worker's test database, and the child
-// inherits it — so the script can never reach any other database from here.
-const run = (args = '') =>
-  execSync(`node scripts/make-subjects-selectable.mjs ${args}`, {
-    cwd: join(__dirname, '..'),
-    env: { ...process.env },
-    encoding: 'utf8',
-  });
+// global-setup already applied this migration to an empty database, which only
+// proves it runs. Replaying the shipped file against seeded data is what proves
+// the backfill keeps every roster — so the file is read, never retyped here.
+const MIGRATION_SQL = readFileSync(
+  join(
+    __dirname,
+    '../prisma/migrations/20260929061500_all_subjects_selectable/migration.sql',
+  ),
+  'utf8',
+);
 
-describe('make-subjects-selectable script (e2e)', () => {
+const applyMigration = () =>
+  prisma.$transaction(
+    MIGRATION_SQL.split('\n')
+      .filter((line) => !line.trim().startsWith('--'))
+      .join('\n')
+      .split(';')
+      .map((statement) => statement.trim())
+      .filter(Boolean)
+      // One transaction, so the migration's LOCK is legal and the ticks and the
+      // flip land together exactly as they will on a live database.
+      .map((statement) => prisma.$executeRawUnsafe(statement)),
+  );
+
+describe('all subjects selectable (migration)', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
@@ -116,23 +131,6 @@ describe('make-subjects-selectable script (e2e)', () => {
         rows.map((r) => `${r.studentId}@${r.academicYearId}`).sort(),
       );
 
-  it('changes nothing on a dry run', async () => {
-    const f = await seedHistory();
-
-    const out = run();
-
-    expect(out).toMatch(/1 compulsory subject/);
-    expect(out).toMatch(/dry run/i);
-    expect(
-      (
-        await prisma.sectionSubject.findUniqueOrThrow({
-          where: { id: f.compulsory },
-        })
-      ).isElective,
-    ).toBe(false);
-    expect(await ticksFor(f.compulsory)).toEqual([]);
-  });
-
   it('makes every subject selectable, ticking every placement in its own session', async () => {
     const f = await seedHistory();
     const rosterOf = async () =>
@@ -146,7 +144,7 @@ describe('make-subjects-selectable script (e2e)', () => {
         .sort();
     const before = await rosterOf();
 
-    run('--apply');
+    await applyMigration();
 
     expect(
       await prisma.sectionSubject.count({ where: { isElective: false } }),
@@ -167,25 +165,32 @@ describe('make-subjects-selectable script (e2e)', () => {
     ]);
   });
 
-  it('promises exactly the ticks it writes, empty sections included', async () => {
-    await seedHistory();
-    // Nobody enrolled here, so this subject earns no ticks — but its LEFT JOIN
-    // row was (NULL, id, NULL), which counted, and the dry run over-promised.
-    await seedClass({ studentCount: 0 });
+  it('leaves a section nobody is enrolled in alone', async () => {
+    const empty = await seedClass({ studentCount: 0 });
 
-    const promised = Number(/· (\d+) student ticks/.exec(run())?.[1]);
-    const before = await prisma.studentSubject.count();
-    run('--apply');
+    await applyMigration();
 
-    expect((await prisma.studentSubject.count()) - before).toBe(promised);
+    // Selectable like every other subject, but with nobody to tick — an inner
+    // join, so it contributes no rows rather than one all-NULL one.
+    expect(
+      (
+        await prisma.sectionSubject.findUniqueOrThrow({
+          where: { id: empty.sectionSubject.id },
+        })
+      ).isElective,
+    ).toBe(true);
+    expect(await ticksFor(empty.sectionSubject.id)).toEqual([]);
   });
 
-  it('is safe to run twice', async () => {
+  // It ships as a migration, so it runs once — but a restored database or a
+  // hand-run replay must not double-tick anyone.
+  it('is safe to apply twice', async () => {
     const f = await seedHistory();
-    run('--apply');
+    await applyMigration();
     const once = await ticksFor(f.compulsory);
 
-    expect(run('--apply')).toMatch(/0 compulsory subjects/);
+    await applyMigration();
+
     expect(await ticksFor(f.compulsory)).toEqual(once);
   });
 });
