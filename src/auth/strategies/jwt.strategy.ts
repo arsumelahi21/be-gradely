@@ -22,6 +22,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       role: payload.role,
       schoolId: payload.schoolId ?? null,
       email: payload.email,
+      // Tokens issued before this field existed carry no flag, so default to free.
+      mustChangePassword: payload.mustChangePassword === true,
     };
   }
 }

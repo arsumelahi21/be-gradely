@@ -12,9 +12,8 @@ import { JwtService } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
-import { ForgotPasswordDto } from './dto/forgot-password.dto';
-import { ResetPasswordDto } from './dto/reset-password.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { AllowWithTemporaryPassword } from './decorators/allow-with-temporary-password.decorator';
 
 @Controller('auth')
 export class AuthController {
@@ -23,25 +22,21 @@ export class AuthController {
     private jwt: JwtService,
   ) {}
 
-  // Tight limit on the brute-force target: 5 attempts/min/IP (PLAN.md P0-13a / Phase 1 §1.5.1).
-  // forgot/reset-password (§1.3) must carry the same tight throttle.
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  // Per account on each network: per IP alone, one pupil's typos locked out the
+  // whole school behind that address. AuthService.login adds the per-network cap.
+  @Throttle({
+    default: {
+      limit: 5,
+      ttl: 60_000,
+      getTracker: (req) =>
+        `${req.ip}:${String(req.body?.email ?? '')
+          .trim()
+          .toLowerCase()}`,
+    },
+  })
   @Post('login')
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto.email, dto.password);
-  }
-
-  // Brute-force / email-bomb targets — same tight limit as login.
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @Post('forgot-password')
-  forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.auth.forgotPassword(dto.email);
-  }
-
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @Post('reset-password')
-  resetPassword(@Body() dto: ResetPasswordDto) {
-    return this.auth.resetPassword(dto.token, dto.newPassword);
+  login(@Body() dto: LoginDto, @Req() req: any) {
+    return this.auth.login(dto.email, dto.password, req.ip);
   }
 
   @Post('refresh')
@@ -56,12 +51,14 @@ export class AuthController {
     return this.auth.refresh(payload.sub, dto.refreshToken);
   }
 
+  @AllowWithTemporaryPassword()
   @UseGuards(JwtAuthGuard)
   @Post('logout')
   logout(@Req() req: any) {
     return this.auth.logout(req.user.userId);
   }
 
+  @AllowWithTemporaryPassword()
   @UseGuards(JwtAuthGuard)
   @Get('me')
   me(@Req() req: any) {
