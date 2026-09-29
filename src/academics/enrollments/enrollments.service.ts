@@ -170,17 +170,39 @@ export class EnrollmentsService extends BaseSchoolScopedService {
     }
 
     const created = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.enrollment.create({
-        data: {
-          studentId: student.id,
-          sectionId: section.id,
-          academicYearId: academicYear.id,
-          status,
-          startDate: this.toDate(dto.startDate),
-          endDate: this.toDate(dto.endDate),
-        },
-        include: this.defaultInclude(),
-      });
+      const key = {
+        studentId: student.id,
+        sectionId: section.id,
+        academicYearId: academicYear.id,
+      };
+      // A student who sat here before still holds the row under the unique key,
+      // so enrolling them back reopens it — as the batch path does.
+      const previous =
+        status === EnrollmentStatus.ACTIVE
+          ? await tx.enrollment.findUnique({
+              where: { studentId_sectionId_academicYearId: key },
+              select: { id: true },
+            })
+          : null;
+      const row = previous
+        ? await tx.enrollment.update({
+            where: { id: previous.id },
+            data: {
+              status,
+              startDate: this.toDate(dto.startDate) ?? new Date(),
+              endDate: this.toDate(dto.endDate),
+            },
+            include: this.defaultInclude(),
+          })
+        : await tx.enrollment.create({
+            data: {
+              ...key,
+              status,
+              startDate: this.toDate(dto.startDate),
+              endDate: this.toDate(dto.endDate),
+            },
+            include: this.defaultInclude(),
+          });
       if (picks) {
         // Replace, not add: a closed placement in this class keeps its picks.
         await this.replacePicks(tx, row, section.classGradeId, academicYear, {

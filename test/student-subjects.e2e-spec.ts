@@ -1621,6 +1621,32 @@ describe('Student subject enrollment (e2e)', () => {
 
         expect(await picksOf(student.id, f.academicYear.id)).toEqual([f.artB]);
       });
+
+      it('reopens the old placement when a withdrawn student is enrolled back into it', async () => {
+        const f = await seedSiblings();
+        const student = await enrolAcross(f);
+        await withdraw(f, student.id);
+
+        const res = await enrol(f.adminToken, {
+          studentId: student.id,
+          sectionId: f.section.id,
+          academicYearId: f.academicYear.id,
+          sectionSubjectIds: [f.electives.Physics],
+        });
+
+        expect(res.status).toBe(201);
+        expect(
+          await prisma.enrollment.findMany({
+            where: { studentId: student.id },
+            select: { sectionId: true, status: true, endDate: true },
+          }),
+        ).toEqual([
+          { sectionId: f.section.id, status: 'ACTIVE', endDate: null },
+        ]);
+        expect(await picksOf(student.id, f.academicYear.id)).toEqual([
+          f.electives.Physics,
+        ]);
+      });
     });
 
     it('notifies sibling pickers of a quiz in a section nobody is placed in', async () => {
