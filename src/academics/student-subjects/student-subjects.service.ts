@@ -209,6 +209,8 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
             id: true,
             isElective: true,
             subject: { select: { id: true, name: true, code: true } },
+            // Students and parents read this: a teacher's name, never contact details.
+            teacher: { select: { id: true, fullName: true } },
           },
           orderBy: { subject: { name: 'asc' } },
         })
@@ -222,6 +224,7 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
         sectionSubjectId: r.id,
         isElective: r.isElective,
         subject: r.subject,
+        teacher: r.teacher,
       })),
     };
   }
