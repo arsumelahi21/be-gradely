@@ -14,6 +14,7 @@ import { resolvePagination } from '../../common/dto/pagination-query.dto';
 import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import {
+  crossSectionTakers,
   recordedSubjects,
   subjectsOf,
 } from '../section-subjects/subject-takers';
@@ -85,51 +86,71 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
       },
       orderBy: { subject: { name: 'asc' } },
     });
-    const electiveIds = offerings.filter((o) => o.isElective).map((o) => o.id);
+    const offeringIds = offerings.map((o) => o.id);
+    const electiveIds = new Set(
+      offerings.filter((o) => o.isElective).map((o) => o.id),
+    );
 
-    const search = query.q?.trim();
-    const where: Prisma.EnrollmentWhereInput = {
-      sectionId: section.id,
-      academicYearId: year.id,
-      status: EnrollmentStatus.ACTIVE,
-      ...(search && {
-        student: {
-          OR: [
-            { fullName: { contains: search, mode: 'insensitive' } },
-            { rollNo: { contains: search, mode: 'insensitive' } },
-          ],
-        },
-      }),
-    };
-    const { page, pageSize, skip, take } = resolvePagination(query);
-    const [rows, total, rosterTotal] = await Promise.all([
+    const [placedHere, siblings] = await Promise.all([
       this.prisma.enrollment.findMany({
-        where,
-        skip,
-        take,
-        orderBy: [
-          { student: { rollNo: 'asc' } },
-          { student: { fullName: 'asc' } },
-        ],
-        select: {
-          student: { select: { id: true, fullName: true, rollNo: true } },
-        },
-      }),
-      this.prisma.enrollment.count({ where }),
-      this.prisma.enrollment.count({
         where: {
           sectionId: section.id,
           academicYearId: year.id,
           status: EnrollmentStatus.ACTIVE,
         },
+        select: { studentId: true },
       }),
+      // The same sibling-section pickers this section's attendance and exam
+      // sheets list, so the grid never disagrees with them.
+      crossSectionTakers(this.prisma, offeringIds, year.id),
+    ]);
+    const ownIds = new Set(placedHere.map((p) => p.studentId));
+
+    const search = query.q?.trim();
+    const where: Prisma.StudentProfileWhereInput = {
+      id: { in: [...ownIds, ...siblings] },
+      ...(search && {
+        OR: [
+          { fullName: { contains: search, mode: 'insensitive' } },
+          { rollNo: { contains: search, mode: 'insensitive' } },
+        ],
+      }),
+    };
+    const { page, pageSize, skip, take } = resolvePagination(query);
+    const [students, total] = await Promise.all([
+      this.prisma.studentProfile.findMany({
+        where,
+        skip,
+        take,
+        orderBy: [{ rollNo: 'asc' }, { fullName: 'asc' }],
+        select: { id: true, fullName: true, rollNo: true },
+      }),
+      this.prisma.studentProfile.count({ where }),
     ]);
 
-    const students = rows.map((r) => r.student);
-    const selectedBy = await this.selectionsFor(
-      electiveIds,
-      students.map((s) => s.id),
-      year.id,
+    const siblingIds = students
+      .filter((s) => !ownIds.has(s.id))
+      .map((s) => s.id);
+    const [selectedBy, siblingPlacements] = await Promise.all([
+      this.selectionsFor(
+        offeringIds,
+        students.map((s) => s.id),
+        year.id,
+      ),
+      this.prisma.enrollment.findMany({
+        where: {
+          studentId: { in: siblingIds },
+          academicYearId: year.id,
+          status: EnrollmentStatus.ACTIVE,
+        },
+        select: {
+          studentId: true,
+          section: { select: { id: true, name: true } },
+        },
+      }),
+    ]);
+    const primaryOf = new Map(
+      siblingPlacements.map((p) => [p.studentId, p.section]),
     );
 
     return {
@@ -144,14 +165,20 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
         isElective: o.isElective,
         subject: o.subject,
       })),
-      items: students.map((student) => ({
-        student,
-        selected: selectedBy.get(student.id) ?? [],
-      })),
+      items: students.map((student) => {
+        const own = ownIds.has(student.id);
+        const chosen = (selectedBy.get(student.id) ?? []).sort();
+        return {
+          student,
+          // A sibling picking this section's compulsory subject still picked it.
+          selected: own ? chosen.filter((id) => electiveIds.has(id)) : chosen,
+          primarySection: own ? null : (primaryOf.get(student.id) ?? null),
+        };
+      }),
       total,
       page,
       pageSize,
-      rosterTotal,
+      rosterTotal: ownIds.size + siblings.length,
     };
   }
 
@@ -434,15 +461,15 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
   // ---- helpers -----------------------------------------------------------
 
   private async selectionsFor(
-    electiveIds: string[],
+    sectionSubjectIds: string[],
     studentIds: string[],
     academicYearId: string,
   ): Promise<Map<string, string[]>> {
     const byStudent = new Map<string, string[]>();
-    if (!electiveIds.length || !studentIds.length) return byStudent;
+    if (!sectionSubjectIds.length || !studentIds.length) return byStudent;
     const rows = await this.prisma.studentSubject.findMany({
       where: {
-        sectionSubjectId: { in: electiveIds },
+        sectionSubjectId: { in: sectionSubjectIds },
         academicYearId,
         studentId: { in: studentIds },
       },

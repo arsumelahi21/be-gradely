@@ -1288,6 +1288,30 @@ describe('Student subject enrollment (e2e)', () => {
       ).toBe(0);
     });
 
+    it('lists a student placed in a sibling section on the grid of the section they pick from', async () => {
+      const f = await seedSiblings();
+      const student = await enrolAcross(f);
+
+      const res = await matrix(f.adminToken, f.sectionB.id, f.academicYear.id);
+
+      expect(res.status).toBe(200);
+      // Nobody is placed in B; A's own students without a pick here stay off it.
+      expect(res.body.items).toEqual([
+        {
+          student: expect.objectContaining({ id: student.id }),
+          selected: [f.chemistryB, f.historyB].sort(),
+          primarySection: { id: f.section.id, name: f.section.name },
+        },
+      ]);
+      expect(res.body.rosterTotal).toBe(1);
+
+      const own = await matrix(f.adminToken, f.section.id, f.academicYear.id);
+      const row = own.body.items.find(
+        (i: { student: { id: string } }) => i.student.id === student.id,
+      );
+      expect(row.primarySection).toBeNull();
+    });
+
     it('lists a sibling pick under the section it comes from', async () => {
       const f = await seedSiblings();
       const student = await enrolAcross(f);
