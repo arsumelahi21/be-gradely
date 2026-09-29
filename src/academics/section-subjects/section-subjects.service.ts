@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -32,6 +33,51 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
    *  that moves subjects or teachers has to drop them. */
   private invalidate(schoolId: string) {
     return this.invalidateSchoolCache(schoolId, 'sections', 'classes');
+  }
+
+  /**
+   * Compulsory means the whole section takes it here, so a student placed here
+   * who takes the same subject from a sibling section would take it twice.
+   */
+  private async assertNotTakenFromSibling(
+    section: { id: string; classGradeId: string },
+    subjectId: string,
+  ) {
+    const rows = await this.prisma.studentSubject.findMany({
+      where: {
+        sectionSubject: {
+          subjectId,
+          sectionId: { not: section.id },
+          section: { classGradeId: section.classGradeId },
+        },
+        student: {
+          enrollments: {
+            some: { sectionId: section.id, status: EnrollmentStatus.ACTIVE },
+          },
+        },
+      },
+      select: {
+        academicYearId: true,
+        student: {
+          select: {
+            fullName: true,
+            enrollments: {
+              where: { sectionId: section.id, status: EnrollmentStatus.ACTIVE },
+              select: { academicYearId: true },
+            },
+          },
+        },
+      },
+    });
+    const clashing = rows.filter((r) =>
+      r.student.enrollments.some((e) => e.academicYearId === r.academicYearId),
+    );
+    if (clashing.length) {
+      const names = [...new Set(clashing.map((r) => r.student.fullName))];
+      throw new ConflictException(
+        `${names.join(', ')} ${names.length === 1 ? 'takes' : 'take'} this subject from another section. Untick it there first, then make it compulsory here.`,
+      );
+    }
   }
 
   /** A subject newly opened to student selection starts ticked for everyone already enrolled. */
@@ -275,6 +321,9 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       actor,
     );
     const nextTeacherId = teacherId ? (teacher?.id ?? null) : null;
+    if (dto.isElective === false && current.isElective) {
+      await this.assertNotTakenFromSibling(section, subject.id);
+    }
     const result = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.sectionSubject.update({
         where: { id },
@@ -293,6 +342,12 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
         await ensureOnRoster(tx, section.id, nextTeacherId);
       }
       await pruneSectionRoster(tx, current.sectionId);
+      // The picks were of the old section's students; the offering now belongs
+      // to another section, whose students take it by default.
+      if (updated.sectionId !== current.sectionId) {
+        await tx.studentSubject.deleteMany({ where: { sectionSubjectId: id } });
+        if (updated.isElective) await this.selectForRoster(tx, updated);
+      }
       if (updated.isElective && !current.isElective) {
         await this.selectForRoster(tx, updated);
       }

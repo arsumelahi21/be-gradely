@@ -291,8 +291,14 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
       );
     }
 
-    const { sectionId, schoolId, sectionLabel, nameOf } =
-      await this.resolveSubjects([...add, ...remove], actor);
+    const {
+      sectionId,
+      classGradeId,
+      subjectIdOf,
+      schoolId,
+      sectionLabel,
+      nameOf,
+    } = await this.resolveSubjects([...add, ...remove], actor);
     const year = await this.prisma.academicYear.findFirst({
       where: { id: dto.academicYearId, schoolId },
       select: { id: true, name: true, startDate: true, endDate: true },
@@ -315,8 +321,19 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
           ? await this.withRecords(tx, placement.eligible, remove, year, nameOf)
           : [];
       const keptIds = new Set(kept.map((k) => k.studentId));
-      const eligible = placement.eligible.filter((id) => !keptIds.has(id));
-      const skipped = [...placement.skipped, ...kept];
+      const candidates = placement.eligible.filter((id) => !keptIds.has(id));
+      const doubled =
+        add.length && candidates.length
+          ? await this.takenElsewhere(tx, candidates, add, {
+              sectionId,
+              classGradeId,
+              academicYearId: year.id,
+              subjectIdOf,
+            })
+          : [];
+      const doubledIds = new Set(doubled.map((d) => d.studentId));
+      const eligible = candidates.filter((id) => !doubledIds.has(id));
+      const skipped = [...placement.skipped, ...kept, ...doubled];
       const held = eligible.length
         ? await tx.studentSubject.findMany({
             where: {
@@ -500,10 +517,12 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
         id: true,
         isElective: true,
         sectionId: true,
+        subjectId: true,
         section: {
           select: {
             schoolId: true,
             name: true,
+            classGradeId: true,
             classGrade: { select: { name: true } },
           },
         },
@@ -531,6 +550,8 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
     const { section } = offerings[0];
     return {
       sectionId: offerings[0].sectionId,
+      classGradeId: section.classGradeId,
+      subjectIdOf: new Map(offerings.map((o) => [o.id, o.subjectId])),
       schoolId: section.schoolId,
       sectionLabel: [section.classGrade?.name.trim(), section.name]
         .filter(Boolean)
@@ -582,6 +603,56 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
       });
     }
     return { eligible, skipped };
+  }
+
+  /**
+   * Students who already take one of these subjects from another section of the
+   * class — a subject is taken from one section only, as enrolment enforces.
+   */
+  private async takenElsewhere(
+    db: Prisma.TransactionClient,
+    studentIds: string[],
+    sectionSubjectIds: string[],
+    scope: {
+      sectionId: string;
+      classGradeId: string;
+      academicYearId: string;
+      subjectIdOf: Map<string, string>;
+    },
+  ): Promise<SkippedStudent[]> {
+    const rows = await db.studentSubject.findMany({
+      where: {
+        studentId: { in: studentIds },
+        academicYearId: scope.academicYearId,
+        sectionSubject: {
+          sectionId: { not: scope.sectionId },
+          subjectId: {
+            in: sectionSubjectIds.map((id) => scope.subjectIdOf.get(id)!),
+          },
+          section: { classGradeId: scope.classGradeId },
+        },
+      },
+      select: {
+        studentId: true,
+        student: { select: { fullName: true } },
+        sectionSubject: {
+          select: {
+            subject: { select: { name: true } },
+            section: { select: { name: true } },
+          },
+        },
+      },
+    });
+    const byStudent = new Map<string, SkippedStudent>();
+    for (const r of rows) {
+      if (byStudent.has(r.studentId)) continue;
+      byStudent.set(r.studentId, {
+        studentId: r.studentId,
+        studentName: r.student.fullName,
+        reason: `${r.student.fullName} already takes ${r.sectionSubject.subject.name} from ${r.sectionSubject.section.name}. A subject is taken from one section only.`,
+      });
+    }
+    return [...byStudent.values()];
   }
 
   /**
