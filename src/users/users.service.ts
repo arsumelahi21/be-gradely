@@ -39,6 +39,7 @@ import {
   NotificationCreateEvent,
 } from '../common/events/notification.events';
 import { schoolAdminUserIds } from '../common/notifications/recipients';
+import { generateTemporaryPassword } from './temp-password';
 
 @Injectable()
 export class UsersService {
@@ -936,11 +937,7 @@ export class UsersService {
       // Only deactivation revokes tokens, so a no-op "activate" logs nobody out.
       data: {
         isActive,
-        ...(!isActive && {
-          refreshTokenHash: null,
-          resetTokenHash: null,
-          resetTokenExpiresAt: null,
-        }),
+        ...(!isActive && { refreshTokenHash: null }),
       },
       select: {
         id: true,
@@ -1336,9 +1333,51 @@ export class UsersService {
     const passwordHash = await bcrypt.hash(dto.newPassword, 10);
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash, refreshTokenHash: null },
+      data: { passwordHash, refreshTokenHash: null, mustChangePassword: false },
     });
     return { success: true };
+  }
+
+  /**
+   * Admin-issued password recovery — there is no self-service path. The plain
+   * temporary password exists only in this response; it is hashed on the way in
+   * and cannot be read back, so an admin who loses it issues another.
+   */
+  async resetPassword(actor: Actor, id: string) {
+    if (id === actor.userId)
+      throw new BadRequestException(
+        'Use Change password to set your own password.',
+      );
+
+    const target = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, schoolId: true },
+    });
+    // 404 rather than 403: a 403 would confirm that another school's id exists.
+    if (
+      !target ||
+      (actor.role !== Role.SUPER_ADMIN && target.schoolId !== actor.schoolId)
+    )
+      throw new NotFoundException('User not found');
+
+    const temporaryPassword = generateTemporaryPassword();
+    await this.prisma.user.update({
+      where: { id: target.id },
+      data: {
+        passwordHash: await bcrypt.hash(temporaryPassword, 10),
+        mustChangePassword: true,
+        // The old session must not outlive the password it was opened with.
+        refreshTokenHash: null,
+      },
+    });
+
+    void this.audit.record(actor.userId, 'USER_PASSWORD_RESET', {
+      schoolId: target.schoolId,
+      entityType: 'User',
+      entityId: target.id,
+    });
+
+    return { temporaryPassword };
   }
 
   async linkParentStudent(
