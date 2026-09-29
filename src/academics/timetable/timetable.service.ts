@@ -47,7 +47,10 @@ import {
   periodMinutesForCount,
   validatePeriodSet,
 } from './timetable-time';
-import { subjectsOf } from '../section-subjects/subject-takers';
+import {
+  crossSectionTakers,
+  subjectsOf,
+} from '../section-subjects/subject-takers';
 import { PublishTimetableDto } from './dto/publish-timetable.dto';
 
 export interface EntryConflict {
@@ -2559,7 +2562,24 @@ export class TimetableService extends BaseSchoolScopedService {
     timetableId: string,
   ) {
     const label = this.classLabel(section) || 'your class';
-    const studentIds = await sectionStudentIds(this.prisma, section.id);
+    const [placedHere, timetable, offerings] = await Promise.all([
+      sectionStudentIds(this.prisma, section.id),
+      this.prisma.timetable.findUniqueOrThrow({
+        where: { id: timetableId },
+        select: { academicYearId: true },
+      }),
+      this.prisma.sectionSubject.findMany({
+        where: { sectionId: section.id },
+        select: { id: true },
+      }),
+    ]);
+    // Students placed in a sibling section attend the classes they picked here.
+    const pickers = await crossSectionTakers(
+      this.prisma,
+      offerings.map((o) => o.id),
+      timetable.academicYearId,
+    );
+    const studentIds = [...new Set([...placedHere, ...pickers])];
     const [ownByStudent, parentsByStudent] = await Promise.all([
       studentUserIdByStudent(this.prisma, studentIds),
       parentUserIdsByStudent(this.prisma, studentIds),

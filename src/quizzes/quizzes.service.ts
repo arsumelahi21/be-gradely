@@ -765,12 +765,14 @@ export class QuizzesService extends BaseSchoolScopedService {
     quiz: { sectionId: string; subjectId: string | null },
   ) {
     if (!quiz.subjectId) return null;
-    const [offering, placement] = await Promise.all([
+    const [offering, placements] = await Promise.all([
       this.prisma.sectionSubject.findFirst({
         where: { sectionId: quiz.sectionId, subjectId: quiz.subjectId },
         select: { id: true },
       }),
-      this.prisma.enrollment.findFirst({
+      // A student enrolled early for next session holds two ACTIVE placements
+      // in the class; the pick lives in one session only.
+      this.prisma.enrollment.findMany({
         where: {
           studentId,
           status: 'ACTIVE',
@@ -781,15 +783,19 @@ export class QuizzesService extends BaseSchoolScopedService {
         select: { id: true, academicYearId: true },
       }),
     ]);
-    if (!offering || !placement) return null;
-    return (await picksFromSibling(
-      this.prisma,
-      studentId,
-      offering.id,
-      placement.academicYearId,
-    ))
-      ? placement
-      : null;
+    if (!offering) return null;
+    for (const placement of placements) {
+      if (
+        await picksFromSibling(
+          this.prisma,
+          studentId,
+          offering.id,
+          placement.academicYearId,
+        )
+      )
+        return placement;
+    }
+    return null;
   }
 
   /** Students placed in a sibling section who picked this quiz's subject here, in any open session. */
