@@ -320,6 +320,79 @@ describe('computeChallan with overrides', () => {
   });
 });
 
+describe('computeChallan with subject fees', () => {
+  const maths = { subjectId: 'maths', name: 'Mathematics', amount: 3000 };
+  const chem = { subjectId: 'chem', name: 'Chemistry', amount: 2500 };
+
+  it('bills one line per subject instead of the monthly fee', () => {
+    const r = computeChallan({
+      monthlyFeeAmount: 9999,
+      feeHeads: [],
+      subjects: [maths, chem],
+    });
+    expect(r.items).toEqual([
+      expect.objectContaining({
+        label: 'Mathematics',
+        amount: 3000,
+        subjectId: 'maths',
+        feeHeadId: null,
+        kind: ChallanItemKind.FEE,
+      }),
+      expect.objectContaining({
+        label: 'Chemistry',
+        amount: 2500,
+        subjectId: 'chem',
+      }),
+    ]);
+    expect(r.netAmount).toBe(5500);
+  });
+
+  it('keeps a free subject as a zero line', () => {
+    const r = computeChallan({
+      monthlyFeeAmount: 0,
+      feeHeads: [],
+      subjects: [{ ...chem, amount: 0 }],
+    });
+    expect(r.items).toEqual([
+      expect.objectContaining({ label: 'Chemistry', amount: 0 }),
+    ]);
+  });
+
+  it('discounts subjects and fee heads together, never the arrears', () => {
+    const r = computeChallan({
+      monthlyFeeAmount: 0,
+      feeHeads: [head('h1', 'Lab', 1000)],
+      subjects: [maths],
+      discount: {
+        id: 'd',
+        name: 'Sibling',
+        type: DiscountType.PERCENT,
+        value: 10,
+      },
+      arrears: { amount: 2000, label: 'Arrears (August 2026)' },
+    });
+    expect(r.items.map((i) => i.label)).toEqual([
+      'Mathematics',
+      'Lab',
+      'Sibling',
+      'Arrears (August 2026)',
+    ]);
+    expect(r.discountAmount).toBe(400);
+    expect(r.netAmount).toBe(3000 + 1000 - 400 + 2000);
+  });
+
+  it('bills the monthly fee exactly as before when no subjects are given', () => {
+    const r = computeChallan({ monthlyFeeAmount: 5000, feeHeads: [] });
+    expect(r.items).toEqual([
+      expect.objectContaining({
+        label: MONTHLY_FEE_LABEL,
+        amount: 5000,
+        subjectId: null,
+      }),
+    ]);
+  });
+});
+
 describe('resolveChallanStatus', () => {
   it('settles a zero-total challan immediately', () => {
     expect(resolveChallanStatus(0, 0)).toBe(ChallanStatus.PAID);

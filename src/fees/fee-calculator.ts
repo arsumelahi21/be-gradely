@@ -39,8 +39,20 @@ export interface FeeHeadOverrideInput {
   isExcluded: boolean;
 }
 
+/** One subject the student takes, at its price for the billed session. */
+export interface SubjectFeeInput {
+  subjectId: string;
+  name: string;
+  amount: number;
+}
+
 export interface ComputeChallanInput {
   monthlyFeeAmount: number;
+  /**
+   * Set for a class billed by subject: these lines replace the Monthly Fee, so
+   * `monthlyFeeAmount` is not charged. Null or absent bills the Monthly Fee.
+   */
+  subjects?: SubjectFeeInput[] | null;
   /** ACTIVE heads only, in display order — the caller filters and sorts. */
   feeHeads: FeeHeadInput[];
   /** This student's per-head overrides; absent means school defaults apply. */
@@ -62,6 +74,7 @@ export interface ArrearsInput {
 
 export interface ComputedItem {
   feeHeadId: string | null;
+  subjectId: string | null;
   label: string;
   amount: number;
   kind: ChallanItemKind;
@@ -132,22 +145,36 @@ export function resolveStudentFeeHeads(
 }
 
 /**
- * Compose a challan: the student's monthly fee, one line per active fee head
- * (after their overrides), then the discount as a single negative line.
+ * Compose a challan: the student's monthly fee (or their subjects), one line
+ * per active fee head (after their overrides), then the discount as a single
+ * negative line.
  */
 export function computeChallan(input: ComputeChallanInput): ComputedChallan {
   const items: ComputedItem[] = [];
   let sortOrder = 0;
 
-  // Emitted even when 0 — a zero-fee student still gets an itemised challan.
-  const monthlyFee = nonNegative(input.monthlyFeeAmount);
-  items.push({
-    feeHeadId: null,
-    label: MONTHLY_FEE_LABEL,
-    amount: monthlyFee,
-    kind: ChallanItemKind.FEE,
-    sortOrder: sortOrder++,
-  });
+  if (input.subjects) {
+    for (const subject of input.subjects) {
+      items.push({
+        feeHeadId: null,
+        subjectId: subject.subjectId,
+        label: subject.name,
+        amount: nonNegative(subject.amount),
+        kind: ChallanItemKind.FEE,
+        sortOrder: sortOrder++,
+      });
+    }
+  } else {
+    // Emitted even when 0 — a zero-fee student still gets an itemised challan.
+    items.push({
+      feeHeadId: null,
+      subjectId: null,
+      label: MONTHLY_FEE_LABEL,
+      amount: nonNegative(input.monthlyFeeAmount),
+      kind: ChallanItemKind.FEE,
+      sortOrder: sortOrder++,
+    });
+  }
 
   const effectiveHeads = resolveStudentFeeHeads(
     input.feeHeads,
@@ -156,6 +183,7 @@ export function computeChallan(input: ComputeChallanInput): ComputedChallan {
   for (const head of effectiveHeads) {
     items.push({
       feeHeadId: head.id,
+      subjectId: null,
       label: head.name,
       amount: nonNegative(head.defaultAmount),
       kind: ChallanItemKind.FEE,
@@ -170,6 +198,7 @@ export function computeChallan(input: ComputeChallanInput): ComputedChallan {
   if (discountAmount > 0 && input.discount) {
     items.push({
       feeHeadId: null,
+      subjectId: null,
       label: input.discount.name,
       amount: discountAmount,
       kind: ChallanItemKind.DISCOUNT,
@@ -182,6 +211,7 @@ export function computeChallan(input: ComputeChallanInput): ComputedChallan {
   if (arrears > 0 && input.arrears) {
     items.push({
       feeHeadId: null,
+      subjectId: null,
       label: input.arrears.label,
       amount: arrears,
       kind: ChallanItemKind.FEE,

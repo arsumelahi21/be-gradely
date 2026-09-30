@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -25,6 +26,8 @@ import { CreateBankAccountDto } from './dto/create-bank-account.dto';
 import { UpdateBankAccountDto } from './dto/update-bank-account.dto';
 import { CreateDiscountDto } from './dto/create-discount.dto';
 import { UpdateDiscountDto } from './dto/update-discount.dto';
+import { SubjectFeesService } from './subject-fees.service';
+import { SetSubjectFeesDto } from './dto/subject-fees.dto';
 
 const listOpts = (q: any) => ({
   page: q.page ? Number(q.page) : undefined,
@@ -34,7 +37,8 @@ const listOpts = (q: any) => ({
 });
 
 /**
- * Fee configuration: school settings, fee heads, bank accounts, discounts.
+ * Fee configuration: school settings, fee heads, bank accounts, discounts,
+ * subject fees.
  * Admin-only throughout — no read path here is exposed to other roles.
  */
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -45,6 +49,7 @@ export class FeesConfigController {
     private readonly feeHeads: FeeHeadsService,
     private readonly bankAccounts: BankAccountsService,
     private readonly discounts: DiscountsService,
+    private readonly subjectFees: SubjectFeesService,
   ) {}
 
   // ---- Settings ----------------------------------------------------------
@@ -173,5 +178,21 @@ export class FeesConfigController {
   @Delete('discounts/:id')
   removeDiscount(@Param('id') id: string, @Req() req: any) {
     return this.discounts.remove(id, req.user);
+  }
+
+  // ---- Subject fees ------------------------------------------------------
+  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
+  @Get('subject-fees')
+  listSubjectFees(
+    @Query('schoolId') schoolId: string | undefined,
+    @Req() req: any,
+  ) {
+    return this.subjectFees.list(req.user, schoolId);
+  }
+
+  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
+  @Put('subject-fees')
+  setSubjectFees(@Body() dto: SetSubjectFeesDto, @Req() req: any) {
+    return this.subjectFees.set(dto, req.user);
   }
 }

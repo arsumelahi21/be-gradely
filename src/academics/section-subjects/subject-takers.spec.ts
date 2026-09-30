@@ -1,5 +1,10 @@
 import { Prisma } from '@prisma/client';
-import { narrowToTakers, subjectsOf, takersBySubject } from './subject-takers';
+import {
+  narrowToTakers,
+  subjectsOf,
+  subjectsOfMany,
+  takersBySubject,
+} from './subject-takers';
 
 interface Offering {
   id: string;
@@ -31,6 +36,12 @@ function fakeDb(
   let electiveReads = 0;
   const offeringById = new Map(offerings.map((o) => [o.id, o]));
   const db = {
+    section: {
+      findMany: ({ where }: any) =>
+        Promise.resolve(
+          where.id.in.map((id: string) => ({ id, classGradeId: classOf(id) })),
+        ),
+    },
     sectionSubject: {
       findMany: ({ where }: any) =>
         Promise.resolve(
@@ -38,7 +49,9 @@ function fakeDb(
             .filter((o) =>
               where.id?.in
                 ? where.id.in.includes(o.id)
-                : o.sectionId === where.sectionId &&
+                : (where.sectionId?.in
+                    ? where.sectionId.in.includes(o.sectionId)
+                    : o.sectionId === where.sectionId) &&
                   (where.isElective === undefined ||
                     o.isElective === where.isElective),
             )
@@ -54,25 +67,36 @@ function fakeDb(
       findMany: ({ where }: any) => {
         electiveReads += 1;
         return Promise.resolve(
-          rows.filter((r) => {
-            if (r.academicYearId !== where.academicYearId) return false;
-            if (
-              where.studentId?.in
-                ? !where.studentId.in.includes(r.studentId)
-                : r.studentId !== where.studentId
-            )
-              return false;
-            if (where.sectionSubjectId)
-              return where.sectionSubjectId.in.includes(r.sectionSubjectId);
-            // subjectsOf: any offering in the class of the given section.
-            const anchor =
-              where.sectionSubject.section.classGrade.sections.some.id;
-            const offering = offeringById.get(r.sectionSubjectId);
-            return (
-              !!offering &&
-              classOf(offering.sectionId) === classOf(anchor as string)
-            );
-          }),
+          rows
+            .filter((r) => {
+              if (r.academicYearId !== where.academicYearId) return false;
+              if (
+                where.studentId?.in
+                  ? !where.studentId.in.includes(r.studentId)
+                  : r.studentId !== where.studentId
+              )
+                return false;
+              if (where.sectionSubjectId)
+                return where.sectionSubjectId.in.includes(r.sectionSubjectId);
+              const anchor =
+                where.sectionSubject?.section.classGrade.sections.some.id;
+              if (!anchor) return true;
+              const offering = offeringById.get(r.sectionSubjectId);
+              return (
+                !!offering &&
+                classOf(offering.sectionId) === classOf(anchor as string)
+              );
+            })
+            .map((r) => ({
+              ...r,
+              sectionSubject: {
+                section: {
+                  classGradeId: classOf(
+                    offeringById.get(r.sectionSubjectId)?.sectionId ?? '',
+                  ),
+                },
+              },
+            })),
         );
       },
     },
@@ -335,6 +359,23 @@ describe('subject-takers', () => {
       await expect(subjectsOf(db, 'ali', 'sec-as-a', YEAR)).resolves.toEqual(
         new Set(['ss-maths', 'ss-physics', 'ss-chem-b']),
       );
+    });
+
+    it('resolves a whole roster in one call, each student on their own placement', async () => {
+      const { db } = fakeDb(offerings, rows);
+      const taken = await subjectsOfMany(
+        db,
+        [
+          { studentId: 'ali', sectionId: 'sec-as-a' },
+          { studentId: 'sara', sectionId: 'sec-as-a' },
+          { studentId: 'omar', sectionId: 'sec-as-b' },
+        ],
+        YEAR,
+      );
+      expect(taken.get('ali')).toEqual(new Set(['ss-maths', 'ss-physics']));
+      expect(taken.get('sara')).toEqual(new Set(['ss-maths', 'ss-biology']));
+      // B has no compulsory subject and omar picked nothing.
+      expect(taken.get('omar')).toEqual(new Set());
     });
   });
 });
