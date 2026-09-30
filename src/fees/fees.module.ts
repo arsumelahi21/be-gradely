@@ -10,6 +10,7 @@ import { ChallansService } from './challans.service';
 import { PaymentsService } from './payments.service';
 import { FeeReportsService } from './fee-reports.service';
 import { StudentFeeHeadsService } from './student-fee-heads.service';
+import { SubjectFeesService } from './subject-fees.service';
 import { InstallmentPlansService } from './installment-plans.service';
 import { InstallmentRemindersService } from './installment-reminders.service';
 import { FeeInstallmentsScheduler } from './fee-installments.scheduler';
@@ -28,6 +29,7 @@ import { S3PresignService } from '../common/services/s3-presign.service';
     PaymentsService,
     FeeReportsService,
     StudentFeeHeadsService,
+    SubjectFeesService,
     InstallmentPlansService,
     InstallmentRemindersService,
     FeeInstallmentsScheduler,

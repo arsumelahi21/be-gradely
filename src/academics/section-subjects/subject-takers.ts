@@ -311,26 +311,60 @@ export async function subjectsOf(
   sectionId: string,
   academicYearId: string,
 ): Promise<Set<string>> {
-  const [compulsory, chosen] = await Promise.all([
+  const taken = await subjectsOfMany(
+    db,
+    [{ studentId, sectionId }],
+    academicYearId,
+  );
+  return taken.get(studentId) ?? new Set();
+}
+
+/** `subjectsOf` for a whole roster, in three queries. Keyed by student. */
+export async function subjectsOfMany(
+  db: Db,
+  placements: { studentId: string; sectionId: string }[],
+  academicYearId: string,
+): Promise<Map<string, Set<string>>> {
+  const sectionIds = [...new Set(placements.map((p) => p.sectionId))];
+  const [sections, compulsory, chosen] = await Promise.all([
+    db.section.findMany({
+      where: { id: { in: sectionIds } },
+      select: { id: true, classGradeId: true },
+    }),
     db.sectionSubject.findMany({
-      where: { sectionId, isElective: false },
-      select: { id: true },
+      where: { sectionId: { in: sectionIds }, isElective: false },
+      select: { id: true, sectionId: true },
     }),
     db.studentSubject.findMany({
       where: {
-        studentId,
+        studentId: { in: placements.map((p) => p.studentId) },
         academicYearId,
+      },
+      select: {
+        studentId: true,
+        sectionSubjectId: true,
         sectionSubject: {
-          section: { classGrade: { sections: { some: { id: sectionId } } } },
+          select: { section: { select: { classGradeId: true } } },
         },
       },
-      select: { sectionSubjectId: true },
     }),
   ]);
-  return new Set([
-    ...compulsory.map((o) => o.id),
-    ...chosen.map((r) => r.sectionSubjectId),
-  ]);
+  const classOf = new Map(sections.map((s) => [s.id, s.classGradeId]));
+  const taken = new Map<string, Set<string>>();
+  for (const p of placements) {
+    const ids = new Set(
+      compulsory.filter((o) => o.sectionId === p.sectionId).map((o) => o.id),
+    );
+    for (const r of chosen) {
+      if (
+        r.studentId === p.studentId &&
+        r.sectionSubject.section.classGradeId === classOf.get(p.sectionId)
+      )
+        ids.add(r.sectionSubjectId);
+    }
+    taken.set(p.studentId, ids);
+  }
+  return taken;
 }
 
 /**
