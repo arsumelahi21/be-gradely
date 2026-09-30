@@ -1,5 +1,7 @@
+import { FeeBillingMode } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  IsEnum,
   IsIn,
   IsInt,
   IsOptional,
@@ -31,6 +33,11 @@ export class CreateClassGradeDto {
   @IsInt({ message: 'Default monthly fee must be a whole number' })
   @Min(0, { message: 'Default monthly fee cannot be negative' })
   defaultMonthlyFee?: number | null;
+
+  /** SUBJECT bills the subjects each student takes instead of their monthly fee. */
+  @IsOptional()
+  @IsEnum(FeeBillingMode, { message: 'Choose monthly or by-subject billing' })
+  feeBillingMode?: FeeBillingMode;
 
   /**
    * Rung on the ladder — PG/Nursery/Prep then 1..10. Drives the order classes

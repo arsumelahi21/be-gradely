@@ -1,11 +1,12 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma } from '@prisma/client';
+import { FeeBillingMode, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { BaseSchoolScopedService } from '../common/services/base-school.service';
 import { CacheService } from '../common/services/cache.service';
@@ -31,7 +32,10 @@ import {
   type ComputedChallan,
   type DiscountInput,
   type FeeHeadOverrideInput,
+  type SubjectFeeInput,
 } from './fee-calculator';
+import { subjectsOfMany } from '../academics/section-subjects/subject-takers';
+import { normalizeSubjectCode } from './subject-fees.service';
 import {
   ChallanGenerationType,
   ChallanItemKind,
@@ -72,6 +76,9 @@ const PRINT_BATCH_LIMIT = 400;
 /** Retries absorb a genuine concurrent-generation race (P2002). */
 const MAX_GENERATE_ATTEMPTS = 3;
 
+/** An arrears challan changed between reading the plan and superseding it. */
+class StaleArrearsError extends Error {}
+
 const MONTH_NAMES = [
   'January',
   'February',
@@ -97,9 +104,20 @@ type RosterStudent = {
   discount: DiscountInput | null;
 };
 
+type BlockedStudent = {
+  studentId: string;
+  fullName: string;
+  rollNo: string | null;
+  reason: 'NO_SUBJECTS' | 'SUBJECT_FEE_MISSING';
+  /** The subjects with no fee (or no code), for SUBJECT_FEE_MISSING. */
+  subjects: string[];
+};
+
 type BillingPlan = {
   schoolId: string;
   currency: string;
+  academicYearName: string;
+  billingMode: FeeBillingMode;
   section: {
     id: string;
     name: string;
@@ -127,6 +145,10 @@ type BillingPlan = {
     rollNo: string | null;
     challanNo: string;
   }[];
+  /** A class billed by subject can't bill these yet — nothing is generated. */
+  blocked: BlockedStudent[];
+  missingSubjectFees: { code: string; name: string }[];
+  uncodedSubjects: { subjectId: string; name: string }[];
   /** Billed by installment instead, so the monthly challan is not theirs. */
   skippedOnPlan: {
     studentId: string;
@@ -155,6 +177,34 @@ function arrearsFor(
       ? `Arrears (${carry.periods.join(', ')})`
       : `Arrears (${carry.periods.length} previous challans)`;
   return { amount: carry.amount, label };
+}
+
+const listNames = (names: string[]) =>
+  names.length <= 5
+    ? names.join(', ')
+    : `${names.slice(0, 5).join(', ')} and ${names.length - 5} more`;
+
+/** Why a class billed by subject can't be generated yet, in the admin's terms. */
+function blockedMessage(plan: BillingPlan): string {
+  const parts: string[] = [];
+  if (plan.missingSubjectFees.length) {
+    parts.push(
+      `Subject fee is not set for ${listNames(plan.missingSubjectFees.map((s) => `${s.code} (${s.name})`))}. Set it in Subjects → Set Subject Fees, then generate again.`,
+    );
+  }
+  const uncoded = plan.uncodedSubjects.length;
+  if (uncoded) {
+    parts.push(
+      `${listNames(plan.uncodedSubjects.map((s) => s.name))} ${uncoded === 1 ? 'has' : 'have'} no subject code, so no fee can apply. Give ${uncoded === 1 ? 'it' : 'them'} a code in Subjects, then set the fee.`,
+    );
+  }
+  const noSubjects = plan.blocked.filter((b) => b.reason === 'NO_SUBJECTS');
+  if (noSubjects.length) {
+    parts.push(
+      `${listNames(noSubjects.map((b) => b.fullName))} ${noSubjects.length === 1 ? 'has' : 'have'} no subjects for ${plan.academicYearName}, so there is nothing to bill. Choose their subjects first.`,
+    );
+  }
+  return parts.join(' ');
 }
 
 /** UTC midnight — matches the `@db.Date` columns so "overdue" can't flip on the viewer's clock. */
@@ -267,7 +317,7 @@ export class ChallansService extends BaseSchoolScopedService {
       name: true,
       schoolId: true,
       classGradeId: true,
-      classGrade: { select: { name: true } },
+      classGrade: { select: { name: true, feeBillingMode: true } },
     };
 
     if (dto.sectionId) {
@@ -313,6 +363,9 @@ export class ChallansService extends BaseSchoolScopedService {
       // them as skipped rather than failing.
       const plan = await this.buildPlan(dto, actor, onlyStudentId);
       lastPlan = plan;
+      if (plan.blocked.length) {
+        throw new BadRequestException(blockedMessage(plan));
+      }
 
       if (!plan.toGenerate.length) {
         return {
@@ -374,6 +427,7 @@ export class ChallansService extends BaseSchoolScopedService {
                 items: {
                   create: computed.items.map((item) => ({
                     feeHeadId: item.feeHeadId,
+                    subjectId: item.subjectId,
                     label: item.label,
                     amount: item.amount,
                     kind: item.kind,
@@ -390,7 +444,7 @@ export class ChallansService extends BaseSchoolScopedService {
             // the same arrears twice, on two live challans.
             const superseded = row.arrears?.supersede ?? [];
             if (superseded.length) {
-              await tx.challan.updateMany({
+              const { count } = await tx.challan.updateMany({
                 where: {
                   id: { in: superseded.map((c) => c.id) },
                   // Re-assert the precondition: only a still-unpaid, unpaid-in-
@@ -404,6 +458,9 @@ export class ChallansService extends BaseSchoolScopedService {
                   cancelReason: `Carried forward to ${created.challanNo}`,
                 },
               });
+              // A payment landed on one since the plan was read, so this
+              // challan carries a balance that is no longer owed. Start over.
+              if (count !== superseded.length) throw new StaleArrearsError();
             }
           }
           return ids;
@@ -417,6 +474,7 @@ export class ChallansService extends BaseSchoolScopedService {
             sectionId: plan.section.id,
             periodYear: dto.periodYear,
             periodMonth: dto.periodMonth,
+            billingMode: plan.billingMode,
             generated: challanIds.length,
             skipped: plan.alreadyBilled.length,
           },
@@ -449,7 +507,14 @@ export class ChallansService extends BaseSchoolScopedService {
         const isDuplicate =
           e instanceof Prisma.PrismaClientKnownRequestError &&
           e.code === 'P2002';
-        if (!isDuplicate || attempt === MAX_GENERATE_ATTEMPTS) throw e;
+        if (!isDuplicate && !(e instanceof StaleArrearsError)) throw e;
+        if (attempt === MAX_GENERATE_ATTEMPTS) {
+          throw e instanceof StaleArrearsError
+            ? new ConflictException(
+                'Payments were recorded while the challans were being generated. Generate again.',
+              )
+            : e;
+        }
         // Lost a race — loop and rebuild the plan.
       }
     }
@@ -490,7 +555,7 @@ export class ChallansService extends BaseSchoolScopedService {
       this.resolveTargetSections(dto, schoolId),
       this.prisma.academicYear.findUnique({
         where: { id: dto.academicYearId },
-        select: { id: true, schoolId: true },
+        select: { id: true, schoolId: true, name: true },
       }),
     ]);
 
@@ -633,6 +698,18 @@ export class ChallansService extends BaseSchoolScopedService {
       : [];
     const billedIds = new Map(existing.map((c) => [c.studentId, c.challanNo]));
 
+    // Sections of one run share a class, so they share its billing mode.
+    const billingMode = section.classGrade.feeBillingMode;
+    const bySubject =
+      billingMode === FeeBillingMode.SUBJECT
+        ? await this.subjectCharges(
+            roster.filter((s) => !billedIds.has(s.id)),
+            dto.academicYearId,
+            schoolId,
+          )
+        : null;
+    const blockedIds = new Set(bySubject?.blocked.map((b) => b.studentId));
+
     /**
      * Unpaid balance from EARLIER periods, carried onto this challan.
      *
@@ -714,6 +791,8 @@ export class ChallansService extends BaseSchoolScopedService {
     return {
       schoolId,
       currency: school.currency,
+      academicYearName: academicYear.name,
+      billingMode,
       challanPrefix: school.feeChallanPrefix,
       section: {
         id: section.id,
@@ -736,11 +815,12 @@ export class ChallansService extends BaseSchoolScopedService {
       dueDate,
       bankAccountId,
       toGenerate: roster
-        .filter((s) => !billedIds.has(s.id))
+        .filter((s) => !billedIds.has(s.id) && !blockedIds.has(s.id))
         .map((student) => ({
           student,
           computed: computeChallan({
             monthlyFeeAmount: student.monthlyFeeAmount,
+            subjects: bySubject?.charges.get(student.id) ?? null,
             feeHeads,
             // Per-student heads. The resulting amounts are copied onto
             // ChallanItem, so a later override edit can't rewrite this bill.
@@ -758,7 +838,118 @@ export class ChallansService extends BaseSchoolScopedService {
           rollNo: s.rollNo,
           challanNo: billedIds.get(s.id)!,
         })),
+      blocked: bySubject?.blocked ?? [],
+      missingSubjectFees: bySubject?.missingSubjectFees ?? [],
+      uncodedSubjects: bySubject?.uncodedSubjects ?? [],
       skippedOnPlan,
+    };
+  }
+
+  /**
+   * What each student of a class billed by subject is charged: every subject
+   * they take — compulsory ones included, via subjectsOf — at the fee set for
+   * its code. One line per code, however many sections or subjects carry it. A
+   * student with no subjects, or taking one without a code or a fee, is blocked
+   * rather than billed a wrong amount.
+   */
+  private async subjectCharges(
+    students: RosterStudent[],
+    academicYearId: string,
+    schoolId: string,
+  ) {
+    const taken = await subjectsOfMany(
+      this.prisma,
+      students.map((s) => ({ studentId: s.id, sectionId: s.sectionId })),
+      academicYearId,
+    );
+    const offeringIds = [
+      ...new Set([...taken.values()].flatMap((t) => [...t])),
+    ];
+    const offerings = offeringIds.length
+      ? await this.prisma.sectionSubject.findMany({
+          where: { id: { in: offeringIds }, section: { schoolId } },
+          select: {
+            id: true,
+            subject: { select: { id: true, name: true, code: true } },
+          },
+        })
+      : [];
+    const subjectOf = new Map(offerings.map((o) => [o.id, o.subject]));
+    const fees = await this.prisma.subjectFee.findMany({
+      where: {
+        schoolId,
+        code: {
+          in: offerings.flatMap(
+            (o) => normalizeSubjectCode(o.subject.code) ?? [],
+          ),
+        },
+      },
+      select: { code: true, amount: true },
+    });
+    const feeOf = new Map(fees.map((f) => [f.code, f.amount]));
+
+    const charges = new Map<string, SubjectFeeInput[]>();
+    const blocked: BlockedStudent[] = [];
+    const missing = new Map<string, string>();
+    const uncoded = new Map<string, string>();
+    for (const student of students) {
+      const byCode = new Map<string, { id: string; name: string }>();
+      const problems = new Set<string>();
+      for (const id of taken.get(student.id) ?? []) {
+        const subject = subjectOf.get(id);
+        if (!subject) continue;
+        const code = normalizeSubjectCode(subject.code);
+        if (!code) {
+          uncoded.set(subject.id, subject.name);
+          problems.add(`${subject.name} (no code)`);
+        } else if (!byCode.has(code)) {
+          byCode.set(code, subject);
+        }
+      }
+      for (const [code, subject] of byCode) {
+        if (feeOf.has(code)) continue;
+        missing.set(code, subject.name);
+        problems.add(`${subject.name} (${code})`);
+      }
+      if (!byCode.size && !problems.size) {
+        blocked.push({
+          studentId: student.id,
+          fullName: student.fullName,
+          rollNo: student.rollNo,
+          reason: 'NO_SUBJECTS',
+          subjects: [],
+        });
+        continue;
+      }
+      if (problems.size) {
+        blocked.push({
+          studentId: student.id,
+          fullName: student.fullName,
+          rollNo: student.rollNo,
+          reason: 'SUBJECT_FEE_MISSING',
+          subjects: [...problems],
+        });
+        continue;
+      }
+      charges.set(
+        student.id,
+        [...byCode]
+          .map(([code, subject]) => ({
+            subjectId: subject.id,
+            name: subject.name,
+            amount: feeOf.get(code)!,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      );
+    }
+    return {
+      charges,
+      blocked,
+      missingSubjectFees: [...missing].map(([code, name]) => ({ code, name })),
+      uncodedSubjects: [...uncoded].map(([subjectId, name]) => ({
+        subjectId,
+        name,
+      })),
     };
   }
 
@@ -796,14 +987,22 @@ export class ChallansService extends BaseSchoolScopedService {
       // Reported separately from "already billed": these students are not
       // behind, they are simply billed by installment instead.
       skippedOnPlan: plan.skippedOnPlan,
+      billingMode: plan.billingMode,
+      // Generate refuses while any student is blocked; the preview says why.
+      blocked: plan.blocked,
+      missingSubjectFees: plan.missingSubjectFees,
+      uncodedSubjects: plan.uncodedSubjects,
+      blockedMessage: plan.blocked.length ? blockedMessage(plan) : null,
       counts: {
         willGenerate: plan.toGenerate.length,
         alreadyBilled: plan.alreadyBilled.length,
         onInstallmentPlan: plan.skippedOnPlan.length,
+        blocked: plan.blocked.length,
         total:
           plan.toGenerate.length +
           plan.alreadyBilled.length +
-          plan.skippedOnPlan.length,
+          plan.skippedOnPlan.length +
+          plan.blocked.length,
       },
       totals: {
         ...totals,

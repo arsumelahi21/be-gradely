@@ -65,6 +65,7 @@ model School {
   timetableEntries              TimetableEntry[]
   studentSubjects               StudentSubject[]
   logo                          SchoolLogo?
+  subjectFees                   SubjectFee[]
 }
 
 // School branding logo — bytes isolated in their own table (like UserPhoto), so
@@ -342,7 +343,7 @@ model AcademicYear {
 }
 
 model ClassGrade {
-  id                String    @id @default(uuid())
+  id                String         @id @default(uuid())
   schoolId          String
   name              String
   code              String?
@@ -355,10 +356,13 @@ model ClassGrade {
   /// are listed: PG -3, Nursery -2, Prep -1, then 1..10 matching the grade
   /// number. NULL for classes created before levels existed — they sort last.
   level             Int?
-  isActive          Boolean   @default(true)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  school            School    @relation(fields: [schoolId], references: [id])
+  /// How this class's monthly challans are priced. MONTHLY bills each student's
+  /// `monthlyFeeAmount`; SUBJECT bills the subjects they take, at SubjectFee.
+  feeBillingMode    FeeBillingMode @default(MONTHLY)
+  isActive          Boolean        @default(true)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  school            School         @relation(fields: [schoolId], references: [id])
   sections          Section[]
   challans          Challan[]
   examinations      Examination[]
@@ -407,6 +411,7 @@ model Subject {
   sectionSubjects SectionSubject[]
   specialties     TeacherSubjectSpecialty[]
   quizzes         Quiz[]
+  challanItems    ChallanItem[]
 
   @@index([schoolId])
 }
@@ -1300,6 +1305,27 @@ enum ChallanItemKind {
   DISCOUNT
 }
 
+enum FeeBillingMode {
+  MONTHLY
+  SUBJECT
+}
+
+/// The monthly fee for a subject code, school-wide: every subject carrying the
+/// code, in any class, is billed this. Issued challans keep their own copy.
+model SubjectFee {
+  id        String   @id @default(uuid())
+  schoolId  String
+  /// Subject.code trimmed and upper-cased, so "e123 " and "E123" share one fee.
+  code      String
+  amount    Int // minor units; 0 is a free subject
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@unique([schoolId, code])
+}
+
 /// How a challan was produced. NORMAL bills a month from the fee heads;
 /// INSTALLMENT bills one row of a student's payment plan. The two are mutually
 /// exclusive for a student in a period — that is the point of the distinction.
@@ -1444,6 +1470,7 @@ model ChallanItem {
   id        String          @id @default(uuid())
   challanId String
   feeHeadId String?
+  subjectId String?
   label     String
   amount    Int
   kind      ChallanItemKind @default(FEE)
@@ -1453,9 +1480,11 @@ model ChallanItem {
   // Weak by design: kept for reporting joins only, and the snapshot survives
   // fee-head deletion.
   feeHead FeeHead? @relation(fields: [feeHeadId], references: [id], onDelete: SetNull)
+  subject Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
 
   @@index([challanId])
   @@index([feeHeadId])
+  @@index([subjectId])
 }
 
 /// Receipts. Never edited or deleted — a correction is a void (voidedAt), and
