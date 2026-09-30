@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -34,6 +35,51 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
     return this.invalidateSchoolCache(schoolId, 'sections', 'classes');
   }
 
+  /**
+   * Compulsory means the whole section takes it here, so a student placed here
+   * who takes the same subject from a sibling section would take it twice.
+   */
+  private async assertNotTakenFromSibling(
+    section: { id: string; classGradeId: string },
+    subjectId: string,
+  ) {
+    const rows = await this.prisma.studentSubject.findMany({
+      where: {
+        sectionSubject: {
+          subjectId,
+          sectionId: { not: section.id },
+          section: { classGradeId: section.classGradeId },
+        },
+        student: {
+          enrollments: {
+            some: { sectionId: section.id, status: EnrollmentStatus.ACTIVE },
+          },
+        },
+      },
+      select: {
+        academicYearId: true,
+        student: {
+          select: {
+            fullName: true,
+            enrollments: {
+              where: { sectionId: section.id, status: EnrollmentStatus.ACTIVE },
+              select: { academicYearId: true },
+            },
+          },
+        },
+      },
+    });
+    const clashing = rows.filter((r) =>
+      r.student.enrollments.some((e) => e.academicYearId === r.academicYearId),
+    );
+    if (clashing.length) {
+      const names = [...new Set(clashing.map((r) => r.student.fullName))];
+      throw new ConflictException(
+        `${names.join(', ')} ${names.length === 1 ? 'takes' : 'take'} this subject from another section. Untick it there first, then make it compulsory here.`,
+      );
+    }
+  }
+
   /** A subject newly opened to student selection starts ticked for everyone already enrolled. */
   private async selectForRoster(
     tx: Prisma.TransactionClient,
@@ -53,6 +99,11 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       dto.teacherId ?? undefined,
       actor,
     );
+    // Same clash `update()` guards: a compulsory offering covers everyone placed
+    // here, so anyone already taking this subject from a sibling would sit it twice.
+    if (dto.isElective === false) {
+      await this.assertNotTakenFromSibling(section, subject.id);
+    }
     const created = await this.prisma
       .$transaction(async (tx) => {
         const row = await tx.sectionSubject.create({
@@ -239,6 +290,10 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       } else {
         where.section = { schoolId: actor.schoolId! };
       }
+      // Every section of a class at once — enrolment picks subjects across them.
+      if (query.classGradeId) {
+        where.section = { ...where.section, classGradeId: query.classGradeId };
+      }
     }
 
     // This list is open to students and parents, and `teacher: true` is the whole
@@ -271,6 +326,9 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       actor,
     );
     const nextTeacherId = teacherId ? (teacher?.id ?? null) : null;
+    if (dto.isElective === false && current.isElective) {
+      await this.assertNotTakenFromSibling(section, subject.id);
+    }
     const result = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.sectionSubject.update({
         where: { id },
@@ -289,13 +347,63 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
         await ensureOnRoster(tx, section.id, nextTeacherId);
       }
       await pruneSectionRoster(tx, current.sectionId);
+      // The picks were of the old section's students; the offering now belongs
+      // to another section, whose students take it by default.
+      if (updated.sectionId !== current.sectionId) {
+        // Only the old section's own students lose the pick — the offering moved
+        // away from them. A sibling picker chose the subject, not the section, so
+        // deleting theirs drops them off a roster they may already have marks on.
+        const placedThere = await tx.enrollment.findMany({
+          where: {
+            sectionId: current.sectionId,
+            status: EnrollmentStatus.ACTIVE,
+          },
+          select: { studentId: true },
+        });
+        await tx.studentSubject.deleteMany({
+          where: {
+            sectionSubjectId: id,
+            studentId: { in: placedThere.map((p) => p.studentId) },
+          },
+        });
+        if (updated.isElective) await this.selectForRoster(tx, updated);
+      }
       if (updated.isElective && !current.isElective) {
         await this.selectForRoster(tx, updated);
       }
-      // Choices mean nothing once the whole class takes it; left behind they
+      // Choices mean nothing once the whole section takes it; left behind they
       // would silently reappear if the subject is ever opened to selection again.
+      // Picks from sibling sections stay: compulsory doesn't cover those students.
       if (!updated.isElective && current.isElective) {
-        await tx.studentSubject.deleteMany({ where: { sectionSubjectId: id } });
+        const rows = await tx.studentSubject.findMany({
+          where: { sectionSubjectId: id },
+          select: { id: true, studentId: true, academicYearId: true },
+        });
+        const placedHere = new Set(
+          (
+            await tx.enrollment.findMany({
+              where: {
+                sectionId: current.sectionId,
+                studentId: { in: rows.map((r) => r.studentId) },
+                // Open placements only: a closed one means they sit elsewhere now,
+                // so compulsory-here does not cover them and the pick must stay.
+                status: EnrollmentStatus.ACTIVE,
+              },
+              select: { studentId: true, academicYearId: true },
+            })
+          ).map((p) => `${p.studentId}:${p.academicYearId}`),
+        );
+        await tx.studentSubject.deleteMany({
+          where: {
+            id: {
+              in: rows
+                .filter((r) =>
+                  placedHere.has(`${r.studentId}:${r.academicYearId}`),
+                )
+                .map((r) => r.id),
+            },
+          },
+        });
       }
       return updated;
     });

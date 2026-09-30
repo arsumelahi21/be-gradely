@@ -39,14 +39,18 @@ import {
   FindTimetableQueryDto,
   MyTimetableQueryDto,
 } from './dto/find-timetable-query.dto';
-import { subjectsOf } from '../section-subjects/subject-takers';
 import {
   generatePeriodSlots,
+  mergeStudentRows,
   minToHHMM,
   overlaps,
   periodMinutesForCount,
   validatePeriodSet,
 } from './timetable-time';
+import {
+  crossSectionTakers,
+  subjectsOf,
+} from '../section-subjects/subject-takers';
 import { PublishTimetableDto } from './dto/publish-timetable.dto';
 
 export interface EntryConflict {
@@ -2166,7 +2170,12 @@ export class TimetableService extends BaseSchoolScopedService {
     throw new ForbiddenException('Not allowed');
   }
 
-  /** The student's class timetable, narrowed to the subjects they take. */
+  /**
+   * Only the subjects the student takes — their section's compulsory ones plus
+   * their own picks, which may come from any section of the class — from every
+   * published timetable of the session, each with its own section's teacher,
+   * room and times.
+   */
   private async studentTimetable(
     student: { id: string; schoolId: string },
     actor: Actor,
@@ -2185,11 +2194,24 @@ export class TimetableService extends BaseSchoolScopedService {
       sectionId,
       timetable.academicYearId,
     );
+    const entries = await this.prisma.timetableEntry.findMany({
+      where: {
+        schoolId: student.schoolId,
+        academicYearId: timetable.academicYearId,
+        sectionSubjectId: { in: [...taken] },
+        timetable: { status: 'PUBLISHED' },
+      },
+      include: this.entryInclude(),
+    });
+    const rows = mergeStudentRows(timetable.periods, entries);
     return {
       ...timetable,
-      entries: [...timetable.entries].filter((e) =>
-        taken.has(e.sectionSubjectId),
-      ),
+      periods: rows.periods,
+      entries: rows.entries,
+      workingDays: this.workingDaysFromEntries([
+        ...rows.entries,
+        ...timetable.workingDays.map((dayOfWeek) => ({ dayOfWeek })),
+      ]),
     };
   }
 
@@ -2540,7 +2562,24 @@ export class TimetableService extends BaseSchoolScopedService {
     timetableId: string,
   ) {
     const label = this.classLabel(section) || 'your class';
-    const studentIds = await sectionStudentIds(this.prisma, section.id);
+    const [placedHere, timetable, offerings] = await Promise.all([
+      sectionStudentIds(this.prisma, section.id),
+      this.prisma.timetable.findUniqueOrThrow({
+        where: { id: timetableId },
+        select: { academicYearId: true },
+      }),
+      this.prisma.sectionSubject.findMany({
+        where: { sectionId: section.id },
+        select: { id: true },
+      }),
+    ]);
+    // Students placed in a sibling section attend the classes they picked here.
+    const pickers = await crossSectionTakers(
+      this.prisma,
+      offerings.map((o) => o.id),
+      timetable.academicYearId,
+    );
+    const studentIds = [...new Set([...placedHere, ...pickers])];
     const [ownByStudent, parentsByStudent] = await Promise.all([
       studentUserIdByStudent(this.prisma, studentIds),
       parentUserIdsByStudent(this.prisma, studentIds),

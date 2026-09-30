@@ -13,7 +13,10 @@ import { Actor } from '../../common/types/actor.type';
 import { FindPromotionStudentsQueryDto } from './dto/find-promotion-students-query.dto';
 import { FindDestinationQueryDto } from './dto/find-destination-query.dto';
 import { PromotionPlanDto } from './dto/promotion-plan.dto';
-import { selectAllElectives } from '../section-subjects/subject-takers';
+import {
+  crossSectionTakers,
+  selectAllElectives,
+} from '../section-subjects/subject-takers';
 import {
   DestinationSection,
   PromotionPlan,
@@ -383,6 +386,21 @@ export class PromotionsService extends BaseSchoolScopedService {
       distinct: ['sectionId'],
     });
     const occupied = new Set(occupiedRows.map((row) => row.sectionId));
+    // Students placed in a sibling section may still take its subjects this session.
+    for (const sectionId of sourceSectionIds.filter(
+      (id) => !occupied.has(id),
+    )) {
+      const offerings = await tx.sectionSubject.findMany({
+        where: { sectionId },
+        select: { id: true },
+      });
+      const pickers = await crossSectionTakers(
+        tx,
+        offerings.map((o) => o.id),
+        sourceAcademicYearId,
+      );
+      if (pickers.length) occupied.add(sectionId);
+    }
     const emptied = sourceSectionIds.filter((id) => !occupied.has(id));
     if (!emptied.length) return [];
 

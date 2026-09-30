@@ -10,7 +10,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BaseSchoolScopedService } from '../common/services/base-school.service';
 import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
-import { subjectsOf } from '../academics/section-subjects/subject-takers';
+import {
+  crossSectionTakers,
+  picksFromSibling,
+  subjectsOf,
+} from '../academics/section-subjects/subject-takers';
 import {
   NOTIFICATION_CREATE,
   NotificationCreateEvent,
@@ -561,9 +565,13 @@ export class QuizzesService extends BaseSchoolScopedService {
   private async notifyQuizPublished(quiz: {
     id: string;
     title: string;
+    subjectId: string | null;
     section: { id: string };
   }) {
-    const studentIds = await sectionStudentIds(this.prisma, quiz.section.id);
+    const studentIds = [
+      ...(await sectionStudentIds(this.prisma, quiz.section.id)),
+      ...(await this.siblingTakersOfQuiz(quiz)),
+    ];
     const userIds = await studentUserIds(this.prisma, studentIds);
     if (!userIds.length) return;
     this.eventEmitter.emit(NOTIFICATION_CREATE, {
@@ -692,12 +700,22 @@ export class QuizzesService extends BaseSchoolScopedService {
     // Quiz carries a subjectId, not a sectionSubjectId, so the offering has to
     // be looked up before it can be matched against what the student takes.
     const offerings = await this.prisma.sectionSubject.findMany({
-      where: { sectionId: { in: sectionIds } },
+      where: {
+        OR: [{ sectionId: { in: sectionIds } }, { id: { in: [...taken] } }],
+      },
       select: { id: true, sectionId: true, subjectId: true },
     });
     const offeringOf = new Map(
       offerings.map((o) => [`${o.sectionId}:${o.subjectId}`, o.id]),
     );
+    // A sibling section's quiz shows only for the exact subject picked there,
+    // never by the own-section fallback for subjects a section doesn't offer.
+    const own = new Set(sectionIds);
+    const siblingSections = [
+      ...new Set(
+        offerings.map((o) => o.sectionId).filter((id) => !own.has(id)),
+      ),
+    ];
 
     // NOT filtered by when the student joined, unlike assignments: `Quiz` has
     // no deadline column, and `createdAt` is a poor stand-in — it would hide a
@@ -705,7 +723,10 @@ export class QuizzesService extends BaseSchoolScopedService {
     // arrived. A quiz becomes invisible the moment their placement in the
     // section closes, which is what promotion already does.
     const quizzes = await this.prisma.quiz.findMany({
-      where: { sectionId: { in: sectionIds }, isPublished: true },
+      where: {
+        sectionId: { in: [...sectionIds, ...siblingSections] },
+        isPublished: true,
+      },
       include: {
         subject: { select: { id: true, name: true } },
         section: { select: { id: true, name: true } },
@@ -720,7 +741,12 @@ export class QuizzesService extends BaseSchoolScopedService {
 
     // No correctAnswer here — this is only quiz metadata.
     return quizzes
-      .filter((q) => this.takesQuizSubject(q, offeringOf, taken))
+      .filter((q) =>
+        own.has(q.sectionId)
+          ? this.takesQuizSubject(q, offeringOf, taken)
+          : !!q.subjectId &&
+            taken.has(offeringOf.get(`${q.sectionId}:${q.subjectId}`) ?? ''),
+      )
       .map((q) => ({
         id: q.id,
         title: q.title,
@@ -731,6 +757,76 @@ export class QuizzesService extends BaseSchoolScopedService {
         questionCount: q._count.questions,
         attempt: q.attempts[0] ?? null,
       }));
+  }
+
+  /** The student's placement in a sibling section, when it's how they picked this quiz's subject. */
+  private async siblingPlacementFor(
+    studentId: string,
+    quiz: { sectionId: string; subjectId: string | null },
+  ) {
+    if (!quiz.subjectId) return null;
+    const [offering, placements] = await Promise.all([
+      this.prisma.sectionSubject.findFirst({
+        where: { sectionId: quiz.sectionId, subjectId: quiz.subjectId },
+        select: { id: true },
+      }),
+      // A student enrolled early for next session holds two ACTIVE placements
+      // in the class; the pick lives in one session only.
+      this.prisma.enrollment.findMany({
+        where: {
+          studentId,
+          status: 'ACTIVE',
+          section: {
+            classGrade: { sections: { some: { id: quiz.sectionId } } },
+          },
+        },
+        select: { id: true, academicYearId: true },
+      }),
+    ]);
+    if (!offering) return null;
+    for (const placement of placements) {
+      if (
+        await picksFromSibling(
+          this.prisma,
+          studentId,
+          offering.id,
+          placement.academicYearId,
+        )
+      )
+        return placement;
+    }
+    return null;
+  }
+
+  /** Students placed in a sibling section who picked this quiz's subject here, in any open session. */
+  private async siblingTakersOfQuiz(quiz: {
+    subjectId: string | null;
+    section: { id: string };
+  }): Promise<string[]> {
+    if (!quiz.subjectId) return [];
+    const offering = await this.prisma.sectionSubject.findFirst({
+      where: { sectionId: quiz.section.id, subjectId: quiz.subjectId },
+      select: { id: true },
+    });
+    if (!offering) return [];
+    // Class-wide: the quiz's own section may hold nobody but students picking in.
+    const years = await this.prisma.enrollment.findMany({
+      where: {
+        status: 'ACTIVE',
+        section: {
+          classGrade: { sections: { some: { id: quiz.section.id } } },
+        },
+      },
+      select: { academicYearId: true },
+      distinct: ['academicYearId'],
+    });
+    return (
+      await Promise.all(
+        years.map((y) =>
+          crossSectionTakers(this.prisma, [offering.id], y.academicYearId),
+        ),
+      )
+    ).flat();
   }
 
   /**
@@ -761,14 +857,15 @@ export class QuizzesService extends BaseSchoolScopedService {
       throw new ForbiddenException('Quiz is not available');
     }
 
-    const enrolled = await this.prisma.enrollment.findFirst({
-      where: {
-        studentId: student.id,
-        sectionId: quiz.sectionId,
-        status: 'ACTIVE',
-      },
-      select: { id: true, academicYearId: true },
-    });
+    const enrolled =
+      (await this.prisma.enrollment.findFirst({
+        where: {
+          studentId: student.id,
+          sectionId: quiz.sectionId,
+          status: 'ACTIVE',
+        },
+        select: { id: true, academicYearId: true },
+      })) ?? (await this.siblingPlacementFor(student.id, quiz));
     if (!enrolled) {
       throw new ForbiddenException('You are not enrolled in this quiz');
     }

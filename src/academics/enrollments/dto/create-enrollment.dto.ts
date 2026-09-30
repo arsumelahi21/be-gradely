@@ -1,5 +1,14 @@
 import { EnrollmentStatus } from '@prisma/client';
-import { IsDateString, IsEnum, IsOptional, IsUUID } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
+  ArrayUnique,
+  IsArray,
+  IsDateString,
+  IsEnum,
+  IsOptional,
+  IsUUID,
+} from 'class-validator';
 
 export class CreateEnrollmentDto {
   @IsUUID()
@@ -22,4 +31,13 @@ export class CreateEnrollmentDto {
   @IsOptional()
   @IsDateString()
   endDate?: string;
+
+  /** Omitted = every student-selection subject, the default all other callers rely on. */
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty({ message: 'Choose at least one subject for the student' })
+  @ArrayUnique({ message: 'Each subject can only be chosen once' })
+  @ArrayMaxSize(50)
+  @IsUUID(undefined, { each: true })
+  sectionSubjectIds?: string[];
 }

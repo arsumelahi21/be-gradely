@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -204,6 +205,7 @@ export class SectionsService extends BaseSchoolScopedService {
         throw new NotFoundException('Class grade not found');
       }
       this.enforceScope(actor, grade.schoolId);
+      await this.assertNoSiblingPicks(section.id);
       classGradeId = grade.id;
       schoolId = grade.schoolId;
     }
@@ -229,6 +231,28 @@ export class SectionsService extends BaseSchoolScopedService {
       await this.invalidateSchoolCache(schoolId, 'sections', 'classes');
     }
     return updated;
+  }
+
+  /**
+   * Subjects are picked across the sections of one class. Moved to another
+   * class, this section's pickers and its students' picks elsewhere would dangle.
+   */
+  private async assertNoSiblingPicks(sectionId: string) {
+    const [{ n }] = await this.prisma.$queryRaw<{ n: number }[]>`
+      SELECT count(*)::int AS n
+      FROM "StudentSubject" s
+      JOIN "SectionSubject" o ON o.id = s."sectionSubjectId"
+      JOIN "Section" os ON os.id = o."sectionId"
+      JOIN "Enrollment" e ON e."studentId" = s."studentId"
+        AND e."academicYearId" = s."academicYearId" AND e.status = 'ACTIVE'
+      JOIN "Section" es ON es.id = e."sectionId"
+      WHERE os."classGradeId" = es."classGradeId"
+        AND (o."sectionId" = ${sectionId}) <> (e."sectionId" = ${sectionId})`;
+    if (n > 0) {
+      throw new ConflictException(
+        'Students pick subjects between this section and its sibling sections. Change those picks first, then move the section to another class.',
+      );
+    }
   }
 
   async remove(id: string, actor: Actor) {
