@@ -99,6 +99,11 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       dto.teacherId ?? undefined,
       actor,
     );
+    // Same clash `update()` guards: a compulsory offering covers everyone placed
+    // here, so anyone already taking this subject from a sibling would sit it twice.
+    if (dto.isElective === false) {
+      await this.assertNotTakenFromSibling(section, subject.id);
+    }
     const created = await this.prisma
       .$transaction(async (tx) => {
         const row = await tx.sectionSubject.create({
@@ -345,7 +350,22 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
       // The picks were of the old section's students; the offering now belongs
       // to another section, whose students take it by default.
       if (updated.sectionId !== current.sectionId) {
-        await tx.studentSubject.deleteMany({ where: { sectionSubjectId: id } });
+        // Only the old section's own students lose the pick — the offering moved
+        // away from them. A sibling picker chose the subject, not the section, so
+        // deleting theirs drops them off a roster they may already have marks on.
+        const placedThere = await tx.enrollment.findMany({
+          where: {
+            sectionId: current.sectionId,
+            status: EnrollmentStatus.ACTIVE,
+          },
+          select: { studentId: true },
+        });
+        await tx.studentSubject.deleteMany({
+          where: {
+            sectionSubjectId: id,
+            studentId: { in: placedThere.map((p) => p.studentId) },
+          },
+        });
         if (updated.isElective) await this.selectForRoster(tx, updated);
       }
       if (updated.isElective && !current.isElective) {
@@ -365,6 +385,9 @@ export class SectionSubjectsService extends BaseSchoolScopedService {
               where: {
                 sectionId: current.sectionId,
                 studentId: { in: rows.map((r) => r.studentId) },
+                // Open placements only: a closed one means they sit elsewhere now,
+                // so compulsory-here does not cover them and the pick must stay.
+                status: EnrollmentStatus.ACTIVE,
               },
               select: { studentId: true, academicYearId: true },
             })
