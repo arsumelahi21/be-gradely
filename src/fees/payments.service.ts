@@ -53,22 +53,24 @@ export class PaymentsService extends BaseSchoolScopedService {
   ) {
     const challan = await this.getChallanForWrite(challanId, actor);
 
-    if (challan.status === ChallanStatus.CANCELLED) {
-      throw new BadRequestException(
-        'This challan is cancelled; payments cannot be recorded against it.',
-      );
-    }
-
-    const remaining = remainingBalance(challan.netAmount, challan.paidAmount);
-    if (dto.amount > remaining) {
-      throw new BadRequestException(
-        remaining === 0
-          ? 'This challan is already settled in full.'
-          : `Payment exceeds the remaining balance of ${formatMinorUnits(remaining, challan.school.currency)}.`,
-      );
-    }
-
     const result = await this.prisma.$transaction(async (tx) => {
+      // Checked under the row lock: checked before it, two receipts at once
+      // could each fit the same balance and together overpay.
+      const current = await this.lockChallan(tx, challanId);
+      if (current.status === ChallanStatus.CANCELLED) {
+        throw new BadRequestException(
+          'This challan is cancelled; payments cannot be recorded against it.',
+        );
+      }
+      const remaining = remainingBalance(current.netAmount, current.paidAmount);
+      if (dto.amount > remaining) {
+        throw new BadRequestException(
+          remaining === 0
+            ? 'This challan is already settled in full.'
+            : `Payment exceeds the remaining balance of ${formatMinorUnits(remaining, challan.school.currency)}.`,
+        );
+      }
+
       const payment = await tx.payment.create({
         data: {
           challanId,
@@ -159,6 +161,7 @@ export class PaymentsService extends BaseSchoolScopedService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await this.lockChallan(tx, payment.challanId);
       await tx.payment.update({
         where: { id: paymentId },
         data: {
@@ -186,31 +189,64 @@ export class PaymentsService extends BaseSchoolScopedService {
     return result;
   }
 
-  /** Void a challan. Never a hard delete — financial history must survive. */
+  /**
+   * Void a challan. Never a hard delete — financial history must survive.
+   *
+   * The challans it absorbed as arrears are reopened, or cancelling it would
+   * erase that debt. Generation only ever carries unpaid ones, so they go back
+   * to UNPAID.
+   */
   async cancelChallan(challanId: string, dto: CancelChallanDto, actor: Actor) {
     const challan = await this.getChallanForWrite(challanId, actor);
-    if (challan.status === ChallanStatus.CANCELLED) {
-      throw new BadRequestException('This challan is already cancelled.');
-    }
 
-    // Cancelling with live receipts attached would strand real money, so the
-    // payments must be voided first — deliberately explicit, not automatic.
-    const livePayments = await this.prisma.payment.count({
-      where: { challanId, voidedAt: null },
-    });
-    if (livePayments > 0) {
-      throw new BadRequestException(
-        `This challan has ${livePayments} recorded payment(s). Void them first, then cancel.`,
-      );
-    }
+    const { updated, reopened } = await this.prisma.$transaction(async (tx) => {
+      // Under the lock, so a payment can't land between the check and the cancel.
+      const current = await this.lockChallan(tx, challanId);
+      if (current.status === ChallanStatus.CANCELLED) {
+        throw new BadRequestException('This challan is already cancelled.');
+      }
 
-    const updated = await this.prisma.challan.update({
-      where: { id: challanId },
-      data: {
-        status: ChallanStatus.CANCELLED,
-        cancelledAt: new Date(),
-        cancelReason: dto.reason?.trim() || null,
-      },
+      // Cancelling with live receipts attached would strand real money, so the
+      // payments must be voided first — deliberately explicit, not automatic.
+      const livePayments = await tx.payment.count({
+        where: { challanId, voidedAt: null },
+      });
+      if (livePayments > 0) {
+        throw new BadRequestException(
+          `This challan has ${livePayments} recorded payment(s). Void them first, then cancel.`,
+        );
+      }
+
+      const updated = await tx.challan.update({
+        where: { id: challanId },
+        data: {
+          status: ChallanStatus.CANCELLED,
+          cancelledAt: new Date(),
+          cancelReason: dto.reason?.trim() || null,
+        },
+      });
+      // ponytail: linked by the cancelReason generation writes, the only link
+      // stored; add a supersededById column if it ever needs to be exact.
+      const carried = await tx.challan.findMany({
+        where: {
+          schoolId: challan.schoolId,
+          studentId: challan.studentId,
+          status: ChallanStatus.CANCELLED,
+          cancelReason: `Carried forward to ${challan.challanNo}`,
+        },
+        select: { id: true, challanNo: true },
+      });
+      if (carried.length) {
+        await tx.challan.updateMany({
+          where: { id: { in: carried.map((c) => c.id) } },
+          data: {
+            status: ChallanStatus.UNPAID,
+            cancelledAt: null,
+            cancelReason: null,
+          },
+        });
+      }
+      return { updated, reopened: carried.map((c) => c.challanNo) };
     });
 
     await this.invalidateFeeCache(challan.schoolId);
@@ -218,10 +254,14 @@ export class PaymentsService extends BaseSchoolScopedService {
       schoolId: challan.schoolId,
       entityType: 'Challan',
       entityId: challanId,
-      metadata: { challanNo: challan.challanNo, reason: dto.reason ?? null },
+      metadata: {
+        challanNo: challan.challanNo,
+        reason: dto.reason ?? null,
+        reopened,
+      },
     });
 
-    return updated;
+    return { ...updated, reopenedChallanNos: reopened };
   }
 
   /** Receipts for a challan, newest first. Voided rows are kept and flagged. */
@@ -264,6 +304,15 @@ export class PaymentsService extends BaseSchoolScopedService {
       where: { id: challanId },
       data: { paidAmount, status: resolveChallanStatus(paidAmount, netAmount) },
     });
+  }
+
+  /** Locks the challan row until the transaction ends and reads it fresh. */
+  private async lockChallan(tx: Prisma.TransactionClient, challanId: string) {
+    const [row] = await tx.$queryRaw<
+      { status: ChallanStatus; netAmount: number; paidAmount: number }[]
+    >`SELECT status, "netAmount", "paidAmount" FROM "Challan" WHERE id = ${challanId} FOR UPDATE`;
+    if (!row) throw new NotFoundException('Challan not found');
+    return row;
   }
 
   private async getChallanForWrite(challanId: string, actor: Actor) {
