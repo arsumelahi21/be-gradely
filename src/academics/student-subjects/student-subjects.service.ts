@@ -13,7 +13,11 @@ import { AuditLogService } from '../../audit/audit.service';
 import { resolvePagination } from '../../common/dto/pagination-query.dto';
 import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
-import { subjectsOf } from '../section-subjects/subject-takers';
+import {
+  crossSectionTakers,
+  recordedSubjects,
+  subjectsOf,
+} from '../section-subjects/subject-takers';
 import {
   NOTIFICATION_CREATE_BATCH,
   NotificationCreateBatchEvent,
@@ -82,51 +86,71 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
       },
       orderBy: { subject: { name: 'asc' } },
     });
-    const electiveIds = offerings.filter((o) => o.isElective).map((o) => o.id);
+    const offeringIds = offerings.map((o) => o.id);
+    const electiveIds = new Set(
+      offerings.filter((o) => o.isElective).map((o) => o.id),
+    );
 
-    const search = query.q?.trim();
-    const where: Prisma.EnrollmentWhereInput = {
-      sectionId: section.id,
-      academicYearId: year.id,
-      status: EnrollmentStatus.ACTIVE,
-      ...(search && {
-        student: {
-          OR: [
-            { fullName: { contains: search, mode: 'insensitive' } },
-            { rollNo: { contains: search, mode: 'insensitive' } },
-          ],
-        },
-      }),
-    };
-    const { page, pageSize, skip, take } = resolvePagination(query);
-    const [rows, total, rosterTotal] = await Promise.all([
+    const [placedHere, siblings] = await Promise.all([
       this.prisma.enrollment.findMany({
-        where,
-        skip,
-        take,
-        orderBy: [
-          { student: { rollNo: 'asc' } },
-          { student: { fullName: 'asc' } },
-        ],
-        select: {
-          student: { select: { id: true, fullName: true, rollNo: true } },
-        },
-      }),
-      this.prisma.enrollment.count({ where }),
-      this.prisma.enrollment.count({
         where: {
           sectionId: section.id,
           academicYearId: year.id,
           status: EnrollmentStatus.ACTIVE,
         },
+        select: { studentId: true },
       }),
+      // The same sibling-section pickers this section's attendance and exam
+      // sheets list, so the grid never disagrees with them.
+      crossSectionTakers(this.prisma, offeringIds, year.id),
+    ]);
+    const ownIds = new Set(placedHere.map((p) => p.studentId));
+
+    const search = query.q?.trim();
+    const where: Prisma.StudentProfileWhereInput = {
+      id: { in: [...ownIds, ...siblings] },
+      ...(search && {
+        OR: [
+          { fullName: { contains: search, mode: 'insensitive' } },
+          { rollNo: { contains: search, mode: 'insensitive' } },
+        ],
+      }),
+    };
+    const { page, pageSize, skip, take } = resolvePagination(query);
+    const [students, total] = await Promise.all([
+      this.prisma.studentProfile.findMany({
+        where,
+        skip,
+        take,
+        orderBy: [{ rollNo: 'asc' }, { fullName: 'asc' }],
+        select: { id: true, fullName: true, rollNo: true },
+      }),
+      this.prisma.studentProfile.count({ where }),
     ]);
 
-    const students = rows.map((r) => r.student);
-    const selectedBy = await this.selectionsFor(
-      electiveIds,
-      students.map((s) => s.id),
-      year.id,
+    const siblingIds = students
+      .filter((s) => !ownIds.has(s.id))
+      .map((s) => s.id);
+    const [selectedBy, siblingPlacements] = await Promise.all([
+      this.selectionsFor(
+        offeringIds,
+        students.map((s) => s.id),
+        year.id,
+      ),
+      this.prisma.enrollment.findMany({
+        where: {
+          studentId: { in: siblingIds },
+          academicYearId: year.id,
+          status: EnrollmentStatus.ACTIVE,
+        },
+        select: {
+          studentId: true,
+          section: { select: { id: true, name: true } },
+        },
+      }),
+    ]);
+    const primaryOf = new Map(
+      siblingPlacements.map((p) => [p.studentId, p.section]),
     );
 
     return {
@@ -141,19 +165,25 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
         isElective: o.isElective,
         subject: o.subject,
       })),
-      items: students.map((student) => ({
-        student,
-        selected: selectedBy.get(student.id) ?? [],
-      })),
+      items: students.map((student) => {
+        const own = ownIds.has(student.id);
+        const chosen = (selectedBy.get(student.id) ?? []).sort();
+        return {
+          student,
+          // A sibling picking this section's compulsory subject still picked it.
+          selected: own ? chosen.filter((id) => electiveIds.has(id)) : chosen,
+          primarySection: own ? null : (primaryOf.get(student.id) ?? null),
+        };
+      }),
       total,
       page,
       pageSize,
-      rosterTotal,
+      rosterTotal: ownIds.size + siblings.length,
     };
   }
 
   /** One student's combination — the read the student and parent portals use. */
-  async forStudent(studentId: string, actor: Actor) {
+  async forStudent(studentId: string, actor: Actor, academicYearId?: string) {
     // Bound to the caller's school so another school's student 404s: fetching by
     // id and then throwing 403 would confirm that id exists.
     const student = await this.prisma.studentProfile.findFirst({
@@ -170,7 +200,11 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
     await this.assertStudentAccess(actor, student);
 
     const placement = await this.prisma.enrollment.findFirst({
-      where: { studentId, status: EnrollmentStatus.ACTIVE },
+      where: {
+        studentId,
+        status: EnrollmentStatus.ACTIVE,
+        ...(academicYearId && { academicYearId }),
+      },
       orderBy: { createdAt: 'desc' },
       select: {
         sectionId: true,
@@ -211,6 +245,8 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
             subject: { select: { id: true, name: true, code: true } },
             // Students and parents read this: a teacher's name, never contact details.
             teacher: { select: { id: true, fullName: true } },
+            // A subject may come from a sibling section, so the card can't assume the placement's.
+            section: { select: { id: true, name: true } },
           },
           orderBy: { subject: { name: 'asc' } },
         })
@@ -225,6 +261,7 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
         isElective: r.isElective,
         subject: r.subject,
         teacher: r.teacher,
+        section: r.section,
       })),
     };
   }
@@ -254,8 +291,14 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
       );
     }
 
-    const { sectionId, schoolId, sectionLabel, nameOf } =
-      await this.resolveSubjects([...add, ...remove], actor);
+    const {
+      sectionId,
+      classGradeId,
+      subjectIdOf,
+      schoolId,
+      sectionLabel,
+      nameOf,
+    } = await this.resolveSubjects([...add, ...remove], actor);
     const year = await this.prisma.academicYear.findFirst({
       where: { id: dto.academicYearId, schoolId },
       select: { id: true, name: true, startDate: true, endDate: true },
@@ -278,8 +321,19 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
           ? await this.withRecords(tx, placement.eligible, remove, year, nameOf)
           : [];
       const keptIds = new Set(kept.map((k) => k.studentId));
-      const eligible = placement.eligible.filter((id) => !keptIds.has(id));
-      const skipped = [...placement.skipped, ...kept];
+      const candidates = placement.eligible.filter((id) => !keptIds.has(id));
+      const doubled =
+        add.length && candidates.length
+          ? await this.takenElsewhere(tx, candidates, add, {
+              sectionId,
+              classGradeId,
+              academicYearId: year.id,
+              subjectIdOf,
+            })
+          : [];
+      const doubledIds = new Set(doubled.map((d) => d.studentId));
+      const eligible = candidates.filter((id) => !doubledIds.has(id));
+      const skipped = [...placement.skipped, ...kept, ...doubled];
       const held = eligible.length
         ? await tx.studentSubject.findMany({
             where: {
@@ -424,15 +478,15 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
   // ---- helpers -----------------------------------------------------------
 
   private async selectionsFor(
-    electiveIds: string[],
+    sectionSubjectIds: string[],
     studentIds: string[],
     academicYearId: string,
   ): Promise<Map<string, string[]>> {
     const byStudent = new Map<string, string[]>();
-    if (!electiveIds.length || !studentIds.length) return byStudent;
+    if (!sectionSubjectIds.length || !studentIds.length) return byStudent;
     const rows = await this.prisma.studentSubject.findMany({
       where: {
-        sectionSubjectId: { in: electiveIds },
+        sectionSubjectId: { in: sectionSubjectIds },
         academicYearId,
         studentId: { in: studentIds },
       },
@@ -463,10 +517,12 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
         id: true,
         isElective: true,
         sectionId: true,
+        subjectId: true,
         section: {
           select: {
             schoolId: true,
             name: true,
+            classGradeId: true,
             classGrade: { select: { name: true } },
           },
         },
@@ -494,6 +550,8 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
     const { section } = offerings[0];
     return {
       sectionId: offerings[0].sectionId,
+      classGradeId: section.classGradeId,
+      subjectIdOf: new Map(offerings.map((o) => [o.id, o.subjectId])),
       schoolId: section.schoolId,
       sectionLabel: [section.classGrade?.name.trim(), section.name]
         .filter(Boolean)
@@ -548,6 +606,56 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
   }
 
   /**
+   * Students who already take one of these subjects from another section of the
+   * class — a subject is taken from one section only, as enrolment enforces.
+   */
+  private async takenElsewhere(
+    db: Prisma.TransactionClient,
+    studentIds: string[],
+    sectionSubjectIds: string[],
+    scope: {
+      sectionId: string;
+      classGradeId: string;
+      academicYearId: string;
+      subjectIdOf: Map<string, string>;
+    },
+  ): Promise<SkippedStudent[]> {
+    const rows = await db.studentSubject.findMany({
+      where: {
+        studentId: { in: studentIds },
+        academicYearId: scope.academicYearId,
+        sectionSubject: {
+          sectionId: { not: scope.sectionId },
+          subjectId: {
+            in: sectionSubjectIds.map((id) => scope.subjectIdOf.get(id)!),
+          },
+          section: { classGradeId: scope.classGradeId },
+        },
+      },
+      select: {
+        studentId: true,
+        student: { select: { fullName: true } },
+        sectionSubject: {
+          select: {
+            subject: { select: { name: true } },
+            section: { select: { name: true } },
+          },
+        },
+      },
+    });
+    const byStudent = new Map<string, SkippedStudent>();
+    for (const r of rows) {
+      if (byStudent.has(r.studentId)) continue;
+      byStudent.set(r.studentId, {
+        studentId: r.studentId,
+        studentName: r.student.fullName,
+        reason: `${r.student.fullName} already takes ${r.sectionSubject.subject.name} from ${r.sectionSubject.section.name}. A subject is taken from one section only.`,
+      });
+    }
+    return [...byStudent.values()];
+  }
+
+  /**
    * Whether a mid-session change is allowed at all is an open business rule, so a
    * student with marks or attendance this session keeps the subject — skipped, not failing the batch.
    */
@@ -558,41 +666,12 @@ export class StudentSubjectsService extends BaseSchoolScopedService {
     year: { id: string; startDate: Date; endDate: Date },
     subjectName: Map<string, string>,
   ): Promise<SkippedStudent[]> {
-    const [marked, attended] = await Promise.all([
-      db.examResult.findMany({
-        where: {
-          studentId: { in: studentIds },
-          exam: {
-            sectionSubjectId: { in: sectionSubjectIds },
-            academicYearId: year.id,
-          },
-        },
-        select: {
-          studentId: true,
-          exam: { select: { sectionSubjectId: true } },
-        },
-      }),
-      // Attendance carries no session and a section keeps its subjects across
-      // sessions, so only the session's dates keep last year's rows out.
-      db.attendance.groupBy({
-        by: ['studentId', 'sectionSubjectId'],
-        where: {
-          studentId: { in: studentIds },
-          sectionSubjectId: { in: sectionSubjectIds },
-          date: { gte: year.startDate, lte: year.endDate },
-        },
-      }),
-    ]);
-    const recorded = new Map<string, Set<string>>();
-    for (const { studentId, sectionSubjectId } of [
-      ...marked.map((m) => ({ studentId: m.studentId, ...m.exam })),
-      ...attended,
-    ]) {
-      recorded.set(
-        studentId,
-        (recorded.get(studentId) ?? new Set()).add(sectionSubjectId),
-      );
-    }
+    const recorded = await recordedSubjects(
+      db,
+      studentIds,
+      sectionSubjectIds,
+      year,
+    );
     if (!recorded.size) return [];
 
     const names = await db.studentProfile.findMany({

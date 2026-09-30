@@ -11,6 +11,10 @@ export class FindSectionSubjectsQueryDto {
 
   @IsOptional()
   @IsUUID()
+  classGradeId?: string;
+
+  @IsOptional()
+  @IsUUID()
   subjectId?: string;
 
   @IsOptional()

@@ -12,7 +12,10 @@ import {
   studentUserIds,
 } from '../common/notifications/recipients';
 import { formatMinutes } from '../exams/exam-mappers';
-import { narrowToTakers } from '../academics/section-subjects/subject-takers';
+import {
+  crossSectionTakers,
+  narrowToTakers,
+} from '../academics/section-subjects/subject-takers';
 
 /**
  * Daily "due tomorrow" reminders, windowed to tomorrow so each assignment/exam reminds once.
@@ -48,13 +51,21 @@ export class RemindersScheduler {
         this.prisma,
         a.sectionSubject.sectionId,
       );
-      // Only the students who actually took the elective owe this assignment.
+      // Only the students who actually take the subject owe this assignment —
+      // including those placed in a sibling section who picked it.
       const userIds = await studentUserIds(
         this.prisma,
         await narrowToTakers(
           this.prisma,
           a.sectionSubjectId,
-          roster,
+          [
+            ...roster,
+            ...(await crossSectionTakers(
+              this.prisma,
+              [a.sectionSubjectId],
+              a.academicYearId,
+            )),
+          ],
           a.academicYearId,
         ),
       );
@@ -80,6 +91,7 @@ export class RemindersScheduler {
       select: {
         startMin: true,
         venue: true,
+        sectionSubjectId: true,
         sectionSubject: { select: { subject: { select: { name: true } } } },
         examination: {
           select: {
@@ -92,12 +104,26 @@ export class RemindersScheduler {
       },
     });
     for (const e of items) {
+      const { sectionId, academicYearId } = e.examination;
+      // The paper's own takers: the section minus non-takers, plus sibling-section picks.
       const userIds = await studentUserIds(
         this.prisma,
-        await sectionYearStudentIds(
+        await narrowToTakers(
           this.prisma,
-          e.examination.sectionId,
-          e.examination.academicYearId,
+          e.sectionSubjectId,
+          [
+            ...(await sectionYearStudentIds(
+              this.prisma,
+              sectionId,
+              academicYearId,
+            )),
+            ...(await crossSectionTakers(
+              this.prisma,
+              [e.sectionSubjectId],
+              academicYearId,
+            )),
+          ],
+          academicYearId,
         ),
       );
       if (!userIds.length) continue;

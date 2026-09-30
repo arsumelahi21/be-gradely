@@ -19,7 +19,9 @@ import { S3PresignService } from '../common/services/s3-presign.service';
 import { CacheService } from '../common/services/cache.service';
 import { invalidateSchoolStats } from '../common/cache/stats-cache';
 import {
+  crossSectionTakers,
   narrowToTakers,
+  picksFromSibling,
   subjectsOf,
 } from '../academics/section-subjects/subject-takers';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -32,7 +34,11 @@ import {
   sectionStudentIds,
   studentUserIds,
 } from '../common/notifications/recipients';
-import { AssignmentAttachmentStatus, Prisma } from '@prisma/client';
+import {
+  AssignmentAttachmentStatus,
+  EnrollmentStatus,
+  Prisma,
+} from '@prisma/client';
 
 @Injectable()
 export class AssignmentsService {
@@ -360,10 +366,13 @@ export class AssignmentsService {
         SELECT s."sectionSubjectId", s."academicYearId", COUNT(*)::int AS takers
         FROM "StudentSubject" s
         JOIN "SectionSubject" o ON o.id = s."sectionSubjectId"
+        JOIN "Section" os ON os.id = o."sectionId"
         JOIN "Enrollment" e ON e."studentId" = s."studentId"
-          AND e."sectionId" = o."sectionId"
           AND e."academicYearId" = s."academicYearId"
           AND e.status = 'ACTIVE'
+        -- Any section of the class: a subject can be picked from a sibling section.
+        JOIN "Section" es ON es.id = e."sectionId"
+          AND es."classGradeId" = os."classGradeId"
         WHERE s."sectionSubjectId" IN (${Prisma.join(electiveIds)})
         GROUP BY s."sectionSubjectId", s."academicYearId"`;
       for (const g of groups) {
@@ -537,13 +546,21 @@ export class AssignmentsService {
     const sectionId = a.sectionSubject?.sectionId;
     if (!sectionId) return;
     const roster = await sectionStudentIds(this.prisma, sectionId);
-    // An elective's work belongs to the students who chose it, not the section.
+    // An elective's work belongs to the students who chose it, not the section —
+    // including students placed in a sibling section who picked it.
     const studentIds =
       a.sectionSubjectId && a.academicYearId
         ? await narrowToTakers(
             this.prisma,
             a.sectionSubjectId,
-            roster,
+            [
+              ...roster,
+              ...(await crossSectionTakers(
+                this.prisma,
+                [a.sectionSubjectId],
+                a.academicYearId,
+              )),
+            ],
             a.academicYearId,
           )
         : roster;
@@ -593,14 +610,7 @@ export class AssignmentsService {
 
     const student = await this.getStudentOrThrow(actor);
 
-    const enrolled = await this.prisma.enrollment.findFirst({
-      where: {
-        studentId: student.id,
-        sectionId: assignment.sectionSubject.sectionId,
-        academicYearId: assignment.academicYearId,
-        status: 'ACTIVE',
-      } as any,
-    });
+    const enrolled = await this.enrolledFor(student.id, assignment);
     if (!enrolled)
       throw new ForbiddenException('Student not enrolled for this assignment');
 
@@ -861,14 +871,7 @@ export class AssignmentsService {
         throw new NotFoundException('Assignment not found');
       }
 
-      const enrolled = await this.prisma.enrollment.findFirst({
-        where: {
-          studentId: student.id,
-          sectionId: assignment.sectionSubject.sectionId,
-          academicYearId: assignment.academicYearId,
-          status: 'ACTIVE',
-        } as any,
-      });
+      const enrolled = await this.enrolledFor(student.id, assignment);
 
       if (!enrolled) {
         throw new ForbiddenException(
@@ -938,14 +941,7 @@ export class AssignmentsService {
       throw new BadRequestException('Submission already marked');
     }
 
-    const enrolled = await this.prisma.enrollment.findFirst({
-      where: {
-        studentId: student.id,
-        sectionId: submission.assignment.sectionSubject.sectionId,
-        academicYearId: submission.assignment.academicYearId,
-        status: 'ACTIVE',
-      } as any,
-    });
+    const enrolled = await this.enrolledFor(student.id, submission.assignment);
     if (!enrolled)
       throw new ForbiddenException('Student not enrolled for this assignment');
 
@@ -1264,14 +1260,10 @@ export class AssignmentsService {
     // counts: promotion closes the placement, and a marked submission has to stay
     // readable afterwards. Safe to widen because this is pinned to the
     // assignment's own section AND academic year.
-    const enrolled = await this.prisma.enrollment.findFirst({
-      where: {
-        studentId: targetStudentId,
-        sectionId: assignment.sectionSubject.sectionId,
-        academicYearId: assignment.academicYearId,
-        status: { in: ['ACTIVE', 'COMPLETED'] },
-      } as any,
-    });
+    const enrolled = await this.enrolledFor(targetStudentId, assignment, [
+      EnrollmentStatus.ACTIVE,
+      EnrollmentStatus.COMPLETED,
+    ]);
     if (!enrolled) {
       throw new ForbiddenException('Student not enrolled for this assignment');
     }
@@ -1468,6 +1460,37 @@ export class AssignmentsService {
       throw new ForbiddenException('Student is not linked to this parent');
   }
 
+  /** Placed in the assignment's section that session, or taking its subject from a sibling section. */
+  private async enrolledFor(
+    studentId: string,
+    assignment: {
+      sectionSubjectId: string;
+      academicYearId: string;
+      sectionSubject: { sectionId: string };
+    },
+    statuses: EnrollmentStatus[] = [EnrollmentStatus.ACTIVE],
+  ): Promise<boolean> {
+    const placed = await this.prisma.enrollment.findFirst({
+      where: {
+        studentId,
+        sectionId: assignment.sectionSubject.sectionId,
+        academicYearId: assignment.academicYearId,
+        status: { in: statuses },
+      },
+      select: { id: true },
+    });
+    return (
+      !!placed ||
+      picksFromSibling(
+        this.prisma,
+        studentId,
+        assignment.sectionSubjectId,
+        assignment.academicYearId,
+        statuses,
+      )
+    );
+  }
+
   /**
    * What a student may see, scoped to WHEN they joined each section.
    *
@@ -1577,14 +1600,7 @@ export class AssignmentsService {
         );
       }
       const student = await this.getStudentOrThrow(actor);
-      const enrolled = await this.prisma.enrollment.findFirst({
-        where: {
-          studentId: student.id,
-          sectionId: assignment.sectionSubject.sectionId,
-          academicYearId: assignment.academicYearId,
-          status: 'ACTIVE',
-        } as any,
-      });
+      const enrolled = await this.enrolledFor(student.id, assignment);
       if (!enrolled) {
         throw new ForbiddenException(
           'Student not enrolled for this assignment',
@@ -1601,14 +1617,7 @@ export class AssignmentsService {
       if (!opts?.studentId)
         throw new BadRequestException('studentId is required');
       await this.ensureChildOfParent(parent.id, opts.studentId);
-      const enrolled = await this.prisma.enrollment.findFirst({
-        where: {
-          studentId: opts.studentId,
-          sectionId: assignment.sectionSubject.sectionId,
-          academicYearId: assignment.academicYearId,
-          status: 'ACTIVE',
-        } as any,
-      });
+      const enrolled = await this.enrolledFor(opts.studentId, assignment);
       if (!enrolled)
         throw new ForbiddenException(
           'Student not enrolled for this assignment',

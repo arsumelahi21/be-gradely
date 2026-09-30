@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Query,
   Req,
@@ -29,8 +30,13 @@ export class StudentSubjectsController {
 
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN, Role.STUDENT, Role.PARENT)
   @Get('student/:studentId')
-  forStudent(@Param('studentId') studentId: string, @Req() req: any) {
-    return this.studentSubjects.forStudent(studentId, req.user);
+  forStudent(
+    @Param('studentId') studentId: string,
+    @Query('academicYearId', new ParseUUIDPipe({ optional: true }))
+    academicYearId: string | undefined,
+    @Req() req: any,
+  ) {
+    return this.studentSubjects.forStudent(studentId, req.user, academicYearId);
   }
 
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
