@@ -49,6 +49,7 @@ export class SectionsService extends BaseSchoolScopedService {
           schoolId: grade.schoolId,
           name: dto.name,
           room: dto.room ?? null,
+          ...(dto.feeBillingMode && { feeBillingMode: dto.feeBillingMode }),
         },
       })
       // @@unique([classGradeId, name]) — without this the form just says
@@ -217,6 +218,7 @@ export class SectionsService extends BaseSchoolScopedService {
           schoolId,
           ...(dto.name !== undefined && { name: dto.name }),
           ...(dto.room !== undefined && { room: dto.room }),
+          ...(dto.feeBillingMode && { feeBillingMode: dto.feeBillingMode }),
           ...(dto.isActive !== undefined && { isActive: dto.isActive }),
         },
       })

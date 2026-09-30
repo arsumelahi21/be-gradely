@@ -29,7 +29,7 @@ describe('Subject-based fees (e2e)', () => {
   const http = () => request(app.getHttpServer());
 
   /**
-   * One class billed by subject, three sections over two sessions:
+   * One class whose sections bill by subject, over two sessions:
    * A1 Maths/Physics/Computer, A2 Maths/Chemistry/Biology, A3 Economics/Business.
    */
   async function seedSubjectClass(
@@ -53,18 +53,23 @@ describe('Subject-based fees (e2e)', () => {
       });
     const y2026 = await year('2026-27', '2026-01-01', '2026-12-31');
     const y2027 = await year('2027-28', '2027-01-01', '2027-12-31');
-    const klass = (name: string, mode = feeBillingMode) =>
+    const klass = (name: string) =>
       prisma.classGrade.create({
-        data: {
-          schoolId: school.id,
-          name: `${name}-${uniq()}`,
-          feeBillingMode: mode,
-        },
+        data: { schoolId: school.id, name: `${name}-${uniq()}` },
       });
     const grade = await klass('A-Level');
-    const section = (name: string, classGradeId = grade.id) =>
+    const section = (
+      name: string,
+      classGradeId = grade.id,
+      mode = feeBillingMode,
+    ) =>
       prisma.section.create({
-        data: { schoolId: school.id, classGradeId, name },
+        data: { schoolId: school.id, classGradeId, name, feeBillingMode: mode },
+      });
+    const setMode = (sectionId: string, mode: 'SUBJECT' | 'MONTHLY') =>
+      prisma.section.update({
+        where: { id: sectionId },
+        data: { feeBillingMode: mode },
       });
     const [a1, a2, a3] = [
       await section('A1'),
@@ -173,6 +178,7 @@ describe('Subject-based fees (e2e)', () => {
       klass,
       grade,
       section,
+      setMode,
       a1,
       a2,
       a3,
@@ -298,18 +304,38 @@ describe('Subject-based fees (e2e)', () => {
       ]);
     });
 
-    it('switches a class to by-subject billing through the class endpoint', async () => {
+    it('sets the billing method per section, and no longer per class', async () => {
       const f = await seedSubjectClass('MONTHLY');
       const res = await http()
-        .patch(`/api/class-grades/${f.grade.id}`)
+        .patch(`/api/sections/${f.a2.id}`)
         .set(f.auth)
         .send({ feeBillingMode: 'SUBJECT' })
         .expect(200);
       expect(res.body.feeBillingMode).toBe('SUBJECT');
+      expect(
+        (await prisma.section.findUniqueOrThrow({ where: { id: f.a1.id } }))
+          .feeBillingMode,
+      ).toBe('MONTHLY');
+      await http()
+        .patch(`/api/sections/${f.a2.id}`)
+        .set(f.auth)
+        .send({ feeBillingMode: 'WEEKLY' })
+        .expect(400);
+
+      const created = await http()
+        .post('/api/sections')
+        .set(f.auth)
+        .send({
+          classGradeId: f.grade.id,
+          name: 'A4',
+          feeBillingMode: 'SUBJECT',
+        })
+        .expect(201);
+      expect(created.body.feeBillingMode).toBe('SUBJECT');
       await http()
         .patch(`/api/class-grades/${f.grade.id}`)
         .set(f.auth)
-        .send({ feeBillingMode: 'WEEKLY' })
+        .send({ feeBillingMode: 'SUBJECT' })
         .expect(400);
     });
   });
@@ -586,6 +612,184 @@ describe('Subject-based fees (e2e)', () => {
       expect(await prisma.challan.count({ where: { studentId: b.id } })).toBe(
         1,
       );
+    });
+  });
+
+  describe('section billing method', () => {
+    it('bills a class-wise student their monthly fee plus only the subjects taken from other sections', async () => {
+      const f = await seedSubjectClass('MONTHLY');
+      await f.priceAll();
+      const ali = await f.student('Ali', f.a1.id, [
+        f.o.mathsA1,
+        f.o.physicsA1,
+        f.o.chemistryA2,
+        f.o.economicsA3,
+      ]);
+
+      await f.run().expect(201);
+
+      const challan = await f.challanOf(ali.id);
+      expect(f.lines(challan)).toEqual([
+        ['Monthly Fee', 99999],
+        ['Chemistry (A2)', 2500],
+        ['Economics (A3)', 2000],
+      ]);
+      expect(challan.items.map((i) => i.subjectId)).toEqual([
+        null,
+        f.s.chemistry.id,
+        f.s.economics.id,
+      ]);
+      expect(challan.netAmount).toBe(99999 + 2500 + 2000);
+    });
+
+    it('ignores the billing method of the section a subject is taken from, in one mixed run', async () => {
+      const f = await seedSubjectClass('MONTHLY');
+      await f.priceAll();
+      await f.setMode(f.a2.id, 'SUBJECT');
+      const ali = await f.student('Ali', f.a1.id, [
+        f.o.mathsA1,
+        f.o.chemistryA2,
+      ]);
+      const sara = await f.student('Sara', f.a2.id, [
+        f.o.mathsA2,
+        f.o.chemistryA2,
+      ]);
+
+      await f.run().expect(201);
+
+      expect(f.lines(await f.challanOf(ali.id))).toEqual([
+        ['Monthly Fee', 99999],
+        ['Chemistry (A2)', 2500],
+      ]);
+      // Sara is placed in the subject-wise section: no monthly fee, no section names.
+      expect(f.lines(await f.challanOf(sara.id))).toEqual([
+        ['Chemistry', 2500],
+        ['Mathematics', 3000],
+      ]);
+    });
+
+    it('bills a subject-wise student every subject, named plainly, whatever the other sections use', async () => {
+      const f = await seedSubjectClass('SUBJECT');
+      await f.priceAll();
+      await f.setMode(f.a2.id, 'MONTHLY');
+      await f.setMode(f.a3.id, 'MONTHLY');
+      const d = await f.student('D', f.a1.id, [
+        f.o.mathsA1,
+        f.o.physicsA1,
+        f.o.chemistryA2,
+        f.o.economicsA3,
+      ]);
+
+      await f.run().expect(201);
+
+      const challan = await f.challanOf(d.id);
+      expect(f.lines(challan)).toEqual([
+        ['Chemistry', 2500],
+        ['Economics', 2000],
+        ['Mathematics', 3000],
+        ['Physics', 2500],
+      ]);
+      expect(challan.netAmount).toBe(10000);
+    });
+
+    it('charges a code once when two subjects from other sections share it', async () => {
+      const f = await seedSubjectClass('MONTHLY');
+      const english = await f.subject('English', 'E123');
+      const englishLanguage = await f.subject('English Language', ' e123 ');
+      const englishA2 = await f.offer(f.a2.id, english.id);
+      const englishA3 = await f.offer(f.a3.id, englishLanguage.id);
+      await f.price([{ code: 'E123', amount: 3000 }]).expect(200);
+      const ali = await f.student('Ali', f.a1.id, [englishA2, englishA3]);
+
+      await f.run().expect(201);
+
+      const challan = await f.challanOf(ali.id);
+      expect(challan.items).toHaveLength(2);
+      expect(challan.netAmount).toBe(99999 + 3000);
+    });
+
+    it('charges a subject taken from another section even when their own section teaches it too', async () => {
+      const f = await seedSubjectClass('MONTHLY');
+      await f.priceAll();
+      await f.offer(f.a1.id, f.s.chemistry.id);
+      const ali = await f.student('Ali', f.a1.id, [f.o.chemistryA2]);
+
+      await f.run().expect(201);
+
+      expect(f.lines(await f.challanOf(ali.id))).toEqual([
+        ['Monthly Fee', 99999],
+        ['Chemistry (A2)', 2500],
+      ]);
+    });
+
+    it('bills a class-wise student with no subjects their monthly fee, and a free subject at zero', async () => {
+      const f = await seedSubjectClass('MONTHLY');
+      await f.priceAll();
+      await f.price([{ code: 'CHEM01', amount: 0 }]).expect(200);
+      const none = await f.student('None', f.a1.id, []);
+      const free = await f.student('Free', f.a1.id, [f.o.chemistryA2]);
+
+      await f.run().expect(201);
+
+      expect(f.lines(await f.challanOf(none.id))).toEqual([
+        ['Monthly Fee', 99999],
+      ]);
+      expect(f.lines(await f.challanOf(free.id))).toEqual([
+        ['Monthly Fee', 99999],
+        ['Chemistry (A2)', 0],
+      ]);
+    });
+
+    it('blocks a class-wise run when a subject from another section has no fee or no code', async () => {
+      const f = await seedSubjectClass('MONTHLY');
+      await f.price([{ code: 'M101', amount: 3000 }]).expect(200);
+      const art = await f.subject('Art', null);
+      const artA3 = await f.offer(f.a3.id, art.id);
+      await f.student('Unpriced', f.a1.id, [f.o.mathsA1, f.o.chemistryA2]);
+      await f.student('Uncoded', f.a1.id, [artA3]);
+
+      const preview = await f.run({}, 'preview').expect(201);
+      expect(preview.body.missingSubjectFees).toEqual([
+        { code: 'CHEM01', name: 'Chemistry' },
+      ]);
+      expect(preview.body.uncodedSubjects).toEqual([
+        { subjectId: art.id, name: 'Art' },
+      ]);
+      expect(
+        preview.body.blocked
+          .map((b: { fullName: string }) => b.fullName)
+          .sort(),
+      ).toEqual(['Uncoded', 'Unpriced']);
+
+      await f.run().expect(400);
+      expect(await prisma.challan.count()).toBe(0);
+    });
+
+    it('keeps an issued class-wise challan as it was when the section switches to subject-wise', async () => {
+      const f = await seedSubjectClass('MONTHLY');
+      await f.priceAll();
+      const ali = await f.student('Ali', f.a1.id, [
+        f.o.mathsA1,
+        f.o.chemistryA2,
+      ]);
+      await f.run().expect(201);
+      const september = await f.challanOf(ali.id);
+      await http()
+        .post(`/api/fees/challans/${september.id}/payments`)
+        .set(f.auth)
+        .send({ amount: september.netAmount, method: 'CASH' })
+        .expect(201);
+
+      await f.setMode(f.a1.id, 'SUBJECT');
+      await f.price([{ code: 'CHEM01', amount: 4000 }]).expect(200);
+      await f.run({ periodMonth: 10 }).expect(201);
+
+      expect(f.lines(await f.challanOf(ali.id))).toEqual(f.lines(september));
+      expect((await f.challanOf(ali.id)).netAmount).toBe(september.netAmount);
+      expect(f.lines(await f.challanOf(ali.id, 10))).toEqual([
+        ['Chemistry', 4000],
+        ['Mathematics', 3000],
+      ]);
     });
   });
 

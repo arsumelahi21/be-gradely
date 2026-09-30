@@ -1,4 +1,5 @@
-import { IsString, IsUUID, IsOptional } from 'class-validator';
+import { FeeBillingMode } from '@prisma/client';
+import { IsString, IsUUID, IsOptional, IsEnum } from 'class-validator';
 
 export class CreateSectionDto {
   @IsUUID()
@@ -10,4 +11,10 @@ export class CreateSectionDto {
   @IsOptional()
   @IsString()
   room?: string;
+
+  @IsOptional()
+  @IsEnum(FeeBillingMode, {
+    message: 'Choose class-wise or subject-wise billing',
+  })
+  feeBillingMode?: FeeBillingMode;
 }
