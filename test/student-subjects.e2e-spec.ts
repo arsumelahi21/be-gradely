@@ -1288,6 +1288,26 @@ describe('Student subject enrollment (e2e)', () => {
       ).toBe(0);
     });
 
+    // update() has refused this since the feature landed; create() reached the
+    // same state by the back door, putting the student on two rosters at once.
+    it('refuses a new compulsory offering for a subject taken from a sibling', async () => {
+      const f = await seedSiblings();
+      const student = await enrolAcross(f);
+      const { subjectId } = await prisma.sectionSubject.findUniqueOrThrow({
+        where: { id: f.chemistryB },
+        select: { subjectId: true },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post('/api/section-subjects')
+        .set('Authorization', `Bearer ${f.adminToken}`)
+        .send({ sectionId: f.section.id, subjectId, isElective: false });
+
+      expect(res.status).toBe(409);
+      expect(String(res.body.message)).toMatch(/from another section/i);
+      expect(await picksOf(student.id)).toContain(f.chemistryB);
+    });
+
     it('lists a student placed in a sibling section on the grid of the section they pick from', async () => {
       const f = await seedSiblings();
       const student = await enrolAcross(f);
