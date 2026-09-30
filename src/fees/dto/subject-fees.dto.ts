@@ -3,20 +3,20 @@ import {
   ArrayMaxSize,
   IsArray,
   IsInt,
-  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
-  MaxLength,
+  Matches,
   Min,
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
 export class SubjectFeeItemDto {
+  // No length cap: Subject.code has none, and a code this DTO rejects would
+  // leave its class blocked from billing with no way out in the product.
   @IsString()
-  @IsNotEmpty()
-  @MaxLength(50)
+  @Matches(/\S/, { message: 'A subject code cannot be blank' })
   code: string;
 
   /** Minor units. 0 is a free subject; null removes the fee. */

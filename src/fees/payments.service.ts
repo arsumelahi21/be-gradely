@@ -83,7 +83,7 @@ export class PaymentsService extends BaseSchoolScopedService {
           note: dto.note?.trim() || null,
         },
       });
-      const updated = await this.resettle(tx, challanId, challan.netAmount);
+      const updated = await this.resettle(tx, challanId, current.netAmount);
       return { payment, challan: updated };
     });
 
@@ -161,16 +161,22 @@ export class PaymentsService extends BaseSchoolScopedService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      await this.lockChallan(tx, payment.challanId);
-      await tx.payment.update({
-        where: { id: paymentId },
+      const locked = await this.lockChallan(tx, payment.challanId);
+      // Claimed, not updated: the check above read the row before the lock, so
+      // two concurrent voids both pass it and the audit trail would name the
+      // loser as the one who voided.
+      const claimed = await tx.payment.updateMany({
+        where: { id: paymentId, voidedAt: null },
         data: {
           voidedAt: new Date(),
           voidedByUserId: actor.userId,
           voidReason: dto.reason?.trim() || null,
         },
       });
-      return this.resettle(tx, payment.challanId, payment.challan.netAmount);
+      if (!claimed.count) {
+        throw new BadRequestException('This payment is already voided.');
+      }
+      return this.resettle(tx, payment.challanId, locked.netAmount);
     });
 
     await this.invalidateFeeCache(payment.schoolId);

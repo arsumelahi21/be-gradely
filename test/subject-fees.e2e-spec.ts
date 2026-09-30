@@ -289,6 +289,22 @@ describe('Subject-based fees (e2e)', () => {
       expect(await prisma.subjectFee.count()).toBe(0);
     });
 
+    // A subject may carry any code, so a cap here would leave its class blocked
+    // from billing with no way out in the product; blank is still refused.
+    it('prices a code longer than any cap, and refuses a blank one', async () => {
+      const f = await seedSubjectClass();
+      const long = 'L'.repeat(80);
+      await f.subject('Long Coded', long);
+
+      await f.price([{ code: long, amount: 4200 }]).expect(200);
+      await f.price([{ code: '   ', amount: 100 }]).expect(400);
+
+      const stored = await prisma.subjectFee.findMany({
+        select: { code: true, amount: true },
+      });
+      expect(stored).toEqual([{ code: long, amount: 4200 }]);
+    });
+
     it('lists subjects without a code apart, since they cannot carry a fee', async () => {
       const f = await seedSubjectClass();
       const art = await f.subject('Art', null);

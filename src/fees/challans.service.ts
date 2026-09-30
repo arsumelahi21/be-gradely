@@ -504,10 +504,13 @@ export class ChallansService extends BaseSchoolScopedService {
           skippedOnPlan: plan.skippedOnPlan,
         };
       } catch (e) {
-        const isDuplicate =
+        // P2034 is a deadlock: cancelChallan locks the challan then updates the
+        // carried rows, generation does the reverse, so the two orders can meet.
+        // Same answer as losing any other race — rebuild the plan and retry.
+        const isRetryable =
           e instanceof Prisma.PrismaClientKnownRequestError &&
-          e.code === 'P2002';
-        if (!isDuplicate && !(e instanceof StaleArrearsError)) throw e;
+          (e.code === 'P2002' || e.code === 'P2034');
+        if (!isRetryable && !(e instanceof StaleArrearsError)) throw e;
         if (attempt === MAX_GENERATE_ATTEMPTS) {
           throw e instanceof StaleArrearsError
             ? new ConflictException(
