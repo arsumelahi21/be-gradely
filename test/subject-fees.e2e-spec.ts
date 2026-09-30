@@ -338,6 +338,25 @@ describe('Subject-based fees (e2e)', () => {
         .send({ feeBillingMode: 'SUBJECT' })
         .expect(400);
     });
+
+    it("gives a new section its class's billing method, and makes a mixed class choose", async () => {
+      const f = await seedSubjectClass('SUBJECT');
+      const create = (name: string, classGradeId = f.grade.id) =>
+        http().post('/api/sections').set(f.auth).send({ classGradeId, name });
+
+      expect((await create('A4').expect(201)).body.feeBillingMode).toBe(
+        'SUBJECT',
+      );
+
+      await f.setMode(f.a1.id, 'MONTHLY');
+      const mixed = await create('A5').expect(400);
+      expect(mixed.body.message).toMatch(/bill differently/);
+
+      const empty = await f.klass('O-Level');
+      expect(
+        (await create('O1', empty.id).expect(201)).body.feeBillingMode,
+      ).toBe('MONTHLY');
+    });
   });
 
   describe('billing', () => {
@@ -487,11 +506,14 @@ describe('Subject-based fees (e2e)', () => {
       expect(row.netAmount).toBe(issued.netAmount);
     });
 
-    it('blocks the whole run when a subject code has no fee, naming it', async () => {
+    it('skips a student whose subject has no fee, bills the rest, and names what to fix', async () => {
       const f = await seedSubjectClass();
       await f.price([{ code: 'M101', amount: 3000 }]).expect(200);
-      await f.student('Priced', f.a1.id, [f.o.mathsA1]);
-      await f.student('Unpriced', f.a1.id, [f.o.mathsA1, f.o.chemistryA2]);
+      const priced = await f.student('Priced', f.a1.id, [f.o.mathsA1]);
+      const unpriced = await f.student('Unpriced', f.a1.id, [
+        f.o.mathsA1,
+        f.o.chemistryA2,
+      ]);
 
       const preview = await f.run({}, 'preview').expect(201);
       expect(preview.body.missingSubjectFees).toEqual([
@@ -505,11 +527,23 @@ describe('Subject-based fees (e2e)', () => {
         }),
       ]);
 
-      const res = await f.run().expect(400);
-      expect(res.body.message).toMatch(
+      const res = await f.run().expect(201);
+      expect(res.body).toMatchObject({ generated: 1, skipped: 1 });
+      expect(res.body.blocked).toEqual([
+        expect.objectContaining({ studentId: unpriced.id }),
+      ]);
+      expect(f.lines(await f.challanOf(priced.id))).toEqual([
+        ['Mathematics', 3000],
+      ]);
+      expect(
+        await prisma.challan.count({ where: { studentId: unpriced.id } }),
+      ).toBe(0);
+
+      // Only the blocked student is left, so the rerun says what to fix.
+      const rerun = await f.run().expect(400);
+      expect(rerun.body.message).toMatch(
         /Subject fee is not set for CHEM01 \(Chemistry\)/,
       );
-      expect(await prisma.challan.count()).toBe(0);
     });
 
     it('blocks a subject that has no code', async () => {

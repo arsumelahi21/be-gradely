@@ -151,7 +151,7 @@ type BillingPlan = {
     rollNo: string | null;
     challanNo: string;
   }[];
-  /** A class billed by subject can't bill these yet — nothing is generated. */
+  /** Skipped until their subjects are priced; the rest of the run is billed. */
   blocked: BlockedStudent[];
   missingSubjectFees: { code: string; name: string }[];
   uncodedSubjects: { subjectId: string; name: string }[];
@@ -190,7 +190,7 @@ const listNames = (names: string[]) =>
     ? names.join(', ')
     : `${names.slice(0, 5).join(', ')} and ${names.length - 5} more`;
 
-/** Why a class billed by subject can't be generated yet, in the admin's terms. */
+/** Why these students can't be billed yet, in the admin's terms. */
 function blockedMessage(plan: BillingPlan): string {
   const parts: string[] = [];
   if (plan.missingSubjectFees.length) {
@@ -370,11 +370,12 @@ export class ChallansService extends BaseSchoolScopedService {
       // them as skipped rather than failing.
       const plan = await this.buildPlan(dto, actor, onlyStudentId);
       lastPlan = plan;
-      if (plan.blocked.length) {
-        throw new BadRequestException(blockedMessage(plan));
-      }
 
       if (!plan.toGenerate.length) {
+        // Only blocked students left: say what to fix instead of "0 generated".
+        if (plan.blocked.length) {
+          throw new BadRequestException(blockedMessage(plan));
+        }
         return {
           generated: 0,
           skipped: plan.alreadyBilled.length + plan.skippedOnPlan.length,
@@ -382,6 +383,7 @@ export class ChallansService extends BaseSchoolScopedService {
           challanIds: [] as string[],
           alreadyBilled: plan.alreadyBilled,
           skippedOnPlan: plan.skippedOnPlan,
+          blocked: plan.blocked,
         };
       }
 
@@ -488,6 +490,7 @@ export class ChallansService extends BaseSchoolScopedService {
             ],
             generated: challanIds.length,
             skipped: plan.alreadyBilled.length,
+            blocked: plan.blocked.length,
           },
         });
 
@@ -508,11 +511,15 @@ export class ChallansService extends BaseSchoolScopedService {
 
         return {
           generated: challanIds.length,
-          skipped: plan.alreadyBilled.length + plan.skippedOnPlan.length,
+          skipped:
+            plan.alreadyBilled.length +
+            plan.skippedOnPlan.length +
+            plan.blocked.length,
           failed: 0,
           challanIds,
           alreadyBilled: plan.alreadyBilled,
           skippedOnPlan: plan.skippedOnPlan,
+          blocked: plan.blocked,
         };
       } catch (e) {
         const isDuplicate =
@@ -539,6 +546,7 @@ export class ChallansService extends BaseSchoolScopedService {
       challanIds: [] as string[],
       alreadyBilled: lastPlan?.alreadyBilled ?? [],
       skippedOnPlan: lastPlan?.skippedOnPlan ?? [],
+      blocked: lastPlan?.blocked ?? [],
     };
   }
 
@@ -1028,7 +1036,7 @@ export class ChallansService extends BaseSchoolScopedService {
       // Reported separately from "already billed": these students are not
       // behind, they are simply billed by installment instead.
       skippedOnPlan: plan.skippedOnPlan,
-      // Generate refuses while any student is blocked; the preview says why.
+      // Generate skips these students; the preview says why.
       blocked: plan.blocked,
       missingSubjectFees: plan.missingSubjectFees,
       uncodedSubjects: plan.uncodedSubjects,
@@ -2243,9 +2251,9 @@ export class ChallansService extends BaseSchoolScopedService {
         orderBy: [{ periodYear: 'desc' }, { periodMonth: 'desc' }],
         select: this.listSelect(),
       }),
-      this.prisma.school.findUnique({
+      this.prisma.school.findUniqueOrThrow({
         where: { id: actor.schoolId },
-        select: { currency: true },
+        select: { id: true, name: true, logoMimeType: true, currency: true },
       }),
     ]);
 
@@ -2261,8 +2269,10 @@ export class ChallansService extends BaseSchoolScopedService {
       };
     };
 
+    const { currency, ...schoolInfo } = school;
     return {
-      currency: school?.currency ?? 'PKR',
+      currency,
+      school: schoolInfo,
       children: links.map(({ student }) => ({
         student,
         challans: rows.filter((c) => c.studentId === student.id),

@@ -507,11 +507,33 @@ export class PromotionsService extends BaseSchoolScopedService {
         //    destinations (usually one), never by student count.
         const createdSectionIds = new Map<string, string>();
         for (const section of plan.sectionsToCreate) {
+          // Bill like the destination class's sections when they agree, else
+          // like the section the students leave — never the column default.
+          const siblingModes = await tx.section.findMany({
+            where: { classGradeId: section.classGradeId },
+            distinct: ['feeBillingMode'],
+            select: { feeBillingMode: true },
+          });
+          let feeBillingMode =
+            siblingModes.length === 1
+              ? siblingModes[0].feeBillingMode
+              : undefined;
+          const sourceSectionId = plan.items.find(
+            (i) => i.destinationSectionKey === section.key,
+          )?.sourceSectionId;
+          if (!feeBillingMode && sourceSectionId) {
+            const source = await tx.section.findUnique({
+              where: { id: sourceSectionId },
+              select: { feeBillingMode: true },
+            });
+            feeBillingMode = source?.feeBillingMode;
+          }
           const created = await tx.section.create({
             data: {
               schoolId,
               classGradeId: section.classGradeId,
               name: section.name,
+              ...(feeBillingMode && { feeBillingMode }),
             },
             select: { id: true },
           });

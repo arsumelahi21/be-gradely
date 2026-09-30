@@ -136,6 +136,11 @@ describe('Parent fee statement (e2e)', () => {
       outstanding: 12000,
     });
     expect(res.body.currency).toBe('PKR');
+    expect(res.body.school).toEqual({
+      id: f.school.id,
+      name: f.school.name,
+      logoMimeType: null,
+    });
   });
 
   it('shows every month of the year when no month is chosen, and keeps other years out', async () => {
