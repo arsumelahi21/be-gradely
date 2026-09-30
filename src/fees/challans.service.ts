@@ -45,6 +45,7 @@ import {
 
 import { InstallmentPlansService } from './installment-plans.service';
 import { GenerateChallansDto } from './dto/generate-challans.dto';
+import { ParentStatementQueryDto } from './dto/parent-statement-query.dto';
 import { CreateChallanDto } from './dto/create-challan.dto';
 import {
   ChallanCoverageQueryDto,
@@ -2203,6 +2204,71 @@ export class ChallansService extends BaseSchoolScopedService {
     if (!student) throw new NotFoundException('Student not found');
     await this.assertStudentReadable(student, actor);
     return this.studentFeeHistory(student.id);
+  }
+
+  /**
+   * Every linked child's challans side by side, with shared totals. Read-only
+   * and nothing is merged: each challan keeps its own payments, receipts and
+   * status, and is still paid on its own.
+   */
+  async parentStatement(actor: Actor, dto: ParentStatementQueryDto) {
+    if (actor.role !== Role.PARENT || !actor.schoolId) {
+      throw new ForbiddenException('Not allowed');
+    }
+    // The link decides whose fees these are. A studentId from the client only
+    // narrows that set, and one outside it is refused, never trusted.
+    const links = await this.prisma.parentStudent.findMany({
+      where: {
+        parent: { userId: actor.userId },
+        student: { schoolId: actor.schoolId },
+        ...(dto.studentId ? { studentId: dto.studentId } : {}),
+      },
+      orderBy: { student: { fullName: 'asc' } },
+      select: {
+        student: { select: { id: true, fullName: true, rollNo: true } },
+      },
+    });
+    if (dto.studentId && !links.length) {
+      throw new ForbiddenException('Not allowed');
+    }
+
+    const [challans, school] = await Promise.all([
+      this.prisma.challan.findMany({
+        where: {
+          studentId: { in: links.map((l) => l.student.id) },
+          ...(dto.academicYearId && { academicYearId: dto.academicYearId }),
+          ...(dto.periodYear && { periodYear: dto.periodYear }),
+          ...(dto.periodMonth && { periodMonth: dto.periodMonth }),
+        },
+        orderBy: [{ periodYear: 'desc' }, { periodMonth: 'desc' }],
+        select: this.listSelect(),
+      }),
+      this.prisma.school.findUnique({
+        where: { id: actor.schoolId },
+        select: { currency: true },
+      }),
+    ]);
+
+    const rows = challans.map((c) => this.decorate(c));
+    // Same rule as a single child's history: a cancelled challan is shown but
+    // not counted — one carried forward is already in its successor's arrears.
+    const summarize = (list: typeof rows) => {
+      const active = list.filter((c) => c.status !== ChallanStatus.CANCELLED);
+      return {
+        totalBilled: active.reduce((s, c) => s + c.netAmount, 0),
+        totalPaid: active.reduce((s, c) => s + c.paidAmount, 0),
+        outstanding: active.reduce((s, c) => s + c.balance, 0),
+      };
+    };
+
+    return {
+      currency: school?.currency ?? 'PKR',
+      children: links.map(({ student }) => ({
+        student,
+        challans: rows.filter((c) => c.studentId === student.id),
+      })),
+      summary: summarize(rows),
+    };
   }
 
   async myChildren(actor: Actor) {
