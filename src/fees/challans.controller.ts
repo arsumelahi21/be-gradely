@@ -26,6 +26,7 @@ import { StudentFeeHeadsService } from './student-fee-heads.service';
 import { InstallmentPlansService } from './installment-plans.service';
 import { PaymentSubmissionsService } from './payment-submissions.service';
 import { FeeReportQueryDto } from './dto/fee-report-query.dto';
+import { ParentStatementQueryDto } from './dto/parent-statement-query.dto';
 import { SetStudentFeeHeadsDto } from './dto/student-fee-heads.dto';
 import { SetInstallmentPlanDto } from './dto/installment-plan.dto';
 import {
@@ -329,6 +330,12 @@ export class ChallansController {
   @Get('me/children')
   myChildren(@Req() req: any) {
     return this.challans.myChildren(req.user);
+  }
+
+  @Roles(Role.PARENT)
+  @Get('me/statement')
+  parentStatement(@Query() query: ParentStatementQueryDto, @Req() req: any) {
+    return this.challans.parentStatement(req.user, query);
   }
 
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN, Role.PARENT, Role.STUDENT)

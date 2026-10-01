@@ -537,6 +537,53 @@ describe('Class promotion (e2e)', () => {
       expect(created).not.toBeNull();
     });
 
+    it('bills a created section like its class, else like the section the students leave', async () => {
+      const f = await seedPromotionFixture(2);
+      const token = await tokenFor(app, f.admin);
+      const grade7 = await prisma.classGrade.create({
+        data: { schoolId: f.school.id, name: 'Grade 7' },
+      });
+      await prisma.section.updateMany({
+        where: { id: { in: [f.section6a.id, f.section5b.id] } },
+        data: { feeBillingMode: 'SUBJECT' },
+      });
+      await prisma.enrollment.updateMany({
+        where: { studentId: f.students[1].id },
+        data: { sectionId: f.section5b.id },
+      });
+
+      await request(app.getHttpServer())
+        .post('/api/promotions/execute')
+        .set('Authorization', `Bearer ${token}`)
+        .send(
+          plan(f, {
+            createMissingSections: true,
+            students: [
+              {
+                studentId: f.students[0].id,
+                destinationClassGradeId: f.grade6.id,
+                destinationSectionName: 'C',
+              },
+              {
+                studentId: f.students[1].id,
+                destinationClassGradeId: grade7.id,
+                destinationSectionName: 'A',
+              },
+            ],
+          }),
+        )
+        .expect(201);
+
+      const modeOf = async (classGradeId: string, name: string) =>
+        (
+          await prisma.section.findFirstOrThrow({
+            where: { classGradeId, name },
+          })
+        ).feeBillingMode;
+      expect(await modeOf(f.grade6.id, 'C')).toBe('SUBJECT');
+      expect(await modeOf(grade7.id, 'A')).toBe('SUBJECT');
+    });
+
     it('sends selected students to different destination sections in one run', async () => {
       const f = await seedPromotionFixture(2);
       const token = await tokenFor(app, f.admin);
