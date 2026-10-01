@@ -3,6 +3,7 @@ import { AuditModule } from '../audit/audit.module';
 import { SchoolsModule } from '../schools/schools.module';
 import { FeesModule } from '../fees/fees.module';
 import { AttendanceModule } from '../attendance/attendance.module';
+import { AcademicsModule } from '../academics/academics.module';
 import { GroupsController } from './groups.controller';
 import { GroupsService } from './groups.service';
 import { DirectorController } from './director.controller';
@@ -13,9 +14,16 @@ import { DirectorFeesService } from './director-fees.service';
 import { DirectorStudentsService } from './director-students.service';
 import { DirectorAttendanceService } from './director-attendance.service';
 import { DirectorAcademicsService } from './director-academics.service';
+import { DirectorStaffingService } from './director-staffing.service';
 
 @Module({
-  imports: [AuditModule, SchoolsModule, FeesModule, AttendanceModule],
+  imports: [
+    AuditModule,
+    SchoolsModule,
+    FeesModule,
+    AttendanceModule,
+    AcademicsModule,
+  ],
   controllers: [GroupsController, DirectorController],
   providers: [
     GroupsService,
@@ -26,6 +34,7 @@ import { DirectorAcademicsService } from './director-academics.service';
     DirectorStudentsService,
     DirectorAttendanceService,
     DirectorAcademicsService,
+    DirectorStaffingService,
   ],
   exports: [DirectorService],
 })

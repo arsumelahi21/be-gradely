@@ -457,4 +457,52 @@ export class DirectorQueriesService {
       },
     );
   }
+
+  /**
+   * Q1t + QS2: active teachers (both the profile and the login active), and how well the
+   * sections that have students this session are covered by them.
+   */
+  staffing(schoolId: string, academicYearId: string | null) {
+    return this.cached(
+      schoolId,
+      'q1-staffing',
+      { ay: academicYearId },
+      60,
+      async () => {
+        const [row] = await this.prisma.$queryRaw<
+          {
+            teachers: number;
+            offerings: number;
+            uncovered: number;
+            sections: number;
+            noClassTeacher: number;
+          }[]
+        >`
+        WITH active_t AS (
+          SELECT tp."id" FROM "TeacherProfile" tp
+            JOIN "User" u ON u."id" = tp."userId"
+           WHERE tp."schoolId" = ${schoolId} AND tp."isActive" AND u."isActive"
+        ), sec AS (
+          SELECT s."id" FROM "Section" s
+           WHERE s."schoolId" = ${schoolId} AND s."isActive"
+             AND EXISTS (SELECT 1 FROM "Enrollment" e
+                           JOIN "StudentProfile" sp ON sp."id" = e."studentId" AND sp."isActive"
+                           LEFT JOIN "User" u       ON u."id" = sp."userId"
+                          WHERE e."sectionId" = s."id" AND e."academicYearId" = ${academicYearId}
+                            AND e."status" = 'ACTIVE' AND (u."id" IS NULL OR u."isActive"))
+        )
+        SELECT (SELECT COUNT(*) FROM active_t)::int AS teachers,
+               (SELECT COUNT(*) FROM "SectionSubject" ss JOIN sec ON sec."id" = ss."sectionId")::int AS offerings,
+               (SELECT COUNT(*) FROM "SectionSubject" ss JOIN sec ON sec."id" = ss."sectionId"
+                 WHERE ss."teacherId" IS NULL
+                    OR ss."teacherId" NOT IN (SELECT "id" FROM active_t))::int AS uncovered,
+               (SELECT COUNT(*) FROM sec)::int AS sections,
+               (SELECT COUNT(*) FROM sec
+                 WHERE NOT EXISTS (SELECT 1 FROM "SectionTeacher" st
+                                    WHERE st."sectionId" = sec."id" AND st."isPrimary"
+                                      AND st."teacherId" IN (SELECT "id" FROM active_t)))::int AS "noClassTeacher"`;
+        return row;
+      },
+    );
+  }
 }
