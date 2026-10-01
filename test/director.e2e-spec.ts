@@ -166,6 +166,7 @@ describe('Directors and school groups (e2e)', () => {
           'GET /director/insights/attendance/lists',
           'GET /director/insights/academics',
           'GET /director/insights/staffing',
+          'GET /director/principals',
           'GET /notifications',
           'GET /notifications/unread-count',
           'DELETE /notifications',

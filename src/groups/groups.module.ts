@@ -15,6 +15,7 @@ import { DirectorStudentsService } from './director-students.service';
 import { DirectorAttendanceService } from './director-attendance.service';
 import { DirectorAcademicsService } from './director-academics.service';
 import { DirectorStaffingService } from './director-staffing.service';
+import { DirectorPrincipalsService } from './director-principals.service';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { DirectorStaffingService } from './director-staffing.service';
     DirectorAttendanceService,
     DirectorAcademicsService,
     DirectorStaffingService,
+    DirectorPrincipalsService,
   ],
   exports: [DirectorService],
 })
