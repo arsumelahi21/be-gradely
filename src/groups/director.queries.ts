@@ -505,4 +505,32 @@ export class DirectorQueriesService {
       },
     );
   }
+
+  /** Q9a: active users of each role, and how many of them signed in during the window. */
+  adoption(schoolId: string, range: RangeWindow) {
+    const { from, to } = range.window;
+    return this.cached(
+      schoolId,
+      'q9-adoption',
+      { from, to },
+      rangeTtl(range.days),
+      () =>
+        this.prisma.$queryRaw<
+          { role: string; active: number; signedIn: number }[]
+        >`
+          WITH logins AS (
+            SELECT DISTINCT l."actorUserId"
+              FROM "AuditLog" l
+             WHERE l."schoolId" = ${schoolId} AND l."action" = 'LOGIN'
+               AND l."createdAt" >= ${range.start} AND l."createdAt" < ${range.endExclusive}
+          )
+          SELECT u."role"::text AS role, COUNT(*)::int AS active,
+                 COUNT(lg."actorUserId")::int AS "signedIn"
+            FROM "User" u
+            LEFT JOIN logins lg ON lg."actorUserId" = u."id"
+           WHERE u."schoolId" = ${schoolId} AND u."isActive"
+             AND u."role" IN ('TEACHER', 'PARENT', 'STUDENT')
+           GROUP BY u."role"`,
+    );
+  }
 }

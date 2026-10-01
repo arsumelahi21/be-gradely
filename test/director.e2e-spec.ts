@@ -167,6 +167,7 @@ describe('Directors and school groups (e2e)', () => {
           'GET /director/insights/academics',
           'GET /director/insights/staffing',
           'GET /director/principals',
+          'GET /director/insights/activity',
           // Messaging: the service limits a director to 1:1 threads in their branches.
           'GET /messaging/threads',
           'POST /messaging/threads',
