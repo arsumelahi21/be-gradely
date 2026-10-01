@@ -64,6 +64,7 @@ describe('Director messaging (e2e)', () => {
       parent,
       student,
       foreignPrincipal,
+      sa,
       saToken: await tokenFor(app, sa),
       dToken: login.body.accessToken as string,
       pToken: await tokenFor(app, principal),
@@ -254,5 +255,43 @@ describe('Director messaging (e2e)', () => {
     expect((await report(fx.parentToken, fx.director.id)).status).toBe(201);
     expect((await report(fx.dToken, fx.teacher.id)).status).toBe(201);
     expect((await report(fx.dToken, fx.foreignPrincipal.id)).status).toBe(404);
+
+    // Both reports go above the school: the super admin is told, the branch principal is not.
+    let notified: { userId: string }[] = [];
+    for (let i = 0; i < 40 && notified.length < 2; i++) {
+      notified = await prisma.notification.findMany({
+        where: { type: 'USER_REPORT' },
+        select: { userId: true },
+      });
+      if (notified.length < 2) await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(notified.map((n) => n.userId)).toEqual([fx.sa.id, fx.sa.id]);
+
+    // And neither shows in the branch audit log the principal can read.
+    let rows = 0;
+    for (let i = 0; i < 40 && rows < 2; i++) {
+      rows = await prisma.auditLog.count({ where: { action: 'USER_REPORT' } });
+      if (rows < 2) await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(rows).toBe(2);
+    const principalLog = await api().get('/api/audit-logs').set(as(fx.pToken));
+    expect(JSON.stringify(principalLog.body)).not.toContain('USER_REPORT');
+  });
+
+  it('keeps a suspended branch’s chats readable but closed to new messages', async () => {
+    const fx = await fixture();
+    const thread = await openDirect(fx.dToken, fx.principal.id);
+    expect((await send(fx.dToken, thread.body.id, 'Hello')).status).toBe(201);
+    await prisma.school.update({
+      where: { id: fx.a.id },
+      data: { isActive: false },
+    });
+
+    expect(
+      (await api().get('/api/messaging/threads').set(as(fx.dToken))).body.total,
+    ).toBe(1);
+    expect((await send(fx.dToken, thread.body.id, 'Still there?')).status).toBe(
+      404,
+    );
   });
 });

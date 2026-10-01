@@ -171,17 +171,25 @@ export class MessagingService extends BaseSchoolScopedService {
   }
 
   /** A director sees only 1:1 threads of their current branches; everyone else is unchanged. */
-  private async directorThreadWhere(actor: Actor) {
-    const branches = await this.directorBranches(actor);
+  private async directorThreadWhere(actor: Actor, activeOnly = false) {
+    const branches = await this.directorBranches(actor, activeOnly);
     return branches
       ? { type: ThreadType.DIRECT, schoolId: { in: branches } }
       : {};
   }
 
-  private async assertDirectorThread(threadId: string, actor: Actor) {
+  /** activeOnly: a suspended branch's old chats stay readable, but nothing new goes into them. */
+  private async assertDirectorThread(
+    threadId: string,
+    actor: Actor,
+    activeOnly = false,
+  ) {
     if (actor.role !== Role.DIRECTOR) return;
     const thread = await this.prisma.messageThread.findFirst({
-      where: { id: threadId, ...(await this.directorThreadWhere(actor)) },
+      where: {
+        id: threadId,
+        ...(await this.directorThreadWhere(actor, activeOnly)),
+      },
       select: { id: true },
     });
     if (!thread) throw new NotFoundException('Thread not found');
@@ -192,17 +200,17 @@ export class MessagingService extends BaseSchoolScopedService {
    * included). Across schools only super-admin<->school-admin and a director<->their branches.
    */
   private async assertCanReach(actor: Actor, recipient: UserContext) {
-    if (!canMessage(actor.role, recipient.role)) {
-      throw new ForbiddenException('You are not allowed to message this user');
-    }
-    // A director reaches staff and parents of their own active branches; anyone else is a 404,
-    // so a probe never confirms that another school's user exists.
+    // A director reaches staff and parents of their own active branches. Outside them it is a
+    // 404 before the role check, so a probe confirms neither that a user exists nor their role.
     if (actor.role === Role.DIRECTOR) {
       const branches = await this.directorBranches(actor, true);
       if (!recipient.schoolId || !branches!.includes(recipient.schoolId))
         throw new NotFoundException('Recipient not found');
-      return;
     }
+    if (!canMessage(actor.role, recipient.role)) {
+      throw new ForbiddenException('You are not allowed to message this user');
+    }
+    if (actor.role === Role.DIRECTOR) return;
     if (recipient.role === Role.DIRECTOR) {
       const serves = await this.prisma.user.findFirst({
         where: {
@@ -470,8 +478,9 @@ export class MessagingService extends BaseSchoolScopedService {
       if (!recipient || !recipient.isActive) {
         throw new NotFoundException('A selected recipient was not found');
       }
-      this.assertNotDirector(recipient);
+      // After the reach check, so only a director the caller can already reach is named here.
       await this.assertCanReach(actor, recipient);
+      this.assertNotDirector(recipient);
       schoolId = schoolId ?? recipient.schoolId;
     }
     if (!schoolId) throw new BadRequestException('No school context');
@@ -573,8 +582,8 @@ export class MessagingService extends BaseSchoolScopedService {
       if (!recipient || !recipient.isActive) {
         throw new NotFoundException('A selected user was not found');
       }
-      this.assertNotDirector(recipient);
       await this.assertCanReach(actor, recipient); // same rules as a 1:1
+      this.assertNotDirector(recipient);
       toAdd.push(id);
     }
     if (toAdd.length) {
@@ -667,11 +676,13 @@ export class MessagingService extends BaseSchoolScopedService {
       throw new NotFoundException('User not found');
     }
 
-    // A director's report, like an admin's, goes to the super admin above them.
+    // Reports by an admin or director, and any report about a director, go to the super admin:
+    // a director's own principals are the wrong people to judge them.
     const escalatingAdmin =
       actor.role === Role.SCHOOL_ADMIN ||
       actor.role === Role.SUPER_ADMIN ||
-      actor.role === Role.DIRECTOR;
+      actor.role === Role.DIRECTOR ||
+      reported.role === Role.DIRECTOR;
     if (!escalatingAdmin && !actor.schoolId) {
       throw new BadRequestException('No school context');
     }
@@ -704,8 +715,11 @@ export class MessagingService extends BaseSchoolScopedService {
       };
       this.eventEmitter.emit(NOTIFICATION_CREATE, event);
     }
+    // A school's audit log is open to its principals, so a report escalated above them is kept
+    // off it: otherwise the reported principal would read who reported them and why.
+    const aboveTheSchool = !actor.schoolId || reported.role === Role.DIRECTOR;
     void this.audit.record(actor.userId, 'USER_REPORT', {
-      schoolId: actor.schoolId ?? reported.schoolId ?? undefined,
+      schoolId: aboveTheSchool ? null : actor.schoolId,
       entityType: 'User',
       entityId: dto.reportedUserId,
       metadata: { reason, reportedRole: reported.role, threadId: dto.threadId },
@@ -1275,6 +1289,7 @@ export class MessagingService extends BaseSchoolScopedService {
 
   async sendMessage(threadId: string, dto: SendMessageDto, actor: Actor) {
     await this.assertParticipant(threadId, actor);
+    await this.assertDirectorThread(threadId, actor, true);
 
     // A student may message a school admin only on their turn (open, or after the
     // admin replies). ponytail: turn-taking over the existing thread, no separate request/ticket entity.
