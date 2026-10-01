@@ -92,6 +92,12 @@ export interface ComputedChallan {
   grossAmount: number;
   discountAmount: number;
   netAmount: number;
+  /**
+   * THIS period's own charges, before the discount and WITHOUT arrears. Zero
+   * means nothing was charged at all, which is not the same as a net of zero:
+   * a full scholarship charges the fees and discounts them away.
+   */
+  currentCharges: number;
 }
 
 /** Defence in depth — the DTOs already enforce Min(0), but money must never go negative. */
@@ -237,6 +243,7 @@ export function computeChallan(input: ComputeChallanInput): ComputedChallan {
     grossAmount,
     discountAmount,
     netAmount: grossAmount - discountAmount,
+    currentCharges,
   };
 }
 

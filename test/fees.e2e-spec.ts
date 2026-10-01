@@ -731,8 +731,54 @@ describe('Fees — challan generation (e2e)', () => {
     expect(undiscounted.netAmount).toBe(500000);
   });
 
-  it('settles a zero-fee challan immediately as PAID', async () => {
-    const cls = await seedBillableClass({ studentCount: 1, fee: 0 });
+  it('refuses to bill a student with nothing to charge, and bills the rest', async () => {
+    const cls = await seedBillableClass({ studentCount: 2 });
+    const [billable, unconfigured] = cls.students;
+    await prisma.studentProfile.update({
+      where: { id: unconfigured.profile.id },
+      data: { monthlyFeeAmount: 0 },
+    });
+
+    const res = await http()
+      .post('/api/fees/challans/generate')
+      .set('Authorization', `Bearer ${cls.adminToken}`)
+      .send(generateBody(cls))
+      .expect(201);
+
+    expect(res.body).toMatchObject({ generated: 1, skipped: 1 });
+    expect(res.body.blocked).toEqual([
+      expect.objectContaining({
+        studentId: unconfigured.profile.id,
+        reason: 'NOTHING_TO_BILL',
+      }),
+    ]);
+    // The month stays free, so it can be billed once the fee is set — an
+    // issued zero challan would have settled as PAID and locked it for good.
+    expect(
+      await prisma.challan.count({
+        where: { studentId: unconfigured.profile.id },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.challan.count({ where: { studentId: billable.profile.id } }),
+    ).toBe(1);
+  });
+
+  it('still bills a fully discounted student, whose challan is their proof', async () => {
+    const cls = await seedBillableClass({ studentCount: 1 });
+    const scholarship = await prisma.discount.create({
+      data: {
+        schoolId: cls.school.id,
+        name: 'Full scholarship',
+        type: 'PERCENT',
+        value: 100,
+        isActive: true,
+      },
+    });
+    await prisma.studentProfile.update({
+      where: { id: cls.students[0].profile.id },
+      data: { discountId: scholarship.id },
+    });
 
     await http()
       .post('/api/fees/challans/generate')
@@ -741,8 +787,9 @@ describe('Fees — challan generation (e2e)', () => {
       .expect(201);
 
     const challan = await prisma.challan.findFirstOrThrow({
-      where: { schoolId: cls.school.id },
+      where: { studentId: cls.students[0].profile.id },
     });
+    expect(challan.grossAmount).toBe(500000);
     expect(challan.netAmount).toBe(0);
     expect(challan.status).toBe('PAID');
   });
