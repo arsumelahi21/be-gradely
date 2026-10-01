@@ -17,6 +17,7 @@ import { DirectorAcademicsService } from './director-academics.service';
 import { DirectorStaffingService } from './director-staffing.service';
 import { DirectorPrincipalsService } from './director-principals.service';
 import { DirectorActivityService } from './director-activity.service';
+import { DirectorOverviewService } from './director-overview.service';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { DirectorActivityService } from './director-activity.service';
     DirectorStaffingService,
     DirectorPrincipalsService,
     DirectorActivityService,
+    DirectorOverviewService,
   ],
   exports: [DirectorService],
 })

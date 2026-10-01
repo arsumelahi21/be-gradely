@@ -13,6 +13,7 @@ import { DirectorAcademicsService } from './director-academics.service';
 import { DirectorStaffingService } from './director-staffing.service';
 import { DirectorPrincipalsService } from './director-principals.service';
 import { DirectorActivityService } from './director-activity.service';
+import { DirectorOverviewService } from './director-overview.service';
 import { InsightsQueryDto } from './dto/insights-query.dto';
 
 // Read-only by design: a director has no write route here, ever.
@@ -29,6 +30,7 @@ export class DirectorController {
     private staffing: DirectorStaffingService,
     private principals: DirectorPrincipalsService,
     private activity: DirectorActivityService,
+    private overview: DirectorOverviewService,
   ) {}
 
   @Get('branches')
@@ -89,5 +91,11 @@ export class DirectorController {
   @Get('insights/activity')
   activityInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
     return this.activity.insights(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/overview')
+  overviewInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.overview.insights(req.directorScope, query);
   }
 }
