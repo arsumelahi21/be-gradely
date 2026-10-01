@@ -97,6 +97,11 @@ export class UsersService {
   }
 
   async create(dto: CreateUserDto, actor: Actor) {
+    // A director needs a groupId, which this DTO cannot carry; the DB CHECK would 500.
+    if (dto.role === Role.DIRECTOR)
+      throw new BadRequestException(
+        'Directors are created from a school group',
+      );
     if (actor.role === Role.SUPER_ADMIN) {
       // SUPER_ADMIN can create anyone, but only SUPER_ADMIN can have null schoolId
       if (dto.role !== Role.SUPER_ADMIN) {
@@ -829,6 +834,17 @@ export class UsersService {
   }
 
   async findById(id: string, actor: Actor) {
+    // The checks below only scope the five original roles; any other role would read every user.
+    if (
+      ![
+        Role.SUPER_ADMIN,
+        Role.SCHOOL_ADMIN,
+        Role.TEACHER,
+        Role.STUDENT,
+        Role.PARENT,
+      ].includes(actor.role)
+    )
+      throw new ForbiddenException('Not allowed');
     const user = await this.prisma.user.findUnique({
       where: { id },
       include: this.defaultUserInclude(),
@@ -951,6 +967,16 @@ export class UsersService {
     // The users/students/teachers lists are cached per school for 5 minutes and are
     // filtered on isActive, so without this they served the old flag until the TTL.
     await this.invalidateRoleCache(user.role, user.schoolId);
+    void this.audit.record(
+      actor.userId,
+      isActive ? 'USER_ACTIVATE' : 'USER_DEACTIVATE',
+      {
+        schoolId: user.schoolId,
+        entityType: 'User',
+        entityId: id,
+        metadata: { role: user.role },
+      },
+    );
     return updated;
   }
 
@@ -981,9 +1007,18 @@ export class UsersService {
       }
     }
 
-    // Only a SUPER_ADMIN has no school. Nulling it on anyone else strands the row outside
-    // every tenant filter: invisible to their own school's lists, editable by nobody.
-    if (dto.schoolId === null && user.role !== Role.SUPER_ADMIN) {
+    // A director belongs to a group, never a school (DB CHECK User_director_group_check).
+    if (user.role === Role.DIRECTOR && dto.schoolId) {
+      throw new BadRequestException('A director cannot be assigned a school');
+    }
+
+    // Only a SUPER_ADMIN (or a DIRECTOR) has no school. Nulling it on anyone else strands the
+    // row outside every tenant filter: invisible to their own school's lists, editable by nobody.
+    if (
+      dto.schoolId === null &&
+      user.role !== Role.SUPER_ADMIN &&
+      user.role !== Role.DIRECTOR
+    ) {
       throw new BadRequestException(
         'Only a super admin can have no school assigned',
       );
@@ -1274,7 +1309,8 @@ export class UsersService {
       }
     } else if (
       user.role === Role.SCHOOL_ADMIN ||
-      user.role === Role.SUPER_ADMIN
+      user.role === Role.SUPER_ADMIN ||
+      user.role === Role.DIRECTOR
     ) {
       const updateData: any = {};
       if (dto.fullName !== undefined) updateData.fullName = dto.fullName;

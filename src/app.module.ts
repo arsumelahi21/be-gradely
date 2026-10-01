@@ -30,6 +30,7 @@ import { SearchModule } from './search/search.module';
 import { AuditModule } from './audit/audit.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { FeesModule } from './fees/fees.module';
+import { GroupsModule } from './groups/groups.module';
 // DEMO module — see AI_CHATBOT_IMPLEMENTATION.md. Delete this import and the
 // ChatbotModule entry below to remove the chatbot entirely.
 import { ChatbotModule } from './chatbot/chatbot.module';
@@ -89,6 +90,7 @@ import { ChatbotModule } from './chatbot/chatbot.module';
     AuditModule,
     DashboardModule,
     FeesModule,
+    GroupsModule,
     ChatbotModule,
   ],
   providers: [

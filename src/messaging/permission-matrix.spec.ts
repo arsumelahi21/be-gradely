@@ -7,6 +7,7 @@ const ALL: Role[] = [
   Role.TEACHER,
   Role.PARENT,
   Role.STUDENT,
+  Role.DIRECTOR,
 ];
 const WITHIN_SCHOOL: Role[] = [
   Role.SCHOOL_ADMIN,
@@ -44,6 +45,14 @@ describe('canMessage permission matrix (open within school)', () => {
       Role.SUPER_ADMIN,
     ]) {
       expect(canMessage(Role.SUPER_ADMIN, r)).toBe(false);
+    }
+  });
+
+  // Director messaging (to their own principals) is not built yet.
+  it('lets nobody message a director, and a director message nobody', () => {
+    for (const r of ALL) {
+      expect(canMessage(Role.DIRECTOR, r)).toBe(false);
+      expect(canMessage(r, Role.DIRECTOR)).toBe(false);
     }
   });
 

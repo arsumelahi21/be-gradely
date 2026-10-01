@@ -32,6 +32,7 @@ export async function createTestSchool(
 export interface CreateTestUserInput {
   role: Role;
   schoolId?: string | null;
+  groupId?: string | null;
   email?: string;
   password?: string;
   fullName?: string;
@@ -46,6 +47,7 @@ export async function createTestUser(input: CreateTestUserInput) {
   const {
     role,
     schoolId = null,
+    groupId = null,
     email = `user-${uniq()}@test.local`,
     password = DEFAULT_PASSWORD,
     fullName = 'Test User',
@@ -56,7 +58,10 @@ export async function createTestUser(input: CreateTestUserInput) {
     password === DEFAULT_PASSWORD
       ? DEFAULT_PASSWORD_HASH
       : await bcrypt.hash(password, 10);
-  const isAdmin = role === Role.SUPER_ADMIN || role === Role.SCHOOL_ADMIN;
+  const isAdmin =
+    role === Role.SUPER_ADMIN ||
+    role === Role.SCHOOL_ADMIN ||
+    role === Role.DIRECTOR;
 
   const user = await prisma.user.create({
     data: {
@@ -64,6 +69,7 @@ export async function createTestUser(input: CreateTestUserInput) {
       passwordHash,
       role: role as any,
       schoolId,
+      groupId,
       isActive,
       ...(isAdmin ? { fullName } : {}),
     },

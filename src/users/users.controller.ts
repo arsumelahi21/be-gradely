@@ -117,6 +117,7 @@ export class UsersController {
     Role.TEACHER,
     Role.STUDENT,
     Role.PARENT,
+    Role.DIRECTOR,
   )
   @Patch('me/password')
   changePassword(@Body() dto: ChangePasswordDto, @Req() req: any) {
@@ -215,6 +216,7 @@ export class UsersController {
     Role.TEACHER,
     Role.STUDENT,
     Role.PARENT,
+    Role.DIRECTOR,
   )
   @Post('me/photo')
   @UseInterceptors(
@@ -236,6 +238,7 @@ export class UsersController {
     Role.TEACHER,
     Role.STUDENT,
     Role.PARENT,
+    Role.DIRECTOR,
   )
   @Delete('me/photo')
   deleteMyPhoto(@Req() req: any) {
@@ -248,6 +251,7 @@ export class UsersController {
     Role.TEACHER,
     Role.STUDENT,
     Role.PARENT,
+    Role.DIRECTOR,
   )
   @Get('me/photo')
   async getMyPhoto(@Req() req: any, @Res() res: Response) {
@@ -266,6 +270,7 @@ export class UsersController {
     Role.TEACHER,
     Role.STUDENT,
     Role.PARENT,
+    Role.DIRECTOR,
   )
   @Get(':id/photo')
   async getUserPhoto(

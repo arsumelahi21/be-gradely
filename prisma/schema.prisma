@@ -66,6 +66,22 @@ model School {
   studentSubjects               StudentSubject[]
   logo                          SchoolLogo?
   subjectFees                   SubjectFee[]
+  groupId                       String?
+  group                         SchoolGroup?         @relation(fields: [groupId], references: [id], onDelete: Restrict)
+
+  @@index([groupId])
+}
+
+// A group of branches (each a normal School tenant) overseen by DIRECTOR users.
+// The CHECK User_director_group_check (raw SQL, invisible to Prisma) pins every
+// User with a groupId to role DIRECTOR and a null schoolId.
+model SchoolGroup {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  schools   School[]
+  directors User[]
 }
 
 // School branding logo — bytes isolated in their own table (like UserPhoto), so
@@ -99,6 +115,8 @@ model User {
   studentProfile        StudentProfile?
   teacherProfile        TeacherProfile?
   school                School?              @relation(fields: [schoolId], references: [id])
+  groupId               String?
+  group                 SchoolGroup?         @relation(fields: [groupId], references: [id], onDelete: Restrict)
   socialLinks           SocialLink[]
   quizzesCreated        Quiz[]
   settings              UserSettings?
@@ -126,6 +144,7 @@ model User {
   // schoolId lookups (leading column), so the standalone [schoolId] is dropped.
   @@index([schoolId, role])
   @@index([role])
+  @@index([groupId])
 }
 
 model UserSettings {
@@ -956,6 +975,7 @@ enum Role {
   TEACHER
   PARENT
   STUDENT
+  DIRECTOR
 }
 
 enum Gender {

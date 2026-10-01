@@ -17,6 +17,8 @@ const ALLOW: Record<Role, ReadonlySet<Role>> = {
   [Role.TEACHER]: WITHIN_SCHOOL,
   [Role.PARENT]: WITHIN_SCHOOL,
   [Role.STUDENT]: WITHIN_SCHOOL,
+  // Director messaging (to their own principals) is not built yet.
+  [Role.DIRECTOR]: new Set(),
 };
 
 export function canMessage(senderRole: Role, recipientRole: Role): boolean {

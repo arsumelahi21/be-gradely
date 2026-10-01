@@ -15,4 +15,5 @@ export const ALL_ROLES: Role[] = [
   Role.TEACHER,
   Role.PARENT,
   Role.STUDENT,
+  Role.DIRECTOR,
 ];
