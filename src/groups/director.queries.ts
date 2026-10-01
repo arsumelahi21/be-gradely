@@ -13,6 +13,10 @@ export const PAYMENT_METHODS = [
 ] as const;
 export type PaymentMethodKey = (typeof PAYMENT_METHODS)[number];
 
+// 00 §7: a student is at risk below 75% attendance once they have at least 10 marks.
+export const CHRONIC_MIN_MARKS = 10;
+const CHRONIC_RATE_PCT = 75;
+
 export interface EnrolmentRow {
   sectionId: string;
   classGradeId: string;
@@ -253,5 +257,127 @@ export class DirectorQueriesService {
         }));
       },
     );
+  }
+
+  /**
+   * Q5: canonical enrolled students whose attendance in the window is below the floor, among
+   * those with enough marks to judge. Integer maths, so exactly 75% is not "below".
+   */
+  attendanceRisk(schoolId: string, academicYearId: string, range: RangeWindow) {
+    const { from, to } = range.window;
+    return this.cached(
+      schoolId,
+      'q5-risk',
+      { ay: academicYearId, from, to },
+      300,
+      async () => {
+        const [row] = await this.prisma.$queryRaw<
+          { enrolled: number; eligible: number; below: number }[]
+        >(Prisma.sql`
+          WITH ${this.riskCtes(schoolId, academicYearId, range)}
+          SELECT (SELECT COUNT(*)::int FROM enrolled) AS enrolled,
+                 COUNT(*) FILTER (WHERE total >= ${CHRONIC_MIN_MARKS})::int AS eligible,
+                 COUNT(*) FILTER (WHERE total >= ${CHRONIC_MIN_MARKS}
+                                    AND attended * 100 < total * ${CHRONIC_RATE_PCT})::int AS below
+            FROM marks`);
+        return row;
+      },
+    );
+  }
+
+  /** Q5 list: the five students furthest below the floor. Names, so never cached. */
+  attendanceRiskList(
+    schoolId: string,
+    academicYearId: string,
+    range: RangeWindow,
+  ) {
+    return this.prisma.$queryRaw<
+      {
+        fullName: string;
+        className: string;
+        sectionName: string;
+        attended: number;
+        total: number;
+        absent: number;
+      }[]
+    >(Prisma.sql`
+      WITH ${this.riskCtes(schoolId, academicYearId, range)}
+      SELECT sp."fullName", cg."name" AS "className", s."name" AS "sectionName",
+             m.attended, m.total, m.absent
+        FROM marks m
+        JOIN enrolled en          ON en."studentId" = m."studentId"
+        JOIN "StudentProfile" sp  ON sp."id" = m."studentId"
+        JOIN "Section" s          ON s."id" = en."sectionId"
+        JOIN "ClassGrade" cg      ON cg."id" = s."classGradeId"
+       WHERE m.total >= ${CHRONIC_MIN_MARKS} AND m.attended * 100 < m.total * ${CHRONIC_RATE_PCT}
+       ORDER BY m.attended::numeric / m.total, m.absent DESC, sp."fullName"
+       LIMIT 5`);
+  }
+
+  private riskCtes(
+    schoolId: string,
+    academicYearId: string,
+    range: RangeWindow,
+  ) {
+    return Prisma.sql`
+      enrolled AS (
+        SELECT e."studentId", e."sectionId"
+          FROM "Enrollment" e
+          JOIN "Section" s         ON s."id" = e."sectionId" AND s."schoolId" = ${schoolId}
+          JOIN "StudentProfile" sp ON sp."id" = e."studentId" AND sp."isActive"
+          LEFT JOIN "User" u       ON u."id" = sp."userId"
+         WHERE e."academicYearId" = ${academicYearId} AND e."status" = 'ACTIVE'
+           AND (u."id" IS NULL OR u."isActive")
+      ), marks AS (
+        SELECT a."studentId",
+               COUNT(*)::int AS total,
+               COUNT(*) FILTER (WHERE a."status" IN ('PRESENT', 'LATE'))::int AS attended,
+               COUNT(*) FILTER (WHERE a."status" = 'ABSENT')::int AS absent
+          FROM "Attendance" a
+          JOIN enrolled en ON en."studentId" = a."studentId"
+         WHERE a."schoolId" = ${schoolId}
+           AND a."date" >= ${range.start} AND a."date" < ${range.endExclusive}
+         GROUP BY a."studentId"
+      )`;
+  }
+
+  /**
+   * Q6: each section that has students this session, with the last day it took a register.
+   * Marks belong to the section of their section-subject.
+   */
+  sectionRegisters(schoolId: string, academicYearId: string, today: Date) {
+    return this.cached(
+      schoolId,
+      'q6-registers',
+      { ay: academicYearId, today: today.toISOString().slice(0, 10) },
+      60,
+      () =>
+        this.prisma.$queryRaw<
+          { className: string; sectionName: string; lastMarked: Date | null }[]
+        >(Prisma.sql`
+          SELECT cg."name" AS "className", s."name" AS "sectionName",
+                 (SELECT MAX(a."date") FROM "Attendance" a
+                    JOIN "SectionSubject" ss ON ss."id" = a."sectionSubjectId"
+                   WHERE ss."sectionId" = s."id" AND a."schoolId" = ${schoolId}
+                     AND a."date" <= ${today}) AS "lastMarked"
+            FROM "Section" s
+            JOIN "ClassGrade" cg ON cg."id" = s."classGradeId"
+           WHERE s."schoolId" = ${schoolId} AND s."isActive"
+             AND EXISTS (SELECT 1 FROM "Enrollment" e
+                           JOIN "StudentProfile" sp ON sp."id" = e."studentId" AND sp."isActive"
+                           LEFT JOIN "User" u       ON u."id" = sp."userId"
+                          WHERE e."sectionId" = s."id" AND e."academicYearId" = ${academicYearId}
+                            AND e."status" = 'ACTIVE' AND (u."id" IS NULL OR u."isActive"))
+           ORDER BY cg."level" NULLS LAST, cg."name", s."name"`),
+    );
+  }
+
+  /** Empty or missing means the app default (Monday to Saturday). */
+  async workingDays(schoolId: string): Promise<string[]> {
+    const config = await this.prisma.timetableConfig.findUnique({
+      where: { schoolId },
+      select: { workingDays: true },
+    });
+    return config?.workingDays ?? [];
   }
 }

@@ -121,3 +121,28 @@ export function lastTwelveMonths(now: Date): { months: string[]; start: Date } {
 
 export const daysSince = (from: Date, now: Date) =>
   Math.floor((now.getTime() - from.getTime()) / DAY_MS);
+
+const WEEKDAYS = [
+  'SUNDAY',
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY',
+];
+// The app's own default when a school never saved a timetable config (timetable.service.ts).
+const DEFAULT_WORKING_DAYS = WEEKDAYS.slice(1);
+
+/** The nth most recent working day on or before today (UTC); n = 1 is today if it is one. */
+export function nthWorkingDayBack(
+  workingDays: string[],
+  today: Date,
+  n: number,
+): Date {
+  const days = new Set(workingDays.length ? workingDays : DEFAULT_WORKING_DAYS);
+  let day = utcDay(today);
+  for (let found = 0; ; day = new Date(day.getTime() - DAY_MS)) {
+    if (days.has(WEEKDAYS[day.getUTCDay()]) && ++found === n) return day;
+  }
+}

@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import {
   lastTwelveMonths,
+  nthWorkingDayBack,
   pickYear,
   rangeTtl,
   ratio,
@@ -101,5 +102,24 @@ describe('lastTwelveMonths', () => {
     expect(months[0]).toBe('2025-11');
     expect(months[11]).toBe('2026-10');
     expect(start.toISOString()).toBe('2025-11-01T00:00:00.000Z');
+  });
+});
+
+describe('nthWorkingDayBack', () => {
+  // 2026-10-08 is a Thursday.
+  it('counts back over working days only, today included', () => {
+    const monFri = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'];
+    expect(nthWorkingDayBack(monFri, NOW, 1).toISOString().slice(0, 10)).toBe(
+      '2026-10-08',
+    );
+    expect(nthWorkingDayBack(monFri, NOW, 5).toISOString().slice(0, 10)).toBe(
+      '2026-10-02',
+    );
+  });
+
+  it('falls back to Monday to Saturday when a school saved no working days', () => {
+    expect(nthWorkingDayBack([], NOW, 5).toISOString().slice(0, 10)).toBe(
+      '2026-10-03',
+    );
   });
 });
