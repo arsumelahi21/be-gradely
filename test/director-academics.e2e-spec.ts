@@ -73,9 +73,7 @@ describe('Director academics insights (e2e)', () => {
     const exam = (
       sectionId: string,
       ssId: string,
-      extra: Parameters<typeof seedExamination>[0] extends infer O
-        ? Partial<O>
-        : never,
+      extra: Partial<Parameters<typeof seedExamination>[0]>,
     ) =>
       seedExamination({
         schoolId: a.id,
