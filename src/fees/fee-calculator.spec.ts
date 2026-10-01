@@ -43,6 +43,36 @@ describe('computeChallan', () => {
     expect(r.netAmount).toBe(0);
   });
 
+  it('separates a challan that charges nothing from one discounted to nothing', () => {
+    const nothing = computeChallan({ monthlyFeeAmount: 0, feeHeads: [] });
+    expect(nothing.currentCharges).toBe(0);
+
+    const scholarship = computeChallan({
+      monthlyFeeAmount: 500000,
+      feeHeads: [],
+      discount: {
+        id: 'd1',
+        name: 'Full Scholarship',
+        type: DiscountType.PERCENT,
+        value: 100,
+      },
+    });
+    // Both net 0; only the first has nothing to charge, and generation keys on
+    // that — the scholarship challan is the parent's proof of the award.
+    expect(scholarship.netAmount).toBe(0);
+    expect(scholarship.currentCharges).toBe(500000);
+  });
+
+  it('leaves arrears out of currentCharges, so a carry-forward alone is not a bill', () => {
+    const r = computeChallan({
+      monthlyFeeAmount: 0,
+      feeHeads: [],
+      arrears: { amount: 250000, label: 'Arrears' },
+    });
+    expect(r.grossAmount).toBe(250000);
+    expect(r.currentCharges).toBe(0);
+  });
+
   it('adds one line per active fee head and sums the gross', () => {
     const r = computeChallan({
       monthlyFeeAmount: 500000,

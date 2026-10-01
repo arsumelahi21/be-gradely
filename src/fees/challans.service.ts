@@ -109,7 +109,7 @@ type BlockedStudent = {
   studentId: string;
   fullName: string;
   rollNo: string | null;
-  reason: 'NO_SUBJECTS' | 'SUBJECT_FEE_MISSING';
+  reason: 'NO_SUBJECTS' | 'SUBJECT_FEE_MISSING' | 'NOTHING_TO_BILL';
   /** The subjects with no fee (or no code), for SUBJECT_FEE_MISSING. */
   subjects: string[];
 };
@@ -208,6 +208,12 @@ function blockedMessage(plan: BillingPlan): string {
   if (noSubjects.length) {
     parts.push(
       `${listNames(noSubjects.map((b) => b.fullName))} ${noSubjects.length === 1 ? 'has' : 'have'} no subjects for ${plan.academicYearName}, so there is nothing to bill. Choose their subjects first.`,
+    );
+  }
+  const nothing = plan.blocked.filter((b) => b.reason === 'NOTHING_TO_BILL');
+  if (nothing.length) {
+    parts.push(
+      `${listNames(nothing.map((b) => b.fullName))} ${nothing.length === 1 ? 'has' : 'have'} no fee to charge for ${plan.academicYearName} — no monthly fee, no fee heads and no priced subjects. Set their fee first; a challan for nothing would settle as paid and lock the month.`,
     );
   }
   return parts.join(' ');
@@ -806,6 +812,31 @@ export class ChallansService extends BaseSchoolScopedService {
           Math.min(school.feeDueDayOfMonth, 28),
         );
 
+    const candidates = roster
+      .filter((s) => !billedIds.has(s.id) && !blockedIds.has(s.id))
+      .map((student) => ({
+        student,
+        computed: computeChallan({
+          monthlyFeeAmount: student.monthlyFeeAmount,
+          subjects: bySubject.charges.get(student.id) ?? null,
+          extraSubjects: bySubject.extras.get(student.id) ?? null,
+          feeHeads,
+          // Per-student heads. The resulting amounts are copied onto
+          // ChallanItem, so a later override edit can't rewrite this bill.
+          overrides: overridesByStudent.get(student.id) ?? null,
+          discount: student.discount,
+          arrears: arrearsFor(arrearsByStudent.get(student.id)),
+        }),
+        arrears: arrearsByStudent.get(student.id) ?? null,
+      }));
+
+    // A challan charging nothing is born PAID and the period's unique index
+    // then locks that month for good, so an unset fee would be unrecoverable.
+    // `currentCharges`, not `netAmount`: a full scholarship charges the fees and
+    // discounts them away, and that challan is the parent's proof of the award.
+    const hasCharges = (r: (typeof candidates)[number]) =>
+      r.computed.currentCharges > 0;
+
     return {
       schoolId,
       currency: school.currency,
@@ -832,23 +863,7 @@ export class ChallansService extends BaseSchoolScopedService {
       issueDate,
       dueDate,
       bankAccountId,
-      toGenerate: roster
-        .filter((s) => !billedIds.has(s.id) && !blockedIds.has(s.id))
-        .map((student) => ({
-          student,
-          computed: computeChallan({
-            monthlyFeeAmount: student.monthlyFeeAmount,
-            subjects: bySubject.charges.get(student.id) ?? null,
-            extraSubjects: bySubject.extras.get(student.id) ?? null,
-            feeHeads,
-            // Per-student heads. The resulting amounts are copied onto
-            // ChallanItem, so a later override edit can't rewrite this bill.
-            overrides: overridesByStudent.get(student.id) ?? null,
-            discount: student.discount,
-            arrears: arrearsFor(arrearsByStudent.get(student.id)),
-          }),
-          arrears: arrearsByStudent.get(student.id) ?? null,
-        })),
+      toGenerate: candidates.filter(hasCharges),
       alreadyBilled: roster
         .filter((s) => billedIds.has(s.id))
         .map((s) => ({
@@ -857,7 +872,20 @@ export class ChallansService extends BaseSchoolScopedService {
           rollNo: s.rollNo,
           challanNo: billedIds.get(s.id)!,
         })),
-      blocked: bySubject.blocked,
+      blocked: [
+        ...bySubject.blocked,
+        // Arrears alone are not a bill: billing a carry-forward would consume
+        // the month just as surely as a zero challan.
+        ...candidates
+          .filter((r) => !hasCharges(r))
+          .map(({ student }) => ({
+            studentId: student.id,
+            fullName: student.fullName,
+            rollNo: student.rollNo,
+            reason: 'NOTHING_TO_BILL' as const,
+            subjects: [],
+          })),
+      ],
       missingSubjectFees: bySubject.missingSubjectFees,
       uncodedSubjects: bySubject.uncodedSubjects,
       skippedOnPlan,
