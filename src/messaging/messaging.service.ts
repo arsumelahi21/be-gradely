@@ -22,6 +22,7 @@ import {
 import { resolvePagination } from '../common/dto/pagination-query.dto';
 import { canMessage } from './permission-matrix';
 import { AuditLogService } from '../audit/audit.service';
+import { DirectorService } from '../groups/director.service';
 import { CreateThreadDto } from './dto/create-thread.dto';
 import { BroadcastMessageDto } from './dto/broadcast-message.dto';
 import { ReportUserDto } from './dto/report-user.dto';
@@ -101,6 +102,7 @@ export class MessagingService extends BaseSchoolScopedService {
     private readonly s3: S3PresignService,
     private readonly eventEmitter: EventEmitter2,
     private readonly audit: AuditLogService,
+    private readonly director: DirectorService,
   ) {
     super(prisma);
   }
@@ -156,12 +158,64 @@ export class MessagingService extends BaseSchoolScopedService {
   }
 
   /**
+   * A director's branches, re-read on every call: a detach, deactivation, logout or password
+   * reset shuts them out on their next request (401 via scope()). Null for everyone else.
+   */
+  private async directorBranches(
+    actor: Actor,
+    activeOnly = false,
+  ): Promise<string[] | null> {
+    if (actor.role !== Role.DIRECTOR) return null;
+    const { branches } = await this.director.scope(actor.userId);
+    return branches.filter((b) => !activeOnly || b.isActive).map((b) => b.id);
+  }
+
+  /** A director sees only 1:1 threads of their current branches; everyone else is unchanged. */
+  private async directorThreadWhere(actor: Actor) {
+    const branches = await this.directorBranches(actor);
+    return branches
+      ? { type: ThreadType.DIRECT, schoolId: { in: branches } }
+      : {};
+  }
+
+  private async assertDirectorThread(threadId: string, actor: Actor) {
+    if (actor.role !== Role.DIRECTOR) return;
+    const thread = await this.prisma.messageThread.findFirst({
+      where: { id: threadId, ...(await this.directorThreadWhere(actor)) },
+      select: { id: true },
+    });
+    if (!thread) throw new NotFoundException('Thread not found');
+  }
+
+  /**
    * Authorization to open a DIRECT thread: open within a school (any role, students
-   * included); the one cross-school pair is super-admin<->school-admin, gated by the role matrix.
+   * included). Across schools only super-admin<->school-admin and a director<->their branches.
    */
   private async assertCanReach(actor: Actor, recipient: UserContext) {
     if (!canMessage(actor.role, recipient.role)) {
       throw new ForbiddenException('You are not allowed to message this user');
+    }
+    // A director reaches staff and parents of their own active branches; anyone else is a 404,
+    // so a probe never confirms that another school's user exists.
+    if (actor.role === Role.DIRECTOR) {
+      const branches = await this.directorBranches(actor, true);
+      if (!recipient.schoolId || !branches!.includes(recipient.schoolId))
+        throw new NotFoundException('Recipient not found');
+      return;
+    }
+    if (recipient.role === Role.DIRECTOR) {
+      const serves = await this.prisma.user.findFirst({
+        where: {
+          id: recipient.id,
+          isActive: true,
+          group: {
+            schools: { some: { id: actor.schoolId ?? '', isActive: true } },
+          },
+        },
+        select: { id: true },
+      });
+      if (!serves) throw new NotFoundException('Recipient not found');
+      return;
     }
     // Super-admin has no school; the role matrix limits this branch to the
     // super-admin ↔ school-admin pair, allowed across schools.
@@ -205,13 +259,14 @@ export class MessagingService extends BaseSchoolScopedService {
     }
   }
 
-  private async assertParticipant(threadId: string, userId: string) {
+  private async assertParticipant(threadId: string, actor: Actor) {
     const p = await this.prisma.threadParticipant.findUnique({
-      where: { threadId_userId: { threadId, userId } },
+      where: { threadId_userId: { threadId, userId: actor.userId } },
       select: { id: true },
     });
     if (!p)
       throw new ForbiddenException('You are not a participant of this thread');
+    await this.assertDirectorThread(threadId, actor);
   }
 
   // ---- thread creation ---------------------------------------------------
@@ -373,7 +428,15 @@ export class MessagingService extends BaseSchoolScopedService {
     return userIds;
   }
 
-  /** Group threads and the "message individually" broadcast are staff-only. */
+  /** A director is only ever in 1:1 threads, never a group or class one (threat model M8). */
+  private assertNotDirector(recipient: UserContext) {
+    if (recipient.role === Role.DIRECTOR)
+      throw new ForbiddenException(
+        'A director can only be messaged one to one',
+      );
+  }
+
+  /** Group threads are staff-only. */
   private assertCanCreateGroup(actor: Actor) {
     if (
       ![Role.TEACHER, Role.SCHOOL_ADMIN, Role.SUPER_ADMIN].includes(actor.role)
@@ -407,6 +470,7 @@ export class MessagingService extends BaseSchoolScopedService {
       if (!recipient || !recipient.isActive) {
         throw new NotFoundException('A selected recipient was not found');
       }
+      this.assertNotDirector(recipient);
       await this.assertCanReach(actor, recipient);
       schoolId = schoolId ?? recipient.schoolId;
     }
@@ -438,7 +502,16 @@ export class MessagingService extends BaseSchoolScopedService {
    * thread (reuses createDirectThread + sendMessage). Staff-only, text-only.
    */
   async broadcast(dto: BroadcastMessageDto, actor: Actor) {
-    this.assertCanCreateGroup(actor);
+    if (
+      ![
+        Role.TEACHER,
+        Role.SCHOOL_ADMIN,
+        Role.SUPER_ADMIN,
+        Role.DIRECTOR,
+      ].includes(actor.role)
+    ) {
+      throw new ForbiddenException('Only staff can send to several people');
+    }
     const body = dto.body?.trim() ?? '';
     if (!body) throw new BadRequestException('Message body is required');
     const ids = [...new Set(dto.recipientUserIds)].filter(
@@ -446,6 +519,13 @@ export class MessagingService extends BaseSchoolScopedService {
     );
     if (ids.length === 0) {
       throw new BadRequestException('Pick at least one recipient');
+    }
+    // Check every recipient before sending to any, so a bad id never leaves a half-sent batch.
+    for (const id of ids) {
+      const recipient = await this.loadUserContext(id);
+      if (!recipient || !recipient.isActive)
+        throw new NotFoundException('Recipient not found');
+      await this.assertCanReach(actor, recipient);
     }
     const threadIds: string[] = [];
     for (const id of ids) {
@@ -468,7 +548,7 @@ export class MessagingService extends BaseSchoolScopedService {
       throw new BadRequestException('Only group threads can be edited');
     }
     this.enforceScope(actor, thread.schoolId);
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
     return thread;
   }
 
@@ -493,6 +573,7 @@ export class MessagingService extends BaseSchoolScopedService {
       if (!recipient || !recipient.isActive) {
         throw new NotFoundException('A selected user was not found');
       }
+      this.assertNotDirector(recipient);
       await this.assertCanReach(actor, recipient); // same rules as a 1:1
       toAdd.push(id);
     }
@@ -556,7 +637,7 @@ export class MessagingService extends BaseSchoolScopedService {
    * row kept). A new message un-hides it, resurfacing as fresh for the deleter, unchanged for the other side.
    */
   async leaveThread(threadId: string, actor: Actor) {
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
     await this.prisma.threadParticipant.update({
       where: { threadId_userId: { threadId, userId: actor.userId } },
       data: { hidden: true, clearedAt: new Date() },
@@ -575,17 +656,22 @@ export class MessagingService extends BaseSchoolScopedService {
     const reported = await this.loadUserContext(dto.reportedUserId);
     // Same 404 assertCanReach uses: a 201/404 split on a foreign id would confirm it exists,
     // and the report itself carried that user's name into another school's notifications.
-    if (
-      !reported ||
-      (actor.role !== Role.SUPER_ADMIN &&
-        reported.role !== Role.SUPER_ADMIN &&
-        reported.schoolId !== actor.schoolId)
-    ) {
+    const visible =
+      !!reported &&
+      (actor.role === Role.DIRECTOR || reported.role === Role.DIRECTOR
+        ? await this.directorPairReachable(actor, reported)
+        : actor.role === Role.SUPER_ADMIN ||
+          reported.role === Role.SUPER_ADMIN ||
+          reported.schoolId === actor.schoolId);
+    if (!reported || !visible) {
       throw new NotFoundException('User not found');
     }
 
+    // A director's report, like an admin's, goes to the super admin above them.
     const escalatingAdmin =
-      actor.role === Role.SCHOOL_ADMIN || actor.role === Role.SUPER_ADMIN;
+      actor.role === Role.SCHOOL_ADMIN ||
+      actor.role === Role.SUPER_ADMIN ||
+      actor.role === Role.DIRECTOR;
     if (!escalatingAdmin && !actor.schoolId) {
       throw new BadRequestException('No school context');
     }
@@ -627,6 +713,22 @@ export class MessagingService extends BaseSchoolScopedService {
     return { reported: true };
   }
 
+  /** Reporting either way between a director and someone in one of their branches. */
+  private async directorPairReachable(actor: Actor, reported: UserContext) {
+    if (actor.role === Role.DIRECTOR) {
+      const branches = await this.directorBranches(actor);
+      return !!reported.schoolId && branches!.includes(reported.schoolId);
+    }
+    const serves = await this.prisma.user.findFirst({
+      where: {
+        id: reported.id,
+        group: { schools: { some: { id: actor.schoolId ?? '' } } },
+      },
+      select: { id: true },
+    });
+    return !!serves;
+  }
+
   // ---- recipient discovery (for the "new message" picker) ----------------
 
   /**
@@ -640,6 +742,7 @@ export class MessagingService extends BaseSchoolScopedService {
       fullName: true,
       email: true,
       role: true,
+      schoolId: true,
       studentProfile: {
         select: { id: true, rollNo: true, photoMimeType: true, fullName: true },
       },
@@ -651,6 +754,7 @@ export class MessagingService extends BaseSchoolScopedService {
       fullName: string | null;
       email: string;
       role: string;
+      schoolId: string | null;
       studentProfile: {
         id: string;
         rollNo: string | null;
@@ -666,12 +770,15 @@ export class MessagingService extends BaseSchoolScopedService {
     const staff =
       actor.role === Role.SUPER_ADMIN ||
       actor.role === Role.SCHOOL_ADMIN ||
-      actor.role === Role.TEACHER;
+      actor.role === Role.TEACHER ||
+      actor.role === Role.DIRECTOR;
     const toRecipient = (u: Row) => ({
       id: u.id,
       fullName: resolveUserName(u),
       email: staff ? u.email : '',
       role: u.role as Role,
+      // Lets a director tell apart people with the same name in different branches.
+      schoolId: u.schoolId,
       rollNo: u.studentProfile?.rollNo ?? null,
       studentProfileId: u.studentProfile?.id ?? null,
       hasPhoto: !!u.studentProfile?.photoMimeType,
@@ -697,6 +804,20 @@ export class MessagingService extends BaseSchoolScopedService {
       return sortByName(admins as Row[]);
     }
 
+    // A director: principals, teachers and parents of their active branches. Never students.
+    if (actor.role === Role.DIRECTOR) {
+      const branches = await this.directorBranches(actor, true);
+      const rows = await this.prisma.user.findMany({
+        where: {
+          isActive: true,
+          schoolId: { in: branches! },
+          role: { in: [Role.SCHOOL_ADMIN, Role.TEACHER, Role.PARENT] as any },
+        },
+        select,
+      });
+      return sortByName(rows as Row[]);
+    }
+
     if (!actor.schoolId) return [];
     const schoolId = actor.schoolId;
 
@@ -709,7 +830,13 @@ export class MessagingService extends BaseSchoolScopedService {
         OR: [{ schoolId }],
       };
       if (actor.role === Role.SCHOOL_ADMIN) {
-        where.OR.push({ role: Role.SUPER_ADMIN });
+        where.OR.push(
+          { role: Role.SUPER_ADMIN },
+          {
+            role: Role.DIRECTOR,
+            group: { schools: { some: { id: schoolId } } },
+          },
+        );
       }
       const rows = await this.prisma.user.findMany({ where, select });
       return sortByName(rows as Row[]);
@@ -903,6 +1030,7 @@ export class MessagingService extends BaseSchoolScopedService {
     // keeps pagination exact since it's a plain participant predicate.
     const where = {
       participants: { some: { userId: actor.userId, hidden: false } },
+      ...(await this.directorThreadWhere(actor)),
     };
 
     const [total, threads] = await this.prisma.$transaction([
@@ -935,6 +1063,7 @@ export class MessagingService extends BaseSchoolScopedService {
     const threads = await this.prisma.messageThread.findMany({
       where: {
         participants: { some: { userId: actor.userId, hidden: false } },
+        ...(await this.directorThreadWhere(actor)),
       },
       select: {
         participants: {
@@ -968,6 +1097,7 @@ export class MessagingService extends BaseSchoolScopedService {
   }
 
   async getThread(threadId: string, actor: Actor) {
+    await this.assertDirectorThread(threadId, actor);
     const thread = await this.prisma.messageThread.findUnique({
       where: { id: threadId },
       include: {
@@ -1031,6 +1161,7 @@ export class MessagingService extends BaseSchoolScopedService {
     });
     if (!mine)
       throw new ForbiddenException('You are not a participant of this thread');
+    await this.assertDirectorThread(threadId, actor);
     const { page, pageSize, skip, take } = resolvePagination(query);
 
     // The caller doesn't see: messages before they cleared the chat, nor any
@@ -1143,7 +1274,7 @@ export class MessagingService extends BaseSchoolScopedService {
   // ---- writes ------------------------------------------------------------
 
   async sendMessage(threadId: string, dto: SendMessageDto, actor: Actor) {
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
 
     // A student may message a school admin only on their turn (open, or after the
     // admin replies). ponytail: turn-taking over the existing thread, no separate request/ticket entity.
@@ -1270,7 +1401,7 @@ export class MessagingService extends BaseSchoolScopedService {
     dto: EditMessageDto,
     actor: Actor,
   ) {
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
     const msg = await this.prisma.message.findUnique({
       where: { id: messageId },
       select: { threadId: true, senderId: true, deletedAt: true },
@@ -1298,7 +1429,7 @@ export class MessagingService extends BaseSchoolScopedService {
    * deleted") and drops its attachments + reactions.
    */
   async unsendMessage(threadId: string, messageId: string, actor: Actor) {
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
     const msg = await this.prisma.message.findUnique({
       where: { id: messageId },
       select: { threadId: true, senderId: true, deletedAt: true },
@@ -1324,7 +1455,7 @@ export class MessagingService extends BaseSchoolScopedService {
 
   /** Hide a single message from the caller's own view only ("delete for me"). */
   async deleteMessageForMe(threadId: string, messageId: string, actor: Actor) {
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
     const msg = await this.prisma.message.findUnique({
       where: { id: messageId },
       select: { threadId: true },
@@ -1347,7 +1478,7 @@ export class MessagingService extends BaseSchoolScopedService {
     dto: ReactionDto,
     actor: Actor,
   ) {
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
     const msg = await this.prisma.message.findUnique({
       where: { id: messageId },
       select: { threadId: true, deletedAt: true, senderId: true, body: true },
@@ -1413,7 +1544,7 @@ export class MessagingService extends BaseSchoolScopedService {
 
   /** Remove the caller's reaction from a message (idempotent). */
   async unreactMessage(threadId: string, messageId: string, actor: Actor) {
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
     await this.prisma.messageReaction.deleteMany({
       where: { messageId, userId: actor.userId },
     });
@@ -1457,7 +1588,7 @@ export class MessagingService extends BaseSchoolScopedService {
   }
 
   async markRead(threadId: string, actor: Actor) {
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
     await this.prisma.threadParticipant.update({
       where: { threadId_userId: { threadId, userId: actor.userId } },
       data: { lastReadAt: new Date() },
@@ -1472,7 +1603,7 @@ export class MessagingService extends BaseSchoolScopedService {
     dto: PresignAttachmentDto,
     actor: Actor,
   ) {
-    await this.assertParticipant(threadId, actor.userId);
+    await this.assertParticipant(threadId, actor);
     assertAttachmentAllowed({
       mimeType: dto.mimeType,
       sizeBytes: dto.sizeBytes,

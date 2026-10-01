@@ -48,12 +48,15 @@ describe('canMessage permission matrix (open within school)', () => {
     }
   });
 
-  // Director messaging (to their own principals) is not built yet.
-  it('lets nobody message a director, and a director message nobody', () => {
-    for (const r of ALL) {
+  it('lets a director reach staff and parents, and only a principal reach a director', () => {
+    for (const r of [Role.SCHOOL_ADMIN, Role.TEACHER, Role.PARENT])
+      expect(canMessage(Role.DIRECTOR, r)).toBe(true);
+    for (const r of [Role.STUDENT, Role.SUPER_ADMIN, Role.DIRECTOR])
       expect(canMessage(Role.DIRECTOR, r)).toBe(false);
+    expect(canMessage(Role.SCHOOL_ADMIN, Role.DIRECTOR)).toBe(true);
+    // Teachers and parents reply in a thread the director opened; they never open one.
+    for (const r of [Role.TEACHER, Role.PARENT, Role.STUDENT, Role.SUPER_ADMIN])
       expect(canMessage(r, Role.DIRECTOR)).toBe(false);
-    }
   });
 
   it('returns a boolean for every role pair (total function, no undefined)', () => {

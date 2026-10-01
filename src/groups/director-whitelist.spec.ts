@@ -42,7 +42,8 @@ describe('director pinned actor', () => {
 
   it('is built in exactly one place and is never a super admin', () => {
     const all = sources.map((s) => s.text).join('\n');
-    expect(all.match(/role: Role\.SCHOOL_ADMIN/g)).toHaveLength(1);
+    // An actor object (userId + role), not a query filter such as { role: SCHOOL_ADMIN }.
+    expect(all.match(/userId: \w+, role: Role\.SCHOOL_ADMIN/g)).toHaveLength(1);
     expect(all).not.toContain('Role.SUPER_ADMIN');
   });
 

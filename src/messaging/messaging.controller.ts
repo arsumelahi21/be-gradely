@@ -36,6 +36,7 @@ const MESSAGING_ROLES = [
   Role.TEACHER,
   Role.SCHOOL_ADMIN,
   Role.SUPER_ADMIN,
+  Role.DIRECTOR,
 ] as const;
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -74,7 +75,7 @@ export class MessagingController {
   // Staff-only: "send the same message to each recipient individually" (fan-out
   // to separate 1:1 threads). Same tight write throttle as sendMessage.
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  @Roles(Role.TEACHER, Role.SCHOOL_ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.TEACHER, Role.SCHOOL_ADMIN, Role.SUPER_ADMIN, Role.DIRECTOR)
   @Post('broadcast')
   broadcast(@Body() dto: BroadcastMessageDto, @Req() req: any) {
     return this.messaging.broadcast(dto, req.user);
