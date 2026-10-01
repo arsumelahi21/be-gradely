@@ -157,6 +157,7 @@ describe('Examination history across promotion (e2e)', () => {
       .send({
         sourceAcademicYearId: cls.academicYear.id,
         targetAcademicYearId: nextYear.id,
+        sourceClassGradeId: cls.section.classGradeId,
         students: [
           {
             studentId: student.profile.id,
