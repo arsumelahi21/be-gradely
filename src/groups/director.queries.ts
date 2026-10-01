@@ -380,4 +380,81 @@ export class DirectorQueriesService {
     });
     return config?.workingDays ?? [];
   }
+
+  /**
+   * Q7a: finalized exam results by section. Both filters matter: a reopened examination keeps
+   * its result rows but nulls finalizedAt (exam-results.service reopen).
+   */
+  examResults(schoolId: string, academicYearId: string) {
+    return this.cached(
+      schoolId,
+      'exam-results',
+      { ay: academicYearId },
+      60,
+      () =>
+        this.prisma.$queryRaw<
+          {
+            sectionName: string;
+            className: string;
+            level: number | null;
+            results: number;
+            obtained: number;
+            max: number;
+            passed: number;
+            decided: number;
+          }[]
+        >(Prisma.sql`
+        SELECT s."name" AS "sectionName", cg."name" AS "className", cg."level",
+               COUNT(*)::int                                        AS results,
+               SUM(er."totalObtained")::int                         AS obtained,
+               SUM(er."totalMax")::int                              AS max,
+               COUNT(*) FILTER (WHERE er."passed")::int             AS passed,
+               COUNT(*) FILTER (WHERE er."passed" IS NOT NULL)::int AS decided
+          FROM "Examination" x
+          JOIN "ExaminationResult" er ON er."examinationId" = x."id"
+          JOIN "Section" s            ON s."id" = x."sectionId"
+          JOIN "ClassGrade" cg        ON cg."id" = x."classGradeId"
+         WHERE x."schoolId" = ${schoolId} AND x."academicYearId" = ${academicYearId}
+           AND x."status" = 'PUBLISHED' AND x."resultStatus" = 'FINALIZED'
+           AND er."finalizedAt" IS NOT NULL AND er."totalMax" > 0
+         GROUP BY s."id", s."name", cg."name", cg."level"`),
+    );
+  }
+
+  /** Q7c: date sheets waiting for the principal's review, across every session (it is a queue). */
+  examBacklog(schoolId: string) {
+    return this.cached(schoolId, 'exam-backlog', {}, 60, async () => {
+      const agg = await this.prisma.examination.aggregate({
+        where: { schoolId, status: 'PENDING_REVIEW' },
+        _count: { _all: true },
+        _min: { submittedAt: true },
+      });
+      return {
+        pending: agg._count._all,
+        oldestSubmittedAt: agg._min.submittedAt?.toISOString() ?? null,
+      };
+    });
+  }
+
+  /** Q7d: published examinations whose last paper was held before the cutoff but are not finalized. */
+  unfinalizedExams(schoolId: string, academicYearId: string, cutoff: Date) {
+    return this.cached(
+      schoolId,
+      'exam-unfinalized',
+      { ay: academicYearId, cutoff: cutoff.toISOString().slice(0, 10) },
+      60,
+      async () => {
+        const [row] = await this.prisma.$queryRaw<{ exams: number }[]>`
+          SELECT COUNT(*)::int AS exams
+            FROM (SELECT x."id"
+                    FROM "Examination" x
+                    JOIN "Exam" e ON e."examinationId" = x."id"
+                   WHERE x."schoolId" = ${schoolId} AND x."academicYearId" = ${academicYearId}
+                     AND x."status" = 'PUBLISHED' AND x."resultStatus" <> 'FINALIZED'
+                   GROUP BY x."id"
+                  HAVING MAX(e."heldAt") < ${cutoff}) t`;
+        return row.exams;
+      },
+    );
+  }
 }

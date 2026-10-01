@@ -9,6 +9,7 @@ import { DirectorScopeGuard } from './director-scope.guard';
 import { DirectorFeesService } from './director-fees.service';
 import { DirectorStudentsService } from './director-students.service';
 import { DirectorAttendanceService } from './director-attendance.service';
+import { DirectorAcademicsService } from './director-academics.service';
 import { InsightsQueryDto } from './dto/insights-query.dto';
 
 // Read-only by design: a director has no write route here, ever.
@@ -21,6 +22,7 @@ export class DirectorController {
     private fees: DirectorFeesService,
     private students: DirectorStudentsService,
     private attendanceTab: DirectorAttendanceService,
+    private academics: DirectorAcademicsService,
   ) {}
 
   @Get('branches')
@@ -57,5 +59,11 @@ export class DirectorController {
   @Get('insights/attendance/lists')
   attendanceLists(@Query() query: InsightsQueryDto, @Req() req: any) {
     return this.attendanceTab.lists(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/academics')
+  academicsInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.academics.insights(req.directorScope, query);
   }
 }

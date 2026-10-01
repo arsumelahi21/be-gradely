@@ -12,6 +12,7 @@ import { DirectorQueriesService } from './director.queries';
 import { DirectorFeesService } from './director-fees.service';
 import { DirectorStudentsService } from './director-students.service';
 import { DirectorAttendanceService } from './director-attendance.service';
+import { DirectorAcademicsService } from './director-academics.service';
 
 @Module({
   imports: [AuditModule, SchoolsModule, FeesModule, AttendanceModule],
@@ -24,6 +25,7 @@ import { DirectorAttendanceService } from './director-attendance.service';
     DirectorFeesService,
     DirectorStudentsService,
     DirectorAttendanceService,
+    DirectorAcademicsService,
   ],
   exports: [DirectorService],
 })
