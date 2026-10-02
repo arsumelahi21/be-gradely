@@ -10,6 +10,7 @@ import {
   type ThrottlerStorage,
 } from '@nestjs/throttler';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService } from '../audit/audit.service';
 import { tooManyAttempts } from './guards/user-throttler.guard';
@@ -18,6 +19,11 @@ import type { StringValue } from 'ms';
 // Failures only: a spray is all failures, while a class arriving together is
 // not, and counting their successes locked out everyone behind the school's IP.
 const FAILED_LOGINS_PER_NETWORK_PER_MINUTE = 30;
+
+// bcrypt reads only the first 72 bytes, which every JWT for one user shares
+// (header + sub), so it hashes a digest of the whole token instead.
+export const refreshTokenDigest = (token: string) =>
+  createHash('sha256').update(token).digest('hex');
 
 @Injectable()
 export class AuthService {
@@ -59,6 +65,7 @@ export class AuthService {
     return this.jwt.signAsync(
       {
         sub: user.id,
+        typ: 'access',
         role: user.role,
         schoolId: user.schoolId,
         email: user.email,
@@ -74,10 +81,13 @@ export class AuthService {
 
   private signRefreshToken(user: { id: string }) {
     return this.jwt.signAsync(
-      { sub: user.id },
+      { sub: user.id, typ: 'refresh' },
       {
         secret: this.getRefreshSecret(),
         expiresIn: this.getRefreshExpiresIn(),
+        // Two tokens signed in the same second would otherwise be identical,
+        // and rotation couldn't retire the one presented.
+        jwtid: randomUUID(),
       },
     );
   }
@@ -124,7 +134,12 @@ export class AuthService {
 
     await (this.prisma as any).user.update({
       where: { id: user.id },
-      data: { refreshTokenHash: await bcrypt.hash(refreshToken, 10) },
+      data: {
+        refreshTokenHash: await bcrypt.hash(
+          refreshTokenDigest(refreshToken),
+          10,
+        ),
+      },
     });
 
     const userWithProfile = await this.prisma.user.findUnique({
@@ -181,7 +196,10 @@ export class AuthService {
     )
       throw new ForbiddenException('Access denied');
 
-    const ok = await bcrypt.compare(refreshToken, user.refreshTokenHash);
+    const ok = await bcrypt.compare(
+      refreshTokenDigest(refreshToken),
+      user.refreshTokenHash,
+    );
     if (!ok) throw new ForbiddenException('Access denied');
 
     const accessToken = await this.signAccessToken({
@@ -196,7 +214,12 @@ export class AuthService {
 
     await (this.prisma as any).user.update({
       where: { id: user.id },
-      data: { refreshTokenHash: await bcrypt.hash(newRefreshToken, 10) },
+      data: {
+        refreshTokenHash: await bcrypt.hash(
+          refreshTokenDigest(newRefreshToken),
+          10,
+        ),
+      },
     });
 
     return { accessToken, refreshToken: newRefreshToken };
