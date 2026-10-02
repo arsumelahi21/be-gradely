@@ -423,6 +423,69 @@ export class DirectorQueriesService {
     );
   }
 
+  /** Finalized results per term of the session, in term order. Exams without a term are left out. */
+  examResultsByTerm(schoolId: string, academicYearId: string) {
+    return this.cached(schoolId, 'exam-terms', { ay: academicYearId }, 60, () =>
+      this.prisma.$queryRaw<
+        {
+          name: string;
+          obtained: number;
+          max: number;
+          passed: number;
+          decided: number;
+        }[]
+      >(Prisma.sql`
+        SELECT t."name",
+               SUM(er."totalObtained")::int                         AS obtained,
+               SUM(er."totalMax")::int                              AS max,
+               COUNT(*) FILTER (WHERE er."passed")::int             AS passed,
+               COUNT(*) FILTER (WHERE er."passed" IS NOT NULL)::int AS decided
+          FROM "Examination" x
+          JOIN "AcademicTerm" t       ON t."id" = x."termId"
+          JOIN "ExaminationResult" er ON er."examinationId" = x."id"
+         WHERE x."schoolId" = ${schoolId} AND x."academicYearId" = ${academicYearId}
+           AND x."status" = 'PUBLISHED' AND x."resultStatus" = 'FINALIZED'
+           AND er."finalizedAt" IS NOT NULL AND er."totalMax" > 0
+         GROUP BY t."id", t."sortOrder", t."name"
+         ORDER BY t."sortOrder", t."name"`),
+    );
+  }
+
+  /**
+   * Marks per subject over the session's finalized exams, keyed by the subject's name so
+   * branches can be compared. Absent and unmarked papers are left out.
+   */
+  subjectScores(schoolId: string, academicYearId: string) {
+    return this.cached(
+      schoolId,
+      'exam-subjects',
+      { ay: academicYearId },
+      60,
+      () =>
+        this.prisma.$queryRaw<
+          {
+            key: string;
+            name: string;
+            obtained: number;
+            max: number;
+            marks: number;
+          }[]
+        >(Prisma.sql`
+        SELECT lower(trim(sub."name")) AS key, MIN(trim(sub."name")) AS name,
+               SUM(r."score")::int AS obtained, SUM(e."maxScore")::int AS max,
+               COUNT(*)::int AS marks
+          FROM "ExamResult" r
+          JOIN "Exam" e            ON e."id" = r."examId"
+          JOIN "Examination" x     ON x."id" = e."examinationId"
+          JOIN "SectionSubject" ss ON ss."id" = e."sectionSubjectId"
+          JOIN "Subject" sub       ON sub."id" = ss."subjectId"
+         WHERE x."schoolId" = ${schoolId} AND x."academicYearId" = ${academicYearId}
+           AND x."status" = 'PUBLISHED' AND x."resultStatus" = 'FINALIZED'
+           AND NOT r."isAbsent" AND r."score" IS NOT NULL AND e."maxScore" > 0
+         GROUP BY lower(trim(sub."name"))`),
+    );
+  }
+
   /** Q7c: date sheets waiting for the principal's review, across every session (it is a queue). */
   examBacklog(schoolId: string) {
     return this.cached(schoolId, 'exam-backlog', {}, 60, async () => {

@@ -146,7 +146,14 @@ describe('Director academics insights (e2e)', () => {
     const login = await api()
       .post('/api/auth/login')
       .send({ email: director.email, password: director.password });
-    return { a, b, token: login.body.accessToken as string };
+    return {
+      a,
+      b,
+      year,
+      e1,
+      e2,
+      token: login.body.accessToken as string,
+    };
   }
 
   const academics = (token: string, q = '') =>
@@ -210,5 +217,100 @@ describe('Director academics insights (e2e)', () => {
       },
     ]);
     expect(JSON.stringify(res.body)).not.toMatch(/"S[1-4]"|studentId/);
+  });
+
+  it('compares with the last session, lines terms up, and finds the weakest subjects', async () => {
+    const { a, year, e1, e2, token } = await fixture();
+    // Last session: one result, passed.
+    const before = await prisma.academicYear.create({
+      data: {
+        schoolId: a.id,
+        name: 'A before',
+        code: `AY${uniq()}`,
+        startDate: daysAgo(500),
+        endDate: daysAgo(151),
+      },
+    });
+    const old = await classSection(a.id, 'Grade 4', 4);
+    const oldExam = await seedExamination({
+      schoolId: a.id,
+      academicYearId: before.id,
+      sectionId: old.section.id,
+      sectionSubjectIds: [old.ss.id],
+      resultStatus: 'FINALIZED',
+    });
+    const kid = await prisma.studentProfile.create({
+      data: { schoolId: a.id, fullName: 'Old Kid' },
+    });
+    await prisma.examinationResult.create({
+      data: {
+        examinationId: oldExam.examination.id,
+        studentId: kid.id,
+        totalObtained: 50,
+        totalMax: 100,
+        passed: true,
+        finalizedAt: new Date(),
+      },
+    });
+
+    // Only Grade 5's examination belongs to a term.
+    const term = await prisma.academicTerm.create({
+      data: { schoolId: a.id, academicYearId: year.id, name: 'Term 1' },
+    });
+    await prisma.examination.update({
+      where: { id: e1.examination.id },
+      data: { termId: term.id },
+    });
+
+    // Subject marks: Grade 5's paper has 10 marks averaging 40%; Grade 6's only 2, too few to rank.
+    const kids = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        prisma.studentProfile.create({
+          data: { schoolId: a.id, fullName: `K${i}` },
+        }),
+      ),
+    );
+    await prisma.examResult.createMany({
+      data: [
+        ...kids.map((k) => ({
+          examId: e1.subjects[0].id,
+          studentId: k.id,
+          score: 40,
+        })),
+        ...kids.slice(0, 2).map((k) => ({
+          examId: e2.subjects[0].id,
+          studentId: k.id,
+          score: 90,
+        })),
+        { examId: e1.subjects[0].id, studentId: kid.id, isAbsent: true },
+      ],
+    });
+
+    const res = await academics(token);
+    const alpha = res.body.branches.find((r: any) => r.schoolId === a.id).data;
+    expect(alpha.resultsBefore).toMatchObject({
+      pass: { num: 1, den: 1, value: 1 },
+    });
+    expect(alpha.byTerm).toEqual([
+      {
+        name: 'Term 1',
+        obtained: 110,
+        max: 200,
+        avgScorePercent: 55,
+        pass: { num: 1, den: 2, value: 0.5 },
+      },
+    ]);
+    expect(res.body.group.resultsBefore.pass.value).toBe(1);
+    expect(res.body.group.byTerm).toMatchObject([
+      { label: 'Term 1', pass: { value: 0.5 } },
+    ]);
+    expect(res.body.group.weakestSubjects).toEqual([
+      {
+        name: expect.stringMatching(/^Maths /),
+        avgScorePercent: 40,
+        branches: 1,
+        marks: 10,
+      },
+    ]);
   });
 });
