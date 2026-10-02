@@ -202,6 +202,29 @@ describe('Class promotion (e2e)', () => {
         }),
       ).toBe(0);
     });
+
+    it("refuses a super admin promoting into another school's session", async () => {
+      const f = await seedPromotionFixture(1);
+      const other = await seedPromotionFixture(0);
+      const token = await tokenFor(
+        app,
+        await createTestUser({ role: Role.SUPER_ADMIN }),
+      );
+
+      await request(app.getHttpServer())
+        .post('/api/promotions/execute')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          ...plan(f, { targetAcademicYearId: other.nextYear.id }),
+          schoolId: f.school.id,
+        })
+        .expect(400);
+      expect(
+        await prisma.enrollment.count({
+          where: { academicYearId: other.nextYear.id },
+        }),
+      ).toBe(0);
+    });
   });
 
   describe('source roster', () => {

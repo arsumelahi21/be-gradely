@@ -299,6 +299,35 @@ describe('Users / student creation (e2e)', () => {
     expect(crossSchool.status).toBe(403);
   });
 
+  it('a super admin can move a school admin to another school, but no one else', async () => {
+    const { school } = await schoolAdmin('GHS');
+    const other = await createTestSchool({ code: 'OTH' });
+    const token = await tokenFor(
+      app,
+      await createTestUser({ role: Role.SUPER_ADMIN }),
+    );
+    const move = (id: string) =>
+      request(app.getHttpServer())
+        .patch(`/api/users/${id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ schoolId: other.id });
+    const teacher = await createTestUser({
+      role: Role.TEACHER,
+      schoolId: school.id,
+    });
+    const admin = await createTestUser({
+      role: Role.SCHOOL_ADMIN,
+      schoolId: school.id,
+    });
+
+    await move(teacher.id).expect(400);
+    const stayed = await prisma.user.findUniqueOrThrow({
+      where: { id: teacher.id },
+    });
+    expect(stayed.schoolId).toBe(school.id);
+    await move(admin.id).expect(200);
+  });
+
   it('the legacy student and teacher write routes are gone', async () => {
     const { school, token } = await schoolAdmin('GHS');
     const created = await post(token, studentPayload()).expect(201);

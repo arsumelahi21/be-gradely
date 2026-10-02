@@ -713,6 +713,10 @@ export class PromotionsService extends BaseSchoolScopedService {
     }
     this.enforceScope(actor, sourceYear.schoolId);
     this.enforceScope(actor, targetYear.schoolId);
+    // enforceScope lets a super admin through, so a session could still come from another school.
+    if (sourceYear.schoolId !== schoolId || targetYear.schoolId !== schoolId) {
+      throw new BadRequestException('Both sessions must belong to this school');
+    }
     if (!sourceClass) throw new NotFoundException('Class not found');
     if (
       dto.sourceSectionId &&

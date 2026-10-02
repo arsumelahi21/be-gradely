@@ -1056,6 +1056,13 @@ export class UsersService {
       if (user.role === Role.SUPER_ADMIN && dto.schoolId !== null) {
         throw new BadRequestException('SUPER_ADMIN must not have schoolId');
       }
+      // A profile, its enrollments, allocations and guardian links stay behind in
+      // the old school; only an admin's account carries nothing else.
+      if (user.role !== Role.SCHOOL_ADMIN && user.role !== Role.SUPER_ADMIN) {
+        throw new BadRequestException(
+          'Only a school admin can be moved to another school',
+        );
+      }
       if (dto.schoolId) {
         await this.ensureSchoolExists(dto.schoolId);
       }
@@ -1297,6 +1304,9 @@ export class UsersService {
       metadata: { role: user.role },
     });
     await this.invalidateRoleCache(user.role, user.schoolId);
+    if (userUpdateData.schoolId) {
+      await this.invalidateRoleCache(user.role, userUpdateData.schoolId);
+    }
 
     return this.findById(id, actor);
   }
