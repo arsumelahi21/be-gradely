@@ -327,6 +327,24 @@ describe('Messaging (e2e)', () => {
     expect(res.status).toBe(403);
   });
 
+  it("keeps a super admin's group to one school", async () => {
+    const [adminA, adminB] = await Promise.all(
+      [await createTestSchool(), await createTestSchool()].map((s) =>
+        createTestUser({ role: Role.SCHOOL_ADMIN, schoolId: s.id }),
+      ),
+    );
+    const token = await tokenFor(
+      app,
+      await createTestUser({ role: Role.SUPER_ADMIN }),
+    );
+    const res = await request(app.getHttpServer())
+      .post('/api/messaging/threads')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ type: 'GROUP', participantIds: [adminA.id, adminB.id] });
+    expect(res.status).toBe(400);
+    expect(await prisma.messageThread.count()).toBe(0);
+  });
+
   it('broadcasts to each recipient as a separate 1:1 thread (staff only)', async () => {
     const cls = await seedClass({ studentCount: 2 });
     const teacherToken = await tokenFor(app, cls.teacherUser);

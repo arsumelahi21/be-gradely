@@ -408,7 +408,13 @@ export class MessagingService extends BaseSchoolScopedService {
         throw new NotFoundException('A selected recipient was not found');
       }
       await this.assertCanReach(actor, recipient);
-      schoolId = schoolId ?? recipient.schoolId;
+      schoolId ??= recipient.schoolId;
+      // Only a super admin reaches across schools; the thread belongs to one.
+      if (recipient.schoolId && recipient.schoolId !== schoolId) {
+        throw new BadRequestException(
+          'A group can only include people from one school',
+        );
+      }
     }
     if (!schoolId) throw new BadRequestException('No school context');
 

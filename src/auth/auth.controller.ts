@@ -48,6 +48,9 @@ export class AuthController {
       .catch(() => {
         throw new UnauthorizedException('Invalid refresh token');
       });
+    if (payload.typ === 'access') {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
     return this.auth.refresh(payload.sub, dto.refreshToken);
   }
 

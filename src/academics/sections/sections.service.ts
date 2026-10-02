@@ -213,7 +213,6 @@ export class SectionsService extends BaseSchoolScopedService {
   async update(id: string, dto: UpdateSectionInput, actor: Actor) {
     const section = await this.getOrThrow(id, actor);
     let classGradeId = section.classGradeId;
-    let schoolId = section.schoolId;
     if (dto.classGradeId && dto.classGradeId !== section.classGradeId) {
       const grade = await this.prisma.classGrade.findUnique({
         where: { id: dto.classGradeId },
@@ -222,16 +221,20 @@ export class SectionsService extends BaseSchoolScopedService {
         throw new NotFoundException('Class grade not found');
       }
       this.enforceScope(actor, grade.schoolId);
+      // Its enrollments, subjects and timetable would stay in the old school.
+      if (grade.schoolId !== section.schoolId) {
+        throw new BadRequestException(
+          'A section can only move to a class in its own school',
+        );
+      }
       await this.assertNoSiblingPicks(section.id);
       classGradeId = grade.id;
-      schoolId = grade.schoolId;
     }
     const updated = await this.prisma.section
       .update({
         where: { id },
         data: {
           classGradeId,
-          schoolId,
           ...(dto.name !== undefined && { name: dto.name }),
           ...(dto.room !== undefined && { room: dto.room }),
           ...(dto.feeBillingMode && { feeBillingMode: dto.feeBillingMode }),
@@ -245,9 +248,6 @@ export class SectionsService extends BaseSchoolScopedService {
         ),
       );
     await this.invalidateSchoolCache(section.schoolId, 'sections', 'classes');
-    if (schoolId !== section.schoolId) {
-      await this.invalidateSchoolCache(schoolId, 'sections', 'classes');
-    }
     return updated;
   }
 

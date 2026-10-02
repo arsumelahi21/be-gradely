@@ -6,6 +6,7 @@ import { createTestApp } from './utils/app';
 import { prisma, resetDb } from './utils/db';
 import { createTestSchool, createTestUser, tokenFor } from './utils/factories';
 import { Role } from '../src/common/types/role.type';
+import { refreshTokenDigest } from '../src/auth/auth.service';
 
 const CREDENTIAL_FIELDS = /passwordHash|refreshTokenHash|resetToken/;
 
@@ -35,7 +36,9 @@ describe('Auth (e2e)', () => {
       );
     await prisma.user.update({
       where: { id: userId },
-      data: { refreshTokenHash: await bcrypt.hash(token, 10) },
+      data: {
+        refreshTokenHash: await bcrypt.hash(refreshTokenDigest(token), 10),
+      },
     });
     return token;
   }
@@ -162,6 +165,56 @@ describe('Auth (e2e)', () => {
       .post('/api/auth/refresh')
       .send({ refreshToken });
     expect(res.status).toBe(403);
+  });
+
+  it('a rotated refresh token is retired, even one signed the same second', async () => {
+    const user = await createTestUser({ role: Role.TEACHER });
+    const refresh = (refreshToken: string) =>
+      request(app.getHttpServer())
+        .post('/api/auth/refresh')
+        .send({ refreshToken });
+    const first = await refresh(await refreshTokenFor(user.id));
+    expect(first.status).toBe(201);
+
+    const second = await refresh(first.body.refreshToken);
+    expect(second.status).toBe(201);
+    expect(second.body.refreshToken).not.toBe(first.body.refreshToken);
+    expect((await refresh(first.body.refreshToken)).status).toBe(403);
+  });
+
+  it('an access token cannot refresh, nor a refresh token authenticate', async () => {
+    const user = await createTestUser({ role: Role.TEACHER });
+    const jwt = app.get(JwtService);
+    const sign = (typ: string, secret?: string) =>
+      jwt.signAsync({ sub: user.id, typ }, { secret, expiresIn: '5m' });
+
+    // Signed with the other kind's secret: only the claim tells them apart.
+    const refreshAsAccess = await sign(
+      'refresh',
+      process.env.JWT_ACCESS_SECRET,
+    );
+    await request(app.getHttpServer())
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${refreshAsAccess}`)
+      .expect(401);
+
+    const accessAsRefresh = await sign(
+      'access',
+      process.env.JWT_REFRESH_SECRET,
+    );
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        refreshTokenHash: await bcrypt.hash(
+          refreshTokenDigest(accessAsRefresh),
+          10,
+        ),
+      },
+    });
+    await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .send({ refreshToken: accessAsRefresh })
+      .expect(401);
   });
 
   it('a malformed refresh token is a 401, not a 500', async () => {

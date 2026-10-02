@@ -1,58 +1,19 @@
 import {
-  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BaseSchoolScopedService } from '../../common/services/base-school.service';
-import { CreateTeacherDto } from './dto/create-teacher.dto';
-import { UpdateTeacherDto } from './dto/update-teacher.dto';
 import { Actor } from '../../common/types/actor.type';
 import { Role } from '../../common/types/role.type';
 import { CacheService } from '../../common/services/cache.service';
 import { resolvePagination } from '../../common/dto/pagination-query.dto';
 
-type UpdateTeacherInput = UpdateTeacherDto & Partial<CreateTeacherDto>;
-
 @Injectable()
 export class TeachersService extends BaseSchoolScopedService {
   constructor(prisma: PrismaService, cache: CacheService) {
     super(prisma, cache);
-  }
-
-  async create(dto: CreateTeacherDto, actor: Actor) {
-    const schoolId = this.resolveSchoolId(actor, dto.schoolId);
-    await this.ensureSchoolExists(schoolId);
-    const userId = dto.userId
-      ? await this.validateUserLink(dto.userId, schoolId)
-      : null;
-    const created = await this.prisma.teacherProfile.create({
-      data: {
-        schoolId,
-        userId,
-        fullName: dto.fullName,
-        employeeCode: dto.employeeCode,
-        designation: dto.designation ?? null,
-        email: dto.email ?? null,
-        phone: dto.phone ?? null,
-        phoneSecondary: dto.phoneSecondary ?? null,
-        addressLine1: dto.addressLine1 ?? null,
-        addressLine2: dto.addressLine2 ?? null,
-        city: dto.city ?? null,
-        state: dto.state ?? null,
-        postalCode: dto.postalCode ?? null,
-        country: dto.country ?? null,
-        emergencyContactName: dto.emergencyContactName ?? null,
-        emergencyContactPhone: dto.emergencyContactPhone ?? null,
-        hireDate: this.toDate(dto.hireDate),
-        about: dto.about ?? null,
-        isActive: dto.isActive ?? true,
-      } as any,
-      include: this.defaultInclude(),
-    });
-    await this.invalidateSchoolCache(schoolId, 'teachers');
-    return created;
   }
 
   async findAll(actor: Actor, schoolId?: string) {
@@ -74,80 +35,6 @@ export class TeachersService extends BaseSchoolScopedService {
 
   async findOne(id: string, actor: Actor) {
     return this.getOrThrow(id, actor);
-  }
-
-  async update(id: string, dto: UpdateTeacherInput, actor: Actor) {
-    const teacher = await this.getOrThrow(id, actor);
-    let targetSchoolId = teacher.schoolId;
-    if (dto.schoolId && dto.schoolId !== teacher.schoolId) {
-      if (actor.role !== Role.SUPER_ADMIN) {
-        throw new ForbiddenException(
-          'Only SUPER_ADMIN can move teachers across schools',
-        );
-      }
-      await this.ensureSchoolExists(dto.schoolId);
-      targetSchoolId = dto.schoolId;
-    }
-    let userId = teacher.userId;
-    if (dto.userId !== undefined) {
-      if (!dto.userId) {
-        userId = null;
-      } else if (dto.userId !== teacher.userId) {
-        userId = await this.validateUserLink(
-          dto.userId,
-          targetSchoolId,
-          teacher.id,
-        );
-      }
-    }
-    const updated = await this.prisma.teacherProfile.update({
-      where: { id },
-      data: {
-        ...(dto.fullName !== undefined && { fullName: dto.fullName }),
-        ...(dto.employeeCode !== undefined && {
-          employeeCode: dto.employeeCode,
-        }),
-        ...(dto.designation !== undefined && { designation: dto.designation }),
-        ...(dto.email !== undefined && { email: dto.email }),
-        ...(dto.phone !== undefined && { phone: dto.phone }),
-        ...(dto.phoneSecondary !== undefined && {
-          phoneSecondary: dto.phoneSecondary,
-        }),
-        ...(dto.addressLine1 !== undefined && {
-          addressLine1: dto.addressLine1,
-        }),
-        ...(dto.addressLine2 !== undefined && {
-          addressLine2: dto.addressLine2,
-        }),
-        ...(dto.city !== undefined && { city: dto.city }),
-        ...(dto.state !== undefined && { state: dto.state }),
-        ...(dto.postalCode !== undefined && { postalCode: dto.postalCode }),
-        ...(dto.country !== undefined && { country: dto.country }),
-        ...(dto.emergencyContactName !== undefined && {
-          emergencyContactName: dto.emergencyContactName,
-        }),
-        ...(dto.emergencyContactPhone !== undefined && {
-          emergencyContactPhone: dto.emergencyContactPhone,
-        }),
-        ...(dto.about !== undefined && { about: dto.about }),
-        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-        ...(dto.hireDate !== undefined && {
-          hireDate: this.toDate(dto.hireDate),
-        }),
-        ...(dto.schoolId !== undefined &&
-          actor.role === Role.SUPER_ADMIN &&
-          dto.schoolId !== teacher.schoolId && {
-            schoolId: targetSchoolId,
-          }),
-        userId,
-      },
-      include: this.defaultInclude(),
-    });
-    await this.invalidateSchoolCache(teacher.schoolId, 'teachers');
-    if (targetSchoolId !== teacher.schoolId) {
-      await this.invalidateSchoolCache(targetSchoolId, 'teachers');
-    }
-    return updated;
   }
 
   async remove(id: string, actor: Actor) {
@@ -307,36 +194,6 @@ export class TeachersService extends BaseSchoolScopedService {
     }
 
     return teacher;
-  }
-
-  private async validateUserLink(
-    userId: string,
-    schoolId: string,
-    teacherId?: string,
-  ) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
-      throw new NotFoundException('Linked user not found');
-    }
-    if (user.role !== Role.TEACHER) {
-      throw new BadRequestException('Linked user must be a TEACHER');
-    }
-    if (user.schoolId && user.schoolId !== schoolId) {
-      throw new BadRequestException('Linked user belongs to another school');
-    }
-    const existing = await this.prisma.teacherProfile.findUnique({
-      where: { userId },
-    });
-    if (existing && existing.id !== teacherId) {
-      throw new BadRequestException(
-        'User is already linked to another teacher',
-      );
-    }
-    return userId;
-  }
-
-  private toDate(value?: string | null) {
-    return value ? new Date(value) : null;
   }
 
   private defaultInclude(): any {

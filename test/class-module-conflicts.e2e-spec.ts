@@ -92,6 +92,25 @@ describe('Class module duplicate names (e2e)', () => {
       });
       expect(unchanged.name).toBe(second.name);
     });
+
+    it("refuses a super admin moving a section into another school's class", async () => {
+      const cls = await seedClass({ studentCount: 0 });
+      const other = await seedClass({ studentCount: 0 });
+      const token = await tokenFor(
+        app,
+        await createTestUser({ role: Role.SUPER_ADMIN }),
+      );
+
+      await server()
+        .patch(`/api/sections/${cls.section.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ classGradeId: other.classGrade.id })
+        .expect(400);
+      const unchanged = await prisma.section.findUniqueOrThrow({
+        where: { id: cls.section.id },
+      });
+      expect(unchanged.schoolId).toBe(cls.school.id);
+    });
   });
 
   describe('classes — @@unique([schoolId, name])', () => {

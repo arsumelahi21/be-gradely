@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 
@@ -17,6 +17,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
+    // Secrets differ today; this keeps a refresh token out if they ever match.
+    if (payload.typ === 'refresh') throw new UnauthorizedException();
     return {
       userId: payload.sub,
       role: payload.role,
