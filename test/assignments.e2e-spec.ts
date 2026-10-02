@@ -62,6 +62,53 @@ describe('Assignments / re-grading (e2e)', () => {
       .send(body);
   }
 
+  async function publishedAssignment(
+    cls: Awaited<ReturnType<typeof seedClass>>,
+  ) {
+    return prisma.assignment.create({
+      data: {
+        schoolId: cls.school.id,
+        academicYearId: cls.academicYear.id,
+        sectionSubjectId: cls.sectionSubject.id,
+        createdByTeacherId: cls.teacherProfile.id,
+        title: 'Worksheet',
+        maxScore: 100,
+        status: 'PUBLISHED',
+      },
+    });
+  }
+
+  it('returns the assignment when download URLs are requested', async () => {
+    const cls = await seedClass({ studentCount: 0 });
+    const assignment = await publishedAssignment(cls);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/assignments/${assignment.id}`)
+      .query({ includeDownloadUrls: 'true' })
+      .set('Authorization', `Bearer ${await tokenFor(app, cls.teacherUser)}`)
+      .expect(200);
+    expect(res.body.id).toBe(assignment.id);
+  });
+
+  it('refuses to presign an upload without a size, or over the cap, and writes nothing', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const assignment = await publishedAssignment(cls);
+    const token = await tokenFor(app, cls.students[0].user);
+    const ask = (sizeBytes?: number) =>
+      request(app.getHttpServer())
+        .post(`/api/assignments/${assignment.id}/submissions/request-upload`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ fileName: 'work.pdf', mimeType: 'application/pdf', sizeBytes });
+
+    await ask().expect(400);
+    await ask(26 * 1024 * 1024).expect(400);
+    expect(
+      await prisma.assignmentSubmission.count({
+        where: { assignmentId: assignment.id },
+      }),
+    ).toBe(0);
+  });
+
   it('refuses a re-upload once the submission is marked', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const assignment = await prisma.assignment.create({

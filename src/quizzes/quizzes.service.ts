@@ -935,8 +935,9 @@ export class QuizzesService extends BaseSchoolScopedService {
       dto.answers ?? {},
     );
 
-    const updated = await this.prisma.quizAttempt.update({
-      where: { id: attemptId },
+    // Conditional on IN_PROGRESS, so of two racing submits only one is graded.
+    const { count } = await this.prisma.quizAttempt.updateMany({
+      where: { id: attemptId, status: QuizAttemptStatus.IN_PROGRESS },
       data: {
         answers: (dto.answers ?? {}) as any,
         score,
@@ -945,6 +946,9 @@ export class QuizzesService extends BaseSchoolScopedService {
         submittedAt: new Date(),
       },
     });
+    if (count === 0) {
+      throw new BadRequestException('This attempt was already submitted');
+    }
 
     // Notify the student + their parents of the score, and the teacher that the
     // quiz was completed (decoupled via the event bus).
@@ -958,7 +962,7 @@ export class QuizzesService extends BaseSchoolScopedService {
     this.eventEmitter.emit(NOTIFICATION_CREATE, {
       ...graded,
       userIds: [actor.userId],
-      link: `/quizzes/attempt/${updated.id}`,
+      link: `/quizzes/attempt/${attemptId}`,
     } as NotificationCreateEvent);
     // The parent portal has no quiz page; the score is in the body.
     const parents = await parentUserIds(this.prisma, [student.id]);
@@ -981,14 +985,14 @@ export class QuizzesService extends BaseSchoolScopedService {
     }
 
     return {
-      attemptId: updated.id,
-      status: updated.status,
+      attemptId,
+      status: QuizAttemptStatus.GRADED,
       score,
       maxScore,
     };
   }
 
-  /** View a single attempt. correctAnswer is only exposed once GRADED. */
+  /** View a single attempt. Correctness shows once GRADED; the key only to staff. */
   async getAttempt(attemptId: string, actor: Actor) {
     const attempt = await this.prisma.quizAttempt.findUnique({
       where: { id: attemptId },
@@ -1023,6 +1027,8 @@ export class QuizzesService extends BaseSchoolScopedService {
     }
 
     const graded = attempt.status === QuizAttemptStatus.GRADED;
+    // The quiz may still be open for classmates, so students and parents never get the key.
+    const showKey = actor.role !== Role.STUDENT && actor.role !== Role.PARENT;
     const answers = (attempt.answers as Record<string, unknown>) ?? {};
 
     return {
@@ -1044,13 +1050,10 @@ export class QuizzesService extends BaseSchoolScopedService {
         points: q.points,
         order: q.order,
         yourAnswer: answers[q.id] ?? null,
-        // Only reveal the key + correctness after the attempt is graded.
-        ...(graded
-          ? {
-              correctAnswer: q.correctAnswer,
-              correct: this.isCorrect(q, answers[q.id]),
-            }
-          : {}),
+        ...(graded && {
+          correct: this.isCorrect(q, answers[q.id]),
+          ...(showKey && { correctAnswer: q.correctAnswer }),
+        }),
       })),
     };
   }

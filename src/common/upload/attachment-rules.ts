@@ -23,6 +23,9 @@ export const ALLOWED_ATTACHMENT_MIME_TYPES = new Set<string>([
 
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
+// Assignment files (briefs, submissions) — the same cap the multipart routes apply.
+export const MAX_ASSIGNMENT_FILE_BYTES = 25 * 1024 * 1024;
+
 // Scanned exam papers routinely exceed the 5 MB attachment cap.
 export const MAX_EXAM_PAPER_BYTES = 10 * 1024 * 1024;
 
@@ -45,6 +48,18 @@ export function assertPdfOnly(input: {
     : true;
   if (!declaredPdf || !bytesOk) {
     throw new BadRequestException('Only PDF files are accepted');
+  }
+}
+
+/** A presigned upload signs its size, so the size must be declared and within the cap. */
+export function assertUploadSize(
+  sizeBytes: number | null | undefined,
+  maxBytes: number,
+): asserts sizeBytes is number {
+  if (!sizeBytes || sizeBytes > maxBytes) {
+    throw new BadRequestException(
+      `File size is required and must be at most ${maxBytes / (1024 * 1024)}MB`,
+    );
   }
 }
 

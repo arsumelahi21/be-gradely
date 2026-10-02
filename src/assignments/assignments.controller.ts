@@ -22,6 +22,7 @@ import { CreateAssignmentDto } from './dto/create-assignment.dto';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto';
 import { RequestUploadDto } from './dto/request-upload.dto';
 import { MarkSubmissionDto } from './dto/mark-submission.dto';
+import { MAX_ASSIGNMENT_FILE_BYTES } from '../common/upload/attachment-rules';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('assignments')
@@ -33,7 +34,7 @@ export class AssignmentsController {
   @UseInterceptors(
     FilesInterceptor('attachments', 10, {
       storage: memoryStorage(),
-      limits: { fileSize: 25 * 1024 * 1024 },
+      limits: { fileSize: MAX_ASSIGNMENT_FILE_BYTES },
     }),
   )
   create(
@@ -178,7 +179,7 @@ export class AssignmentsController {
   @UseInterceptors(
     FilesInterceptor('files', 10, {
       storage: memoryStorage(),
-      limits: { fileSize: 25 * 1024 * 1024 },
+      limits: { fileSize: MAX_ASSIGNMENT_FILE_BYTES },
     }),
   )
   submit(
