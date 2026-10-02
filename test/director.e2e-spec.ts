@@ -804,6 +804,14 @@ describe('Directors and school groups (e2e)', () => {
         .set(auth(saToken))
         .send({ fullName: 'Renamed Director' });
       expect(edited.body.fullName).toBe('Renamed Director');
+      const { d2 } = await fixture();
+      const patch = (body: object) =>
+        api().patch(`/api/directors/${d1.id}`).set(auth(saToken)).send(body);
+      expect(
+        (await patch({ email: 'new-sign-in@test.local' })).body.email,
+      ).toBe('new-sign-in@test.local');
+      expect((await patch({ email: d2.email })).status).toBe(409);
+      expect((await patch({ email: 'not-an-email' })).status).toBe(400);
       // Only directors live here.
       expect(
         (await api().get(`/api/directors/${principalB.id}`).set(auth(saToken)))

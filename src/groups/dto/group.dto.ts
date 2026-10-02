@@ -76,6 +76,12 @@ export class CreateDirectorDto {
 }
 
 export class UpdateDirectorDto {
+  /** Their sign-in; changing it keeps the password. */
+  @IsOptional()
+  @Transform(trim)
+  @IsEmail()
+  email?: string;
+
   @IsOptional()
   @Transform(trim)
   @IsString()

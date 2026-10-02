@@ -10,6 +10,7 @@ import { CacheService } from '../common/services/cache.service';
 import { resolvePagination } from '../common/dto/pagination-query.dto';
 import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
+import { uniqueConflict } from '../common/utils/prisma-errors';
 import {
   CreateDirectorDto,
   ListDirectorsQueryDto,
@@ -115,16 +116,27 @@ export class DirectorsService {
   }
 
   async update(id: string, dto: UpdateDirectorDto, actor: Actor) {
-    await this.findOne(id);
-    const director = await this.prisma.user.update({
-      where: { id },
-      data: {
-        fullName: dto.fullName,
-        phone: dto.phone,
-        phoneDialCode: dto.phoneDialCode,
-      },
-      select: DIRECTOR_SELECT,
-    });
+    const current = await this.findOne(id);
+    if (dto.email && dto.email !== current.email) {
+      const taken = await this.prisma.user.findUnique({
+        where: { email: dto.email },
+        select: { id: true },
+      });
+      if (taken) throw new ConflictException('Email already exists');
+    }
+    const director = await this.prisma.user
+      .update({
+        where: { id },
+        data: {
+          email: dto.email,
+          fullName: dto.fullName,
+          phone: dto.phone,
+          phoneDialCode: dto.phoneDialCode,
+        },
+        select: DIRECTOR_SELECT,
+      })
+      // A race with another account taking the same email.
+      .catch(uniqueConflict('Email already exists'));
     void this.audit.record(actor.userId, 'USER_UPDATE', {
       schoolId: null,
       entityType: 'User',
