@@ -446,6 +446,7 @@ describe('Enrollment list status scoping (e2e)', () => {
       .send({
         sourceAcademicYearId: f.academicYear.id,
         targetAcademicYearId: nextYear.id,
+        sourceClassGradeId: f.section.classGradeId,
         students: [
           {
             studentId: mover.profile.id,

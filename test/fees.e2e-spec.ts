@@ -3061,18 +3061,27 @@ describe('Fees — challan generation (e2e)', () => {
   describe('installment plans', () => {
     const settle = () => new Promise((r) => setTimeout(r, 500));
 
-    /** A plan body totalling 30,000 across 3 monthly installments. */
+    /**
+     * Installment status is derived against TODAY, so these dates are relative
+     * to it. Fixed ones rot: `2026-10-01` read as not-yet-due when this was
+     * written and turned OVERDUE the morning of 2026-10-02, failing the
+     * waterfall test on every branch at once.
+     */
+    const daysFromToday = (days: number) =>
+      new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+
+    /** A plan body totalling 30,000 across 3 installments: one due, two not. */
     const planBody = (
       cls: { academicYear: { id: string } },
       overrides: Record<string, unknown> = {},
     ) => ({
       academicYearId: cls.academicYear.id,
       totalAmount: 30000,
-      startDate: '2026-09-01',
+      startDate: daysFromToday(-30),
       installments: [
-        { amount: 10000, dueDate: '2026-09-01' },
-        { amount: 10000, dueDate: '2026-10-01' },
-        { amount: 10000, dueDate: '2026-11-01' },
+        { amount: 10000, dueDate: daysFromToday(-30) },
+        { amount: 10000, dueDate: daysFromToday(30) },
+        { amount: 10000, dueDate: daysFromToday(60) },
       ],
       ...overrides,
     });
