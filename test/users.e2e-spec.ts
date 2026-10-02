@@ -328,6 +328,23 @@ describe('Users / student creation (e2e)', () => {
     await move(admin.id).expect(200);
   });
 
+  it('an edit that fails on the profile changes nothing on the account', async () => {
+    const { token } = await schoolAdmin('GHS');
+    const created = await post(token, studentPayload()).expect(201);
+
+    const res = await request(app.getHttpServer())
+      .patch(`/api/users/${created.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      // Passes validation, but overflows the profile's INT column.
+      .send({ email: 'renamed@ghs.test', entryTestTotalMarks: 3_000_000_000 });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { id: created.body.id },
+    });
+    expect(user.email).toBe(created.body.email);
+  });
+
   it('the legacy student and teacher write routes are gone', async () => {
     const { school, token } = await schoolAdmin('GHS');
     const created = await post(token, studentPayload()).expect(201);

@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EnrollmentStatus } from '@prisma/client';
+import { EnrollmentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -1079,15 +1079,9 @@ export class UsersService {
       userUpdateData.userCode = dto.userCode?.trim() || null;
     }
 
-    if (Object.keys(userUpdateData).length > 0) {
-      await this.prisma.user.update({
-        where: { id },
-        data: userUpdateData,
-      });
-    }
-
+    let profileWrite: Prisma.PrismaPromise<unknown> | undefined;
     if (user.role === Role.TEACHER && user.teacherProfile) {
-      await this.prisma.teacherProfile.update({
+      profileWrite = this.prisma.teacherProfile.update({
         where: { id: user.teacherProfile.id },
         data: {
           ...(dto.fullName !== undefined && { fullName: dto.fullName }),
@@ -1122,7 +1116,7 @@ export class UsersService {
         },
       });
     } else if (user.role === Role.PARENT && user.parentProfile) {
-      await this.prisma.parentProfile.update({
+      profileWrite = this.prisma.parentProfile.update({
         where: { id: user.parentProfile.id },
         data: {
           ...(dto.fullName !== undefined && { fullName: dto.fullName }),
@@ -1166,7 +1160,7 @@ export class UsersService {
         },
       });
     } else if (user.role === Role.STUDENT && user.studentProfile) {
-      await this.prisma.studentProfile.update({
+      profileWrite = this.prisma.studentProfile.update({
         where: { id: user.studentProfile.id },
         data: {
           ...(dto.fullName !== undefined && { fullName: dto.fullName }),
@@ -1257,7 +1251,25 @@ export class UsersService {
           }),
         },
       });
+    } else if (
+      user.role === Role.SCHOOL_ADMIN ||
+      user.role === Role.SUPER_ADMIN
+    ) {
+      if (dto.fullName !== undefined) userUpdateData.fullName = dto.fullName;
+      if (dto.phone !== undefined) userUpdateData.phone = dto.phone ?? null;
+      if (dto.phoneDialCode !== undefined)
+        userUpdateData.phoneDialCode = dto.phoneDialCode ?? null;
+    }
 
+    // One transaction, so a failed profile write can't leave the account half-updated.
+    await this.prisma.$transaction([
+      ...(Object.keys(userUpdateData).length > 0
+        ? [this.prisma.user.update({ where: { id }, data: userUpdateData })]
+        : []),
+      ...(profileWrite ? [profileWrite] : []),
+    ]);
+
+    if (user.role === Role.STUDENT && user.studentProfile) {
       // Notify only on a REAL change — a resubmitted edit with the same values
       // writes the same row and must not fire a second notification.
       const feeChanged =
@@ -1278,22 +1290,6 @@ export class UsersService {
           'Fee updated',
           `${name}'s monthly fee is now ${formatMinorUnits(amount, await this.schoolCurrency(user.schoolId))}. Open Fees to review.`,
         );
-      }
-    } else if (
-      user.role === Role.SCHOOL_ADMIN ||
-      user.role === Role.SUPER_ADMIN
-    ) {
-      const updateData: any = {};
-      if (dto.fullName !== undefined) updateData.fullName = dto.fullName;
-      if (dto.phone !== undefined) updateData.phone = dto.phone ?? null;
-      if (dto.phoneDialCode !== undefined)
-        updateData.phoneDialCode = dto.phoneDialCode ?? null;
-
-      if (Object.keys(updateData).length > 0) {
-        await this.prisma.user.update({
-          where: { id },
-          data: updateData,
-        });
       }
     }
 
