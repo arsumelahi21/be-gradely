@@ -171,6 +171,18 @@ describe('Director attendance insights (e2e)', () => {
       ['PRESENT', 'PRESENT'],
       bPrincipal.id,
     );
+    // One absence in the 30 days before the window.
+    await prisma.attendance.create({
+      data: {
+        schoolId: b.id,
+        studentId: bStudent.id,
+        sectionSubjectId: b1.ss.id,
+        date: day(40),
+        period: 1,
+        status: 'ABSENT',
+        markedByUserId: bPrincipal.id,
+      },
+    });
 
     const group = await prisma.schoolGroup.create({ data: { name: 'G' } });
     await prisma.school.updateMany({
@@ -204,8 +216,10 @@ describe('Director attendance insights (e2e)', () => {
     expect(alpha.rate).toEqual({ num: 17, den: 35, value: 0.4857 });
     // Only Bilal: 7 of 10. Danish has too few marks; the deactivated student is not canonical.
     // Enrolled is 5: a student placed in the closed section A-3 still counts (04-STUDENTS §4).
+    expect(alpha.rateBefore).toEqual({ num: 0, den: 0, value: null });
     expect(alpha.below).toEqual({
       students: 1,
+      studentsBefore: 0,
       eligible: 2,
       share: { num: 1, den: 5, value: 0.2 },
     });
@@ -217,14 +231,17 @@ describe('Director attendance insights (e2e)', () => {
       status: 'no_year',
       data: {
         rate: { num: 2, den: 2, value: 1 },
+        rateBefore: { num: 0, den: 1, value: 0 },
         below: null,
         notMarking: null,
       },
     });
     expect(res.body.group).toEqual({
       rate: { num: 19, den: 37, value: 0.5135 },
+      rateBefore: { num: 0, den: 1, value: 0 },
       below: {
         students: 1,
+        studentsBefore: 0,
         eligible: 2,
         share: { num: 1, den: 5, value: 0.2 },
       },

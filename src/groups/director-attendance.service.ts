@@ -9,13 +9,21 @@ import {
 } from './director.service';
 import { DirectorQueriesService } from './director.queries';
 import { InsightsQueryDto } from './dto/insights-query.dto';
-import { Ratio, nthWorkingDayBack, ratio, ymd } from './insights';
+import {
+  Ratio,
+  nthWorkingDayBack,
+  previousWindow,
+  ratio,
+  ymd,
+} from './insights';
 
 // 00 §7: a section that took no register over the last 5 working days is "not marking".
 const UNMARKED_WORKING_DAYS = 5;
 
 interface BelowFloor {
   students: number;
+  /** The same count over the window before, to show whether it is growing. */
+  studentsBefore: number;
   eligible: number;
   share: Ratio;
 }
@@ -23,6 +31,8 @@ interface BelowFloor {
 export interface AttendanceData {
   /** Marks, not students: present + late over every mark in the window. */
   rate: Ratio;
+  /** The same-length window just before this one. */
+  rateBefore: Ratio;
   daily: { date: string; rate: number | null }[];
   below: BelowFloor | null;
   notMarking: { sections: number; of: number; since: string } | null;
@@ -30,6 +40,7 @@ export interface AttendanceData {
 
 export interface AttendanceGroup {
   rate: Ratio;
+  rateBefore: Ratio;
   below: BelowFloor;
   notMarking: { sections: number; of: number };
 }
@@ -109,25 +120,36 @@ export class DirectorAttendanceService {
 
   private async branchAttendance(ctx: BranchContext): Promise<AttendanceData> {
     const { actor, branch, year, range, now } = ctx;
-    const [stats, risk, registers] = await Promise.all([
-      // A custom window is allowed here (README §1, the one M13 exception); its key is per window.
+    const before = previousWindow(range);
+    // A custom window is allowed here (README §1, the one M13 exception); its key is per window.
+    const stats = (r: typeof range) =>
       this.attendance.getSchoolStats(actor, {
-        from: range.window.from,
-        to: range.window.to,
-      }),
+        from: r.window.from,
+        to: r.window.to,
+      });
+    const [current, previous, risk, riskBefore, registers] = await Promise.all([
+      stats(range),
+      stats(before),
       year ? this.queries.attendanceRisk(branch.id, year.id, range) : null,
+      year ? this.queries.attendanceRisk(branch.id, year.id, before) : null,
       year ? this.notMarkingSections(branch.id, year.id, now) : null,
     ]);
-    const marks = stats.range;
+    const marks = current.range;
+    const marksBefore = previous.range;
     return {
       // presentRate reads 0 with no marks; rebuilt so that shows as "no data".
       rate: ratio(marks.present + marks.late, marks.total),
-      daily: stats.daily.map((d) => ({
+      rateBefore: ratio(
+        marksBefore.present + marksBefore.late,
+        marksBefore.total,
+      ),
+      daily: current.daily.map((d) => ({
         date: d.date,
         rate: d.total > 0 ? d.presentRate : null,
       })),
       below: risk && {
         students: risk.below,
+        studentsBefore: riskBefore?.below ?? 0,
         eligible: risk.eligible,
         share: ratio(risk.below, risk.enrolled),
       },
@@ -161,15 +183,20 @@ export class DirectorAttendanceService {
   private rollUp(rows: BranchResult<AttendanceData>[]): AttendanceGroup {
     let attended = 0;
     let marks = 0;
-    const below = { students: 0, eligible: 0, enrolled: 0 };
+    let attendedBefore = 0;
+    let marksBefore = 0;
+    const below = { students: 0, studentsBefore: 0, eligible: 0, enrolled: 0 };
     const notMarking = { sections: 0, of: 0 };
     for (const { status, data } of rows) {
       if (!data) continue;
       attended += data.rate.num;
       marks += data.rate.den;
+      attendedBefore += data.rateBefore.num;
+      marksBefore += data.rateBefore.den;
       if (status !== 'ok') continue;
       if (data.below) {
         below.students += data.below.students;
+        below.studentsBefore += data.below.studentsBefore;
         below.eligible += data.below.eligible;
         below.enrolled += data.below.share.den;
       }
@@ -180,8 +207,10 @@ export class DirectorAttendanceService {
     }
     return {
       rate: ratio(attended, marks),
+      rateBefore: ratio(attendedBefore, marksBefore),
       below: {
         students: below.students,
+        studentsBefore: below.studentsBefore,
         eligible: below.eligible,
         share: ratio(below.students, below.enrolled),
       },
