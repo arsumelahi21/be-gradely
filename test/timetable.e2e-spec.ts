@@ -966,4 +966,40 @@ describe('Timetable V2 (e2e)', () => {
       .set('Authorization', `Bearer ${outsiderToken}`);
     expect(denied.status).toBe(403);
   });
+
+  describe('clashes across sections', () => {
+    const publish = (
+      sectionId: string,
+      token: string,
+      entries?: Array<Record<string, unknown>>,
+    ) =>
+      request(server())
+        .post(`/api/timetable/sections/${sectionId}/publish`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(entries ? { entries } : {});
+
+    it('the legacy publish refuses an archived grid', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const periods = await setup(cls.section.id, token, {
+        dayStartMin: 600,
+        dayEndMin: 690,
+      });
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: periods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+      }).expect(201);
+      await request(server())
+        .post(`/api/timetable/sections/${cls.section.id}/archive`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      await publish(cls.section.id, token).expect(409);
+      const tt = await prisma.timetable.findFirstOrThrow({
+        where: { sectionId: cls.section.id },
+      });
+      expect(tt.status).toBe('ARCHIVED');
+    });
+  });
 });

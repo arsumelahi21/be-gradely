@@ -1712,6 +1712,11 @@ export class TimetableService extends BaseSchoolScopedService {
       academicYearId,
     );
     if (!timetable) throw new NotFoundException('No timetable to publish');
+    if (timetable.status === 'ARCHIVED') {
+      throw new ConflictException(
+        'An archived timetable cannot be republished',
+      );
+    }
 
     // Batch mode: the draft editor sends the FULL desired grid, which we
     // validate and reconcile atomically. Legacy mode (no `entries`) just flips
@@ -1772,16 +1777,10 @@ export class TimetableService extends BaseSchoolScopedService {
       workingDays: string[];
       dayStartMin: number;
       dayEndMin: number;
-      status: string;
     },
     academicYearId: string,
     body: PublishTimetableDto,
   ) {
-    if (timetable.status === 'ARCHIVED') {
-      throw new ConflictException(
-        'An archived timetable cannot be republished',
-      );
-    }
     const entriesIn = body.entries ?? [];
     if (entriesIn.length === 0) {
       throw new BadRequestException('Cannot publish an empty timetable');
