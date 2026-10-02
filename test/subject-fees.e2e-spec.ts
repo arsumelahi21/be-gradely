@@ -970,5 +970,49 @@ describe('Subject-based fees (e2e)', () => {
       ).toBe(1);
     });
 
+    it('voids a payment once when two voids race for it', async () => {
+      const f = await billedStudent();
+      await pay(f, f.september.id, 1000).expect(201);
+      const payment = await prisma.payment.findFirstOrThrow({
+        where: { challanId: f.september.id },
+      });
+
+      // Hold the challan's row lock so both voids pass their pre-check, then
+      // queue on the lock together — the only way the race is reproducible.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const locker = prisma.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT id FROM "Challan" WHERE id = ${f.september.id} FOR UPDATE`;
+          await held;
+        },
+        { timeout: 30_000 },
+      );
+      const voids = Promise.all(
+        [1, 2].map(() =>
+          http()
+            .post(`/api/fees/payments/${payment.id}/void`)
+            .set(f.auth)
+            .send({ reason: 'Entered twice' })
+            .then((r) => r.status),
+        ),
+      );
+      for (let waiting = 0; waiting < 2; ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const [row] = await prisma.$queryRaw<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+        waiting = row.n;
+      }
+      release();
+      await locker;
+
+      expect((await voids).sort()).toEqual([201, 400]);
+      expect(
+        await prisma.auditLog.count({
+          where: { action: 'FEE_PAYMENT_VOID', entityId: payment.id },
+        }),
+      ).toBe(1);
+    });
   });
 });
