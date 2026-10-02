@@ -309,6 +309,30 @@ describe('Messaging (e2e)', () => {
       const seen = await messagesOf(threadId, joiner);
       expect(seen.body.items.map((m: any) => m.body)).toEqual(['after']);
     });
+
+    it("ends an unlinked guardian's direct chat with the child", async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const [child] = cls.students;
+      await guardianOf(cls.school.id, child.profile.id);
+      const dropped = await guardianOf(cls.school.id, child.profile.id);
+      const threadId = (
+        await startDirect(await tokenFor(app, dropped.user), child.user.id)
+      ).body.id;
+      const admin = await createTestUser({
+        role: Role.SCHOOL_ADMIN,
+        schoolId: cls.school.id,
+      });
+
+      await http()
+        .delete(
+          `/api/users/students/${child.profile.id}/parents/${dropped.profile.id}`,
+        )
+        .set('Authorization', await as(admin))
+        .expect(200);
+
+      expect((await messagesOf(threadId, dropped.user)).status).toBe(403);
+      expect((await messagesOf(threadId, child.user)).status).toBe(200);
+    });
   });
 
   it('stores and returns a message body verbatim (XSS is data, not markup)', async () => {
