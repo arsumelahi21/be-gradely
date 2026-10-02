@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EnrollmentStatus } from '@prisma/client';
+import { EnrollmentStatus, ThreadType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -1476,6 +1476,7 @@ export class UsersService {
           studentId: studentProfileId,
         },
       },
+      select: { parent: { select: { userId: true } } },
     });
     if (!link) throw new NotFoundException('Guardian link not found');
 
@@ -1488,14 +1489,31 @@ export class UsersService {
         'A student must have at least one guardian',
       );
 
-    await this.prisma.parentStudent.delete({
-      where: {
-        parentId_studentId: {
-          parentId: parentProfileId,
-          studentId: studentProfileId,
+    const parentUserId = link.parent.userId;
+    await this.prisma.$transaction([
+      this.prisma.parentStudent.delete({
+        where: {
+          parentId_studentId: {
+            parentId: parentProfileId,
+            studentId: studentProfileId,
+          },
         },
-      },
-    });
+      }),
+      // Their 1:1 chat with the child ends with the link; the child keeps the history.
+      ...(parentUserId
+        ? [
+            this.prisma.threadParticipant.deleteMany({
+              where: {
+                userId: parentUserId,
+                thread: {
+                  type: ThreadType.DIRECT,
+                  participants: { some: { userId: student.user.id } },
+                },
+              },
+            }),
+          ]
+        : []),
+    ]);
 
     return { success: true };
   }
