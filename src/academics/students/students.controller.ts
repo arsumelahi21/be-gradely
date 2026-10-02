@@ -11,7 +11,6 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { StudentsService } from './students.service';
-import { CreateStudentDto } from './dto/create-student.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
@@ -23,16 +22,6 @@ import { LinkStudentParentDto } from './dto/link-student-parent.dto';
 @Controller('students')
 export class StudentsController {
   constructor(private readonly students: StudentsService) {}
-
-  /**
-   * @deprecated Not the canonical path — the frontend creates students via `POST /users`
-   * instead. Retained only for existing callers; do not extend this path further.
-   */
-  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
-  @Post()
-  create(@Body() dto: CreateStudentDto, @Req() req: any) {
-    return this.students.create(dto, req.user);
-  }
 
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Get()
@@ -84,15 +73,5 @@ export class StudentsController {
     @Req() req: any,
   ) {
     return this.students.linkParent(id, dto.parentProfileId, req.user);
-  }
-
-  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
-  @Delete(':id/parents/:parentProfileId')
-  unlinkParent(
-    @Param('id') id: string,
-    @Param('parentProfileId') parentProfileId: string,
-    @Req() req: any,
-  ) {
-    return this.students.unlinkParent(id, parentProfileId, req.user);
   }
 }

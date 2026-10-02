@@ -299,6 +299,43 @@ describe('Users / student creation (e2e)', () => {
     expect(crossSchool.status).toBe(403);
   });
 
+  it('the legacy student and teacher write routes are gone', async () => {
+    const { school, token } = await schoolAdmin('GHS');
+    const created = await post(token, studentPayload()).expect(201);
+    const link = await prisma.parentStudent.findFirstOrThrow({
+      where: { studentId: created.body.studentProfile.id },
+    });
+    const teacher = await prisma.teacherProfile.create({
+      data: {
+        userId: (
+          await createTestUser({ role: Role.TEACHER, schoolId: school.id })
+        ).id,
+        schoolId: school.id,
+        fullName: 'Teacher',
+      },
+    });
+    const calls = [
+      ['post', '/api/students'],
+      ['delete', `/api/students/${link.studentId}/parents/${link.parentId}`],
+      ['post', '/api/teachers'],
+      ['patch', `/api/teachers/${teacher.id}`],
+    ] as const;
+
+    for (const [method, url] of calls) {
+      const res = await request(app.getHttpServer())
+        [method](url)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+      expect([method, url, res.status]).toEqual([method, url, 404]);
+    }
+    // That unlink route could remove a student's only guardian.
+    expect(
+      await prisma.parentStudent.count({
+        where: { studentId: link.studentId },
+      }),
+    ).toBe(1);
+  });
+
   it('links an existing parent to a new student with the given relationship', async () => {
     const { token } = await schoolAdmin('GHS');
 

@@ -21,47 +21,6 @@ export class StudentsService extends BaseSchoolScopedService {
     super(prisma, cache);
   }
 
-  async create(dto: CreateStudentDto, actor: Actor) {
-    const schoolId = this.resolveSchoolId(actor, dto.schoolId);
-    await this.ensureSchoolExists(schoolId);
-    const userId = dto.userId
-      ? await this.validateUserLink(dto.userId, schoolId)
-      : null;
-    await this.assertDiscountInSchool(dto.discountId, schoolId);
-    const created = await this.prisma.studentProfile.create({
-      data: {
-        schoolId,
-        userId,
-        fullName: dto.fullName,
-        admissionNo: dto.admissionNo,
-        rollNo: dto.rollNo ?? null,
-        email: dto.email ?? null,
-        phone: dto.phone ?? null,
-        alternatePhone: dto.alternatePhone ?? null,
-        dob: this.toDate(dto.dob),
-        dateOfJoining: this.toDate(dto.dateOfJoining),
-        address: dto.address ?? null,
-        addressLine1: dto.addressLine1 ?? null,
-        addressLine2: dto.addressLine2 ?? null,
-        city: dto.city ?? null,
-        state: dto.state ?? null,
-        postalCode: dto.postalCode ?? null,
-        country: dto.country ?? null,
-        guardianName: dto.guardianName ?? null,
-        guardianPhone: dto.guardianPhone ?? null,
-        emergencyContactName: dto.emergencyContactName ?? null,
-        emergencyContactPhone: dto.emergencyContactPhone ?? null,
-        // Mandatory at admission (enforced by CreateStudentDto); 0 is valid.
-        monthlyFeeAmount: dto.monthlyFeeAmount ?? 0,
-        discountId: dto.discountId ?? null,
-        isActive: dto.isActive ?? true,
-      } as any,
-      include: this.defaultInclude(),
-    });
-    await this.invalidateSchoolCache(schoolId, 'students');
-    return created;
-  }
-
   async findAll(
     actor: Actor,
     schoolId?: string,
@@ -250,33 +209,6 @@ export class StudentsService extends BaseSchoolScopedService {
       create: {
         parentId: parentProfileId,
         studentId,
-      },
-    });
-    await this.invalidateSchoolCache(student.schoolId, 'students');
-    return this.listParents(studentId, actor);
-  }
-
-  async unlinkParent(studentId: string, parentProfileId: string, actor: Actor) {
-    this.ensureAdmin(actor);
-    // validates existence + tenant scope
-    const student = await this.getOrThrow(studentId, actor);
-    const link = await this.prisma.parentStudent.findUnique({
-      where: {
-        parentId_studentId: {
-          parentId: parentProfileId,
-          studentId,
-        },
-      },
-    });
-    if (!link) {
-      throw new NotFoundException('Parent link not found');
-    }
-    await this.prisma.parentStudent.delete({
-      where: {
-        parentId_studentId: {
-          parentId: parentProfileId,
-          studentId,
-        },
       },
     });
     await this.invalidateSchoolCache(student.schoolId, 'students');
