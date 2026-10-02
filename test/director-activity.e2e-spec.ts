@@ -28,12 +28,25 @@ describe('Director activity insights (e2e)', () => {
     const a = await createTestSchool({ name: 'Alpha' });
     const user = (role: Role, isActive = true) =>
       createTestUser({ role, schoolId: a.id, isActive });
-    const [t1, , p1, gone] = await Promise.all([
+    const [t1, , p1, gone, p2] = await Promise.all([
       user(Role.TEACHER),
       user(Role.TEACHER),
       user(Role.PARENT),
       user(Role.STUDENT, false),
+      user(Role.PARENT),
     ]);
+    // p2 never signed in during the window but messaged the school: engaged, not a sign-in.
+    const thread = await prisma.messageThread.create({
+      data: { schoolId: a.id, type: 'DIRECT' },
+    });
+    await prisma.message.create({
+      data: {
+        threadId: thread.id,
+        senderId: p2.id,
+        body: 'Hello',
+        createdAt: new Date(Date.now() - 5 * DAY),
+      },
+    });
     await prisma.auditLog.createMany({
       data: [
         { actor: t1.id, days: 3 },
@@ -65,10 +78,11 @@ describe('Director activity insights (e2e)', () => {
     expect(res.status).toBe(200);
     expect(res.body.branches[0].data).toEqual({
       teachers: { num: 1, den: 2, value: 0.5 },
-      // The parent last signed in 40 days ago, outside the default 30 days.
-      parents: { num: 0, den: 1, value: 0 },
+      // The parents last signed in 40 days ago or not at all, inside the default 30 days.
+      parents: { num: 0, den: 2, value: 0 },
       // A deactivated student is not an active account.
       students: { num: 0, den: 0, value: null },
+      parentsEngaged: { num: 1, den: 2, value: 0.5 },
     });
     expect(res.body.group.teachers.value).toBe(0.5);
   });

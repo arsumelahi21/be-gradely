@@ -600,6 +600,43 @@ export class DirectorQueriesService {
   }
 
   /**
+   * Active parents who did anything in the window: signed in, sent a message or uploaded a fee
+   * receipt. A sign-in alone undercounts parents who stay signed in on the app.
+   */
+  parentEngagement(schoolId: string, range: RangeWindow) {
+    const { from, to } = range.window;
+    return this.cached(
+      schoolId,
+      'q9-engagement',
+      { from, to },
+      rangeTtl(range.days),
+      async () => {
+        const [row] = await this.prisma.$queryRaw<
+          { active: number; engaged: number }[]
+        >`
+          WITH parents AS (
+            SELECT "id" FROM "User"
+             WHERE "schoolId" = ${schoolId} AND "role" = 'PARENT' AND "isActive"
+          ), engaged AS (
+            SELECT l."actorUserId" AS id FROM "AuditLog" l
+             WHERE l."schoolId" = ${schoolId} AND l."action" = 'LOGIN'
+               AND l."createdAt" >= ${range.start} AND l."createdAt" < ${range.endExclusive}
+            UNION
+            SELECT m."senderId" FROM "Message" m JOIN parents p ON p."id" = m."senderId"
+             WHERE m."createdAt" >= ${range.start} AND m."createdAt" < ${range.endExclusive}
+            UNION
+            SELECT s."submittedByUserId" FROM "PaymentSubmission" s
+             WHERE s."schoolId" = ${schoolId}
+               AND s."createdAt" >= ${range.start} AND s."createdAt" < ${range.endExclusive}
+          )
+          SELECT (SELECT COUNT(*)::int FROM parents) AS active,
+                 (SELECT COUNT(*)::int FROM parents p JOIN engaged e ON e.id = p."id") AS engaged`;
+        return row;
+      },
+    );
+  }
+
+  /**
    * Fee pace: of a billing month's live challans, how much had been paid by `cutoff`.
    * Comparing this month at today with last month at the same day shows a slowdown early.
    */

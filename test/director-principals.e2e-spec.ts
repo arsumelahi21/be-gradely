@@ -50,10 +50,16 @@ describe('Director principals (e2e)', () => {
       fullName: 'Not Ours',
     });
     await prisma.auditLog.createMany({
-      data: [10, 3].map((days) => ({
+      data: [
+        ...[10, 3].map((days) => ({ action: 'LOGIN', days })),
+        // Two actions in the last 30 days count; one 40 days ago does not.
+        { action: 'EXAMINATION_APPROVE', days: 2 },
+        { action: 'PAYMENT_VERIFY', days: 20 },
+        { action: 'USER_CREATE', days: 40 },
+      ].map(({ action, days }) => ({
         actorUserId: principal.id,
         schoolId: a.id,
-        action: 'LOGIN',
+        action,
         metadata: { note: 'secret-xyz' },
         createdAt: new Date(Date.now() - days * DAY),
       })),
@@ -89,6 +95,7 @@ describe('Director principals (e2e)', () => {
     ]);
     expect(Object.keys(alpha[0]).sort()).toEqual(
       [
+        'actions30',
         'daysSinceLogin',
         'email',
         'fullName',
@@ -100,6 +107,7 @@ describe('Director principals (e2e)', () => {
     expect(alpha[0]).toMatchObject({
       email: principal.email,
       daysSinceLogin: 3,
+      actions30: 2,
     });
     expect(
       res.body.branches.find((r: any) => r.schoolId === b.id).data.principals,

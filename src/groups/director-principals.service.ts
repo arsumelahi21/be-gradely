@@ -12,6 +12,8 @@ import { daysSince } from './insights';
 
 // 00 §7: a principal who has not signed in for 14 days is worth a nudge.
 const PRINCIPAL_INACTIVE_DAYS = 14;
+const ACTIONS_DAYS = 30;
+const DAY_MS = 86_400_000;
 
 export interface PrincipalRow {
   id: string;
@@ -21,6 +23,8 @@ export interface PrincipalRow {
   /** A lower bound: login is the only sign-in the audit trail records. */
   lastLoginAt: string | null;
   daysSinceLogin: number | null;
+  /** Audited actions other than signing in over the last 30 days: a lower bound on work done. */
+  actions30: number;
 }
 
 export interface PrincipalsData {
@@ -61,18 +65,32 @@ export class DirectorPrincipalsService {
       select: { id: true, fullName: true, email: true, isActive: true },
     });
     // Only who and when: audit metadata can carry other people's names (M19).
-    const logins = users.length
-      ? await this.prisma.auditLog.groupBy({
-          by: ['actorUserId'],
-          where: {
-            actorUserId: { in: users.map((u) => u.id) },
-            action: 'LOGIN',
-          },
-          _max: { createdAt: true },
-        })
-      : [];
+    const ids = users.map((u) => u.id);
+    const [logins, actions] = users.length
+      ? await Promise.all([
+          this.prisma.auditLog.groupBy({
+            by: ['actorUserId'],
+            where: { actorUserId: { in: ids }, action: 'LOGIN' },
+            _max: { createdAt: true },
+          }),
+          this.prisma.auditLog.groupBy({
+            by: ['actorUserId'],
+            where: {
+              actorUserId: { in: ids },
+              action: { not: 'LOGIN' },
+              createdAt: {
+                gte: new Date(now.getTime() - ACTIONS_DAYS * DAY_MS),
+              },
+            },
+            _count: { _all: true },
+          }),
+        ])
+      : [[], []];
     const lastLogin = new Map(
       logins.map((l) => [l.actorUserId, l._max.createdAt]),
+    );
+    const actionCount = new Map(
+      actions.map((a) => [a.actorUserId, a._count._all]),
     );
     return {
       principals: users.map((u) => {
@@ -81,6 +99,7 @@ export class DirectorPrincipalsService {
           ...u,
           lastLoginAt: at?.toISOString() ?? null,
           daysSinceLogin: at ? daysSince(at, now) : null,
+          actions30: actionCount.get(u.id) ?? 0,
         };
       }),
     };

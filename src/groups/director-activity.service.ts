@@ -14,6 +14,8 @@ export interface ActivityData {
   teachers: Ratio;
   parents: Ratio;
   students: Ratio;
+  /** Parents who signed in, sent a message or uploaded a receipt in the window. */
+  parentsEngaged: Ratio;
 }
 
 export type ActivityGroup = ActivityData;
@@ -45,11 +47,15 @@ export class DirectorActivityService {
     branch,
     range,
   }: BranchContext): Promise<ActivityData> {
-    const rows = await this.queries.adoption(branch.id, range);
+    const [rows, engagement] = await Promise.all([
+      this.queries.adoption(branch.id, range),
+      this.queries.parentEngagement(branch.id, range),
+    ]);
     const data: ActivityData = {
       teachers: ratio(0, 0),
       parents: ratio(0, 0),
       students: ratio(0, 0),
+      parentsEngaged: ratio(engagement.engaged, engagement.active),
     };
     for (const r of rows) {
       const key = ROLES[r.role as keyof typeof ROLES];
@@ -69,6 +75,7 @@ export class DirectorActivityService {
       teachers: sum('teachers'),
       parents: sum('parents'),
       students: sum('students'),
+      parentsEngaged: sum('parentsEngaged'),
     };
   }
 }
