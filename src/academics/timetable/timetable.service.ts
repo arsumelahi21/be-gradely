@@ -74,6 +74,9 @@ interface CandidateSlot {
 
 type Tx = Prisma.TransactionClient | PrismaService;
 
+// An archived grid no longer runs, so it books no teacher or room.
+const LIVE_GRID: Prisma.TimetableWhereInput = { status: { not: 'ARCHIVED' } };
+
 @Injectable()
 export class TimetableService extends BaseSchoolScopedService {
   constructor(
@@ -477,6 +480,7 @@ export class TimetableService extends BaseSchoolScopedService {
             academicYearId,
             teacherId: { in: [...candidateTeacherIds] },
             timetableId: { not: timetable.id },
+            timetable: LIVE_GRID,
           },
           select: {
             teacherId: true,
@@ -682,6 +686,14 @@ export class TimetableService extends BaseSchoolScopedService {
     if (errors.length) throw new BadRequestException(errors.join('; '));
 
     return this.prisma.$transaction(async (tx) => {
+      // Entries cascade with their periods; refuse rather than wipe lectures.
+      if (
+        await tx.timetableEntry.count({ where: { timetableId: timetable.id } })
+      ) {
+        throw new ConflictException(
+          'This timetable already has lectures; regenerating its periods would delete them',
+        );
+      }
       await tx.timetablePeriod.deleteMany({
         where: { timetableId: timetable.id },
       });
@@ -1171,18 +1183,6 @@ export class TimetableService extends BaseSchoolScopedService {
     }
   }
 
-  async deleteEntry(id: string, actor: Actor) {
-    this.ensureAdmin(actor);
-    const entry = await this.prisma.timetableEntry.findUnique({
-      where: { id },
-      select: { id: true, schoolId: true },
-    });
-    if (!entry) throw new NotFoundException('Assignment not found');
-    this.enforceScope(actor, entry.schoolId);
-    await this.prisma.timetableEntry.delete({ where: { id } });
-    return { id };
-  }
-
   /** Live pre-check for the editor — same engine, returns instead of throwing. */
   async checkConflicts(
     sectionId: string,
@@ -1329,6 +1329,9 @@ export class TimetableService extends BaseSchoolScopedService {
     tx: Tx,
     slot: CandidateSlot,
   ): Promise<EntryConflict[]> {
+    // Held to commit, so two writers can't both pass the check below and
+    // double-book a teacher or room across sections.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${slot.academicYearId}))`;
     const conflicts: EntryConflict[] = [];
     const notSelf = slot.excludeEntryId
       ? { id: { not: slot.excludeEntryId } }
@@ -1376,30 +1379,13 @@ export class TimetableService extends BaseSchoolScopedService {
 
     // ROOM — effective-room overlap across sections in the same year.
     if (slot.effectiveRoom) {
-      const target = slot.effectiveRoom.trim().toLowerCase();
-      const sameTime = await tx.timetableEntry.findMany({
-        where: {
-          academicYearId: slot.academicYearId,
-          dayOfWeek: slot.dayOfWeek as any,
-          startMin: { lt: slot.endMin },
-          endMin: { gt: slot.startMin },
-          ...notSelf,
-        },
-        select: {
-          id: true,
-          room: true,
-          section: {
-            select: {
-              name: true,
-              room: true,
-              classGrade: { select: { name: true } },
-            },
-          },
-        },
-      });
-      const clash = sameTime.find((e) => {
-        const eff = (e.room ?? e.section.room ?? '').trim().toLowerCase();
-        return eff !== '' && eff === target;
+      const clash = await this.roomClashAt(tx, {
+        academicYearId: slot.academicYearId,
+        dayOfWeek: slot.dayOfWeek,
+        startMin: slot.startMin,
+        endMin: slot.endMin,
+        room: slot.effectiveRoom,
+        excludeEntryId: slot.excludeEntryId,
       });
       if (clash) {
         conflicts.push({
@@ -1433,6 +1419,7 @@ export class TimetableService extends BaseSchoolScopedService {
         dayOfWeek: p.dayOfWeek as any,
         startMin: { lt: p.endMin },
         endMin: { gt: p.startMin },
+        timetable: LIVE_GRID,
         ...(p.excludeEntryId ? { id: { not: p.excludeEntryId } } : {}),
       },
       select: {
@@ -1444,6 +1431,45 @@ export class TimetableService extends BaseSchoolScopedService {
           select: { name: true, classGrade: { select: { name: true } } },
         },
       },
+    });
+  }
+
+  private async roomClashAt(
+    tx: Tx,
+    p: {
+      academicYearId: string;
+      dayOfWeek: DayOfWeek;
+      startMin: number;
+      endMin: number;
+      room: string;
+      excludeEntryId?: string;
+    },
+  ) {
+    const target = p.room.trim().toLowerCase();
+    const sameTime = await tx.timetableEntry.findMany({
+      where: {
+        academicYearId: p.academicYearId,
+        dayOfWeek: p.dayOfWeek as any,
+        startMin: { lt: p.endMin },
+        endMin: { gt: p.startMin },
+        timetable: LIVE_GRID,
+        ...(p.excludeEntryId ? { id: { not: p.excludeEntryId } } : {}),
+      },
+      select: {
+        id: true,
+        room: true,
+        section: {
+          select: {
+            name: true,
+            room: true,
+            classGrade: { select: { name: true } },
+          },
+        },
+      },
+    });
+    return sameTime.find((e) => {
+      const eff = (e.room ?? e.section.room ?? '').trim().toLowerCase();
+      return eff !== '' && eff === target;
     });
   }
 
@@ -1590,41 +1616,21 @@ export class TimetableService extends BaseSchoolScopedService {
       }
       const effRoom = (e.room ?? e.section?.room ?? '').trim();
       if (effRoom) {
-        const roomClash = await this.prisma.timetableEntry.findFirst({
-          where: {
-            academicYearId: e.academicYearId,
-            dayOfWeek: e.dayOfWeek,
-            startMin: { lt: e.endMin },
-            endMin: { gt: e.startMin },
-            id: { not: e.id },
-          },
-          select: {
-            room: true,
-            section: {
-              select: {
-                room: true,
-                name: true,
-                classGrade: { select: { name: true } },
-              },
-            },
-          },
+        const roomClash = await this.roomClashAt(this.prisma, {
+          academicYearId: e.academicYearId,
+          dayOfWeek: e.dayOfWeek,
+          startMin: e.startMin,
+          endMin: e.endMin,
+          room: effRoom,
+          excludeEntryId: e.id,
         });
-        if (roomClash) {
-          const otherEff = (
-            roomClash.room ??
-            roomClash.section.room ??
-            ''
-          ).trim();
-          if (otherEff && otherEff.toLowerCase() === effRoom.toLowerCase()) {
-            const key = `${effRoom.toLowerCase()}|${e.dayOfWeek}|${e.startMin}`;
-            if (!seenRoom.has(key)) {
-              seenRoom.add(key);
-              blocking.push({
-                type: 'ROOM_CONFLICT',
-                message: `Room "${effRoom}" is double-booked`,
-              });
-            }
-          }
+        const key = `${effRoom.toLowerCase()}|${e.dayOfWeek}|${e.startMin}`;
+        if (roomClash && !seenRoom.has(key)) {
+          seenRoom.add(key);
+          blocking.push({
+            type: 'ROOM_CONFLICT',
+            message: `Room "${effRoom}" is double-booked`,
+          });
         }
       }
     }
@@ -1712,6 +1718,11 @@ export class TimetableService extends BaseSchoolScopedService {
       academicYearId,
     );
     if (!timetable) throw new NotFoundException('No timetable to publish');
+    if (timetable.status === 'ARCHIVED') {
+      throw new ConflictException(
+        'An archived timetable cannot be republished',
+      );
+    }
 
     // Batch mode: the draft editor sends the FULL desired grid, which we
     // validate and reconcile atomically. Legacy mode (no `entries`) just flips
@@ -1764,6 +1775,7 @@ export class TimetableService extends BaseSchoolScopedService {
     section: {
       id: string;
       name: string;
+      room: string | null;
       schoolId: string;
       classGrade: { id: string; name: string } | null;
     },
@@ -1772,16 +1784,10 @@ export class TimetableService extends BaseSchoolScopedService {
       workingDays: string[];
       dayStartMin: number;
       dayEndMin: number;
-      status: string;
     },
     academicYearId: string,
     body: PublishTimetableDto,
   ) {
-    if (timetable.status === 'ARCHIVED') {
-      throw new ConflictException(
-        'An archived timetable cannot be republished',
-      );
-    }
     const entriesIn = body.entries ?? [];
     if (entriesIn.length === 0) {
       throw new BadRequestException('Cannot publish an empty timetable');
@@ -1945,39 +1951,56 @@ export class TimetableService extends BaseSchoolScopedService {
         }
       }
     }
-    // Teacher: no overlap with OTHER sections this year.
-    const otherBusy = await this.prisma.timetableEntry.findMany({
-      where: {
-        academicYearId,
-        teacherId: { in: teacherIds },
-        timetableId: { not: timetable.id },
-      },
-      select: {
-        teacherId: true,
-        dayOfWeek: true,
-        startMin: true,
-        endMin: true,
-        section: {
-          select: { name: true, classGrade: { select: { name: true } } },
-        },
-      },
-    });
-    for (const e of built) {
-      const clash = otherBusy.find(
-        (b) =>
-          b.teacherId === e.teacherId &&
-          b.dayOfWeek === e.dayOfWeek &&
-          overlaps(e.startMin, e.endMin, b.startMin, b.endMin),
-      );
-      if (clash) {
-        throw new ConflictException({
-          message: `A teacher already teaches ${this.classLabel(clash.section)} at an overlapping time`,
-        });
-      }
-    }
-
     // ---- atomic reconcile + publish ----
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Other sections are read under the same lock as findConflicts, so two
+      // publishes can't both pass and double-book a teacher or room.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${academicYearId}))`;
+      // ponytail: loads every other grid of the session; filter by day/teacher/room if schools outgrow it.
+      const others = await tx.timetableEntry.findMany({
+        where: {
+          academicYearId,
+          timetableId: { not: timetable.id },
+          timetable: LIVE_GRID,
+        },
+        select: {
+          teacherId: true,
+          dayOfWeek: true,
+          startMin: true,
+          endMin: true,
+          room: true,
+          section: {
+            select: {
+              name: true,
+              room: true,
+              classGrade: { select: { name: true } },
+            },
+          },
+        },
+      });
+      for (const e of built) {
+        const room = (e.room ?? section.room ?? '').trim().toLowerCase();
+        for (const b of others) {
+          if (
+            b.dayOfWeek !== e.dayOfWeek ||
+            !overlaps(e.startMin, e.endMin, b.startMin, b.endMin)
+          ) {
+            continue;
+          }
+          if (b.teacherId === e.teacherId) {
+            throw new ConflictException({
+              message: `A teacher already teaches ${this.classLabel(b.section)} at an overlapping time`,
+            });
+          }
+          const otherRoom = (b.room ?? b.section.room ?? '').trim();
+          if (room && otherRoom.toLowerCase() === room) {
+            throw new ConflictException({
+              message: `Room "${otherRoom}" is already used by ${this.classLabel(b.section)} at an overlapping time`,
+            });
+          }
+        }
+      }
+
       for (const [id, r] of retimes) {
         await tx.timetablePeriod.update({
           where: { id },
@@ -2199,7 +2222,7 @@ export class TimetableService extends BaseSchoolScopedService {
         schoolId: student.schoolId,
         academicYearId: timetable.academicYearId,
         sectionSubjectId: { in: [...taken] },
-        timetable: { status: 'PUBLISHED' },
+        timetable: this.inEffect(this.schoolToday(timetable.timezone)),
       },
       include: this.entryInclude(),
     });
@@ -2236,7 +2259,11 @@ export class TimetableService extends BaseSchoolScopedService {
     const timezone = await this.schoolTimezone(teacher.schoolId);
 
     const entries = await this.prisma.timetableEntry.findMany({
-      where: { teacherId, academicYearId, timetable: { status: 'PUBLISHED' } },
+      where: {
+        teacherId,
+        academicYearId,
+        timetable: this.inEffect(this.schoolToday(timezone)),
+      },
       include: this.entryInclude(),
     });
     // Days + periods vary per section; expose the union of periods the teacher appears in.
@@ -2270,7 +2297,13 @@ export class TimetableService extends BaseSchoolScopedService {
     );
     const isAdmin =
       actor.role === Role.SUPER_ADMIN || actor.role === Role.SCHOOL_ADMIN;
-    const visible = timetable && (isAdmin || timetable.status === 'PUBLISHED');
+    const today = this.schoolToday(timezone);
+    const published = timetable?.status === 'PUBLISHED';
+    const inWindow =
+      !!timetable &&
+      (!timetable.effectiveFrom || timetable.effectiveFrom <= today) &&
+      (!timetable.effectiveTo || timetable.effectiveTo >= today);
+    const visible = timetable && (isAdmin || (published && inWindow));
 
     const [entries, periods] = await Promise.all([
       visible
@@ -2296,10 +2329,38 @@ export class TimetableService extends BaseSchoolScopedService {
       },
       academicYearId,
       status: visible ? timetable.status : null,
+      // Published but hidden by its dates: tell the viewer when it applies.
+      notInEffect:
+        published && !visible
+          ? {
+              effectiveFrom:
+                timetable.effectiveFrom?.toISOString().slice(0, 10) ?? null,
+              effectiveTo:
+                timetable.effectiveTo?.toISOString().slice(0, 10) ?? null,
+            }
+          : null,
       timezone,
       workingDays: visible ? (timetable.workingDays as DayOfWeek[]) : [],
       periods,
       entries,
+    };
+  }
+
+  // Window dates are school-local days stored at UTC midnight.
+  private schoolToday(timezone: string): Date {
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(
+      new Date(),
+    );
+    return new Date(`${day}T00:00:00.000Z`);
+  }
+
+  private inEffect(today: Date): Prisma.TimetableWhereInput {
+    return {
+      status: 'PUBLISHED',
+      AND: [
+        { OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: today } }] },
+        { OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }] },
+      ],
     };
   }
 

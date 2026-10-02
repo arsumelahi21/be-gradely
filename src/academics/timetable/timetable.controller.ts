@@ -123,12 +123,6 @@ export class TimetableController {
     return this.timetable.updateEntry(id, dto, req.user);
   }
 
-  @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
-  @Delete('entries/:id')
-  deleteEntry(@Param('id') id: string, @Req() req: any) {
-    return this.timetable.deleteEntry(id, req.user);
-  }
-
   // ---- per-section authoring ----
   @Roles(Role.SUPER_ADMIN, Role.SCHOOL_ADMIN)
   @Get('sections/:sectionId')

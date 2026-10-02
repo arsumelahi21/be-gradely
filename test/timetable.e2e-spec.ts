@@ -966,4 +966,305 @@ describe('Timetable V2 (e2e)', () => {
       .set('Authorization', `Bearer ${outsiderToken}`);
     expect(denied.status).toBe(403);
   });
+
+  describe('clashes across sections', () => {
+    async function addTeacher(schoolId: string) {
+      const user = await createTestUser({ role: Role.TEACHER, schoolId });
+      return prisma.teacherProfile.create({
+        data: { userId: user.id, schoolId, fullName: `T-${uniq()}` },
+      });
+    }
+
+    const publish = (
+      sectionId: string,
+      token: string,
+      entries?: Array<Record<string, unknown>>,
+    ) =>
+      request(server())
+        .post(`/api/timetable/sections/${sectionId}/publish`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(entries ? { entries } : {});
+
+    it('publish refuses a room another section uses at that time', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const t2 = await addTeacher(cls.school.id);
+      const other = await addSection(cls.school.id, cls.classGrade.id, t2.id);
+      const aPeriods = await setup(cls.section.id, token, {
+        dayStartMin: 600,
+        dayEndMin: 690,
+      });
+      const bPeriods = await setup(other.section.id, token, {
+        dayStartMin: 630,
+        dayEndMin: 720,
+      });
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: aPeriods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+        teacherId: cls.teacherProfile.id,
+        room: 'Room 3',
+      }).expect(201);
+
+      const res = await publish(other.section.id, token, [
+        {
+          dayOfWeek: 'MONDAY',
+          periodId: bPeriods[0].id,
+          sectionSubjectId: other.sectionSubject.id,
+          teacherId: t2.id,
+          room: 'room 3',
+        },
+      ]);
+      expect(res.status).toBe(409);
+      expect(res.body.message).toMatch(/Room "Room 3"/);
+    });
+
+    it('validation finds a room clash behind a non-clashing overlap', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const t2 = await addTeacher(cls.school.id);
+      const nine = await addSection(cls.school.id, cls.classGrade.id, t2.id);
+      const three = await addSection(cls.school.id, cls.classGrade.id, t2.id);
+      const slot = { dayStartMin: 600, dayEndMin: 690 };
+      const ninePeriods = await setup(nine.section.id, token, slot);
+      const threePeriods = await setup(three.section.id, token, slot);
+      const periods = await setup(cls.section.id, token, slot);
+
+      // Stored first, so a first-match lookup sees Room 9 and stops there.
+      await assign(nine.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: ninePeriods[0].id,
+        sectionSubjectId: nine.sectionSubject.id,
+        room: 'Room 9',
+      }).expect(201);
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: periods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+        room: 'Room 3',
+      }).expect(201);
+      // A clash the entry routes would refuse, as data from before the check.
+      const threeTt = await prisma.timetable.findFirstOrThrow({
+        where: { sectionId: three.section.id },
+      });
+      await prisma.timetableEntry.create({
+        data: {
+          timetableId: threeTt.id,
+          schoolId: cls.school.id,
+          sectionId: three.section.id,
+          academicYearId: threeTt.academicYearId,
+          dayOfWeek: 'MONDAY',
+          periodId: threePeriods[0].id,
+          startMin: threePeriods[0].startMin,
+          endMin: threePeriods[0].endMin,
+          sectionSubjectId: three.sectionSubject.id,
+          teacherId: t2.id,
+          room: 'Room 3',
+        },
+      });
+
+      const val = await request(server())
+        .get(`/api/timetable/sections/${cls.section.id}/validation`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(val.body.blocking).toEqual([
+        expect.objectContaining({ type: 'ROOM_CONFLICT' }),
+      ]);
+    });
+
+    it('an archived grid no longer books its teacher', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const other = await addSection(
+        cls.school.id,
+        cls.classGrade.id,
+        cls.teacherProfile.id,
+      );
+      const slot = { dayStartMin: 600, dayEndMin: 690 };
+      const aPeriods = await setup(cls.section.id, token, slot);
+      const bPeriods = await setup(other.section.id, token, slot);
+      await assign(other.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: bPeriods[0].id,
+        sectionSubjectId: other.sectionSubject.id,
+      }).expect(201);
+      await request(server())
+        .post(`/api/timetable/sections/${other.section.id}/archive`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      const editor = await request(server())
+        .get(`/api/timetable/sections/${cls.section.id}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(editor.body.teacherBusy[cls.teacherProfile.id] ?? []).toEqual([]);
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: aPeriods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+      }).expect(201);
+    });
+
+    it('two publishes racing for one teacher: only one wins', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const other = await addSection(
+        cls.school.id,
+        cls.classGrade.id,
+        cls.teacherProfile.id,
+      );
+      const slot = { dayStartMin: 600, dayEndMin: 690 };
+      const grids = [
+        {
+          ss: cls.sectionSubject,
+          periods: await setup(cls.section.id, token, slot),
+        },
+        {
+          ss: other.sectionSubject,
+          periods: await setup(other.section.id, token, slot),
+        },
+      ];
+      const ids = (
+        await prisma.timetable.findMany({
+          where: { sectionId: { in: [cls.section.id, other.section.id] } },
+        })
+      ).map((t) => t.id);
+
+      // Hold both grids' rows so each publish has read the other section
+      // before either can write — the only way the race is reproducible.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const locker = prisma.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT id FROM "Timetable" WHERE id = ANY(${ids}) FOR UPDATE`;
+          await held;
+        },
+        { timeout: 30_000 },
+      );
+      const publishes = Promise.all(
+        grids.map((g) =>
+          publish(g.ss.sectionId, token, [
+            {
+              dayOfWeek: 'MONDAY',
+              periodId: g.periods[0].id,
+              sectionSubjectId: g.ss.id,
+              teacherId: cls.teacherProfile.id,
+            },
+          ]).then((r) => r.status),
+        ),
+      );
+      for (let waiting = 0; waiting < 2; ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const [row] = await prisma.$queryRaw<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+        waiting = row.n;
+      }
+      release();
+      await locker;
+
+      expect((await publishes).sort()).toEqual([201, 409]);
+    });
+
+    it('the legacy publish refuses an archived grid', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const periods = await setup(cls.section.id, token, {
+        dayStartMin: 600,
+        dayEndMin: 690,
+      });
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: periods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+      }).expect(201);
+      await request(server())
+        .post(`/api/timetable/sections/${cls.section.id}/archive`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      await publish(cls.section.id, token).expect(409);
+      const tt = await prisma.timetable.findFirstOrThrow({
+        where: { sectionId: cls.section.id },
+      });
+      expect(tt.status).toBe('ARCHIVED');
+    });
+
+    it('regenerating periods refuses to wipe saved lectures', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const periods = await setup(cls.section.id, token, {
+        dayStartMin: 600,
+        dayEndMin: 690,
+      });
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: periods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+      }).expect(201);
+
+      await request(server())
+        .put(`/api/timetable/sections/${cls.section.id}/periods`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          periods: [{ index: 1, startMin: 600, endMin: 650, kind: 'CLASS' }],
+        })
+        .expect(409);
+      expect(
+        await prisma.timetableEntry.count({
+          where: { sectionId: cls.section.id },
+        }),
+      ).toBe(1);
+    });
+  });
+
+  it('students and teachers see a timetable only within its dates', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const token = await adminFor(cls.school.id);
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
+    await assign(cls.section.id, token, {
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+    }).expect(201);
+    await request(server())
+      .post(`/api/timetable/sections/${cls.section.id}/publish`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(201);
+    const setWindow = (effectiveFrom: string | null) =>
+      request(server())
+        .patch(`/api/timetable/sections/${cls.section.id}/window`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ effectiveFrom, effectiveTo: null })
+        .expect(200);
+    const viewers = [
+      await tokenFor(app, cls.students[0].user),
+      await tokenFor(app, cls.teacherUser),
+    ];
+    const mine = (viewer: string) =>
+      request(server())
+        .get('/api/timetable/me')
+        .set('Authorization', `Bearer ${viewer}`);
+
+    await setWindow('2099-01-01');
+    for (const viewer of viewers) {
+      expect((await mine(viewer)).body.entries).toHaveLength(0);
+    }
+    const student = await mine(viewers[0]);
+    expect(student.body.notInEffect).toEqual({
+      effectiveFrom: '2099-01-01',
+      effectiveTo: null,
+    });
+    // The admin's authoring view is unaffected.
+    const admin = await request(server())
+      .get(`/api/timetable/class/${cls.section.id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(admin.body.entries).toHaveLength(1);
+
+    await setWindow(null);
+    for (const viewer of viewers) {
+      expect((await mine(viewer)).body.entries).toHaveLength(1);
+    }
+  });
 });
