@@ -244,7 +244,7 @@ describe('Quizzes (e2e)', () => {
     expect(again.status).toBe(400);
   });
 
-  it('reveals correctAnswer only after the attempt is graded', async () => {
+  it('shows a student whether they were right, but never the answer key', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const { quizId, questions } = await createAndPublish(cls);
     const token = await tokenFor(app, cls.students[0].user);
@@ -267,13 +267,25 @@ describe('Quizzes (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ answers: { [questions[0].id]: 'b', [questions[1].id]: true } });
 
-    // After grading: correctAnswer + correctness present.
+    // The quiz is still open for classmates (decision #7): correctness only.
     const after = await request(app.getHttpServer())
       .get(`/api/quizzes/attempts/${attemptId}`)
       .set('Authorization', `Bearer ${token}`);
+    expect(after.body.questions.map((q: any) => q.correct)).toEqual([
+      true,
+      true,
+    ]);
     expect(
-      after.body.questions.some((q: any) => q.correctAnswer !== undefined),
+      after.body.questions.every((q: any) => q.correctAnswer === undefined),
     ).toBe(true);
+
+    const teacher = await request(app.getHttpServer())
+      .get(`/api/quizzes/attempts/${attemptId}`)
+      .set('Authorization', `Bearer ${await tokenFor(app, cls.teacherUser)}`);
+    expect(teacher.body.questions.map((q: any) => q.correctAnswer)).toEqual([
+      'b',
+      true,
+    ]);
   });
 
   // ---- editing a draft (Phase 2) ------------------------------------------

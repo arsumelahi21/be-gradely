@@ -988,7 +988,7 @@ export class QuizzesService extends BaseSchoolScopedService {
     };
   }
 
-  /** View a single attempt. correctAnswer is only exposed once GRADED. */
+  /** View a single attempt. Correctness shows once GRADED; the key only to staff. */
   async getAttempt(attemptId: string, actor: Actor) {
     const attempt = await this.prisma.quizAttempt.findUnique({
       where: { id: attemptId },
@@ -1023,6 +1023,8 @@ export class QuizzesService extends BaseSchoolScopedService {
     }
 
     const graded = attempt.status === QuizAttemptStatus.GRADED;
+    // The quiz may still be open for classmates, so students and parents never get the key.
+    const showKey = actor.role !== Role.STUDENT && actor.role !== Role.PARENT;
     const answers = (attempt.answers as Record<string, unknown>) ?? {};
 
     return {
@@ -1044,13 +1046,10 @@ export class QuizzesService extends BaseSchoolScopedService {
         points: q.points,
         order: q.order,
         yourAnswer: answers[q.id] ?? null,
-        // Only reveal the key + correctness after the attempt is graded.
-        ...(graded
-          ? {
-              correctAnswer: q.correctAnswer,
-              correct: this.isCorrect(q, answers[q.id]),
-            }
-          : {}),
+        ...(graded && {
+          correct: this.isCorrect(q, answers[q.id]),
+          ...(showKey && { correctAnswer: q.correctAnswer }),
+        }),
       })),
     };
   }
