@@ -219,6 +219,7 @@ describe('What a promoted student sees (e2e)', () => {
       .send({
         sourceAcademicYearId: f.thisYear.id,
         targetAcademicYearId: f.nextYear.id,
+        sourceClassGradeId: f.from.grade.id,
         students: [
           {
             studentId: f.student.id,

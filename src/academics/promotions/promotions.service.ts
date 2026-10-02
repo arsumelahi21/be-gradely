@@ -365,6 +365,7 @@ export class PromotionsService extends BaseSchoolScopedService {
     tx: Prisma.TransactionClient,
     actionable: PromotionPlanItem[],
     sourceAcademicYearId: string,
+    targetAcademicYearId: string,
   ): Promise<string[]> {
     const sourceSectionIds = [
       ...new Set(
@@ -386,7 +387,10 @@ export class PromotionsService extends BaseSchoolScopedService {
       distinct: ['sectionId'],
     });
     const occupied = new Set(occupiedRows.map((row) => row.sectionId));
-    // Students placed in a sibling section may still take its subjects this session.
+    // Students placed in a sibling section may still take its subjects — in the
+    // session that finished or the one starting, since an offering and its
+    // teacher are not per session.
+    const years = [...new Set([sourceAcademicYearId, targetAcademicYearId])];
     for (const sectionId of sourceSectionIds.filter(
       (id) => !occupied.has(id),
     )) {
@@ -394,12 +398,17 @@ export class PromotionsService extends BaseSchoolScopedService {
         where: { sectionId },
         select: { id: true },
       });
-      const pickers = await crossSectionTakers(
-        tx,
-        offerings.map((o) => o.id),
-        sourceAcademicYearId,
-      );
-      if (pickers.length) occupied.add(sectionId);
+      for (const year of years) {
+        const pickers = await crossSectionTakers(
+          tx,
+          offerings.map((o) => o.id),
+          year,
+        );
+        if (pickers.length) {
+          occupied.add(sectionId);
+          break;
+        }
+      }
     }
     const emptied = sourceSectionIds.filter((id) => !occupied.has(id));
     if (!emptied.length) return [];
@@ -617,6 +626,7 @@ export class PromotionsService extends BaseSchoolScopedService {
           tx,
           actionable,
           sourceYear.id,
+          targetYear.id,
         );
 
         return {
@@ -676,20 +686,25 @@ export class PromotionsService extends BaseSchoolScopedService {
       ...new Set([dto.sourceAcademicYearId, dto.targetAcademicYearId]),
     ];
 
-    const [years, students, destinationClasses] = await Promise.all([
-      this.prisma.academicYear.findMany({
-        where: { id: { in: yearIds } },
-        select: { id: true, name: true, code: true, schoolId: true },
-      }),
-      this.prisma.studentProfile.findMany({
-        where: { id: { in: studentIds }, schoolId },
-        select: { id: true, fullName: true },
-      }),
-      this.prisma.classGrade.findMany({
-        where: { id: { in: classGradeIds }, schoolId },
-        select: { id: true, name: true },
-      }),
-    ]);
+    const [years, students, destinationClasses, sourceClass] =
+      await Promise.all([
+        this.prisma.academicYear.findMany({
+          where: { id: { in: yearIds } },
+          select: { id: true, name: true, code: true, schoolId: true },
+        }),
+        this.prisma.studentProfile.findMany({
+          where: { id: { in: studentIds }, schoolId },
+          select: { id: true, fullName: true },
+        }),
+        this.prisma.classGrade.findMany({
+          where: { id: { in: classGradeIds }, schoolId },
+          select: { id: true, name: true },
+        }),
+        this.prisma.classGrade.findFirst({
+          where: { id: dto.sourceClassGradeId, schoolId },
+          select: { id: true, sections: { select: { id: true } } },
+        }),
+      ]);
 
     const sourceYear = years.find((y) => y.id === dto.sourceAcademicYearId);
     const targetYear = years.find((y) => y.id === dto.targetAcademicYearId);
@@ -698,6 +713,15 @@ export class PromotionsService extends BaseSchoolScopedService {
     }
     this.enforceScope(actor, sourceYear.schoolId);
     this.enforceScope(actor, targetYear.schoolId);
+    if (!sourceClass) throw new NotFoundException('Class not found');
+    if (
+      dto.sourceSectionId &&
+      !sourceClass.sections.some((s) => s.id === dto.sourceSectionId)
+    ) {
+      throw new BadRequestException(
+        'Section does not belong to the selected class',
+      );
+    }
 
     // One missing or cross-school id rejects the run rather than silently
     // promoting a subset — tenant safety, same as batch enrolment.
@@ -728,7 +752,11 @@ export class PromotionsService extends BaseSchoolScopedService {
           academicYearId: true,
           status: true,
           section: {
-            select: { name: true, classGrade: { select: { name: true } } },
+            select: {
+              name: true,
+              classGradeId: true,
+              classGrade: { select: { name: true } },
+            },
           },
         },
       }),
@@ -744,10 +772,17 @@ export class PromotionsService extends BaseSchoolScopedService {
 
     const sourceEnrollments = new Map<string, SourceEnrollment>();
     const targetEnrollments: TargetEnrollment[] = [];
+    // Only a placement in the class being promoted makes a student its member:
+    // a subject taken from here, or a stale or tampered selection naming a
+    // student placed elsewhere, falls through to NOT_ENROLLED and is left alone.
+    const inSource = (row: (typeof enrollmentRows)[number]) =>
+      row.section.classGradeId === sourceClass.id &&
+      (!dto.sourceSectionId || row.sectionId === dto.sourceSectionId);
     for (const row of enrollmentRows) {
       if (
         row.academicYearId === sourceYear.id &&
         row.status === EnrollmentStatus.ACTIVE &&
+        inSource(row) &&
         !sourceEnrollments.has(row.studentId)
       ) {
         sourceEnrollments.set(row.studentId, {

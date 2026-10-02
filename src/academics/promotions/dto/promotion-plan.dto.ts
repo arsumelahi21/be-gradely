@@ -47,6 +47,18 @@ export class PromotionPlanDto {
   @IsUUID()
   targetAcademicYearId: string;
 
+  /**
+   * The class being promoted. A student is promoted only from an ACTIVE
+   * placement IN it — one who merely takes a subject here is not its student.
+   */
+  @IsUUID()
+  sourceClassGradeId: string;
+
+  /** Narrows the source to one section of that class. */
+  @IsOptional()
+  @IsUUID()
+  sourceSectionId?: string;
+
   /** Off by default: creating a section is a side effect an admin opts into. */
   @IsOptional()
   @IsBoolean()
