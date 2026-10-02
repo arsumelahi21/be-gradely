@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createTestApp } from './utils/app';
 import { prisma, resetDb } from './utils/db';
 import { createTestSchool, createTestUser } from './utils/factories';
+import { seedExamination } from './utils/exam-fixture';
 import { Role } from '../src/common/types/role.type';
 
 const DAY = 86_400_000;
@@ -69,7 +70,7 @@ describe('Director overview (e2e)', () => {
         status: 'ACTIVE',
       },
     });
-    await prisma.challan.create({
+    const challan = await prisma.challan.create({
       data: {
         schoolId: school.id,
         challanNo: `C-${uniq()}`,
@@ -85,10 +86,19 @@ describe('Director overview (e2e)', () => {
         status: paid >= billed ? 'PAID' : 'PARTIALLY_PAID',
       },
     });
-    return { school, section, student };
+    await prisma.payment.create({
+      data: {
+        schoolId: school.id,
+        challanId: challan.id,
+        amount: paid,
+        method: 'CASH',
+        paidAt: new Date(Date.now() - 60_000),
+      },
+    });
+    return { school, section, student, year };
   }
 
-  it('shows one scorecard row per branch and never adds currencies together', async () => {
+  it('gives each branch its figures with the period before, and never adds currencies together', async () => {
     const a = await branch('Alpha', 'PKR', 100_000, 50_000);
     const principal = await createTestUser({
       role: Role.SCHOOL_ADMIN,
@@ -108,16 +118,87 @@ describe('Director overview (e2e)', () => {
     const ss = await prisma.sectionSubject.create({
       data: { sectionId: a.section.id, subjectId: subject.id },
     });
+    // Pass rate: last session 1 of 1 passed, this one 0 of 1; a paper held 10 days ago is
+    // 7+ days overdue but not yet 14.
+    const lastYear = await prisma.academicYear.create({
+      data: {
+        schoolId: a.school.id,
+        name: 'Alpha before',
+        code: `AY${uniq()}`,
+        startDate: new Date(today - 465 * DAY),
+        endDate: new Date(today - 101 * DAY),
+      },
+    });
+    const exam = (academicYearId: string, extra: object) =>
+      seedExamination({
+        schoolId: a.school.id,
+        academicYearId,
+        sectionId: a.section.id,
+        sectionSubjectIds: [ss.id],
+        ...extra,
+      });
+    for (const [ayId, passed] of [
+      [lastYear.id, true],
+      [a.year.id, false],
+    ] as const) {
+      const { examination } = await exam(ayId, { resultStatus: 'FINALIZED' });
+      await prisma.examinationResult.create({
+        data: {
+          examinationId: examination.id,
+          studentId: a.student.id,
+          totalObtained: passed ? 80 : 20,
+          totalMax: 100,
+          passed,
+          finalizedAt: new Date(),
+        },
+      });
+    }
+    await exam(a.year.id, {
+      resultStatus: 'IN_PROGRESS',
+      heldAt: new Date(today - 10 * DAY),
+      title: 'Late',
+    });
+
+    // Two marks in the last 30 days, one in the 30 before.
     await prisma.attendance.createMany({
-      data: (['PRESENT', 'ABSENT'] as const).map((status, i) => ({
+      data: (
+        [
+          ['PRESENT', 1],
+          ['ABSENT', 2],
+          ['PRESENT', 40],
+        ] as const
+      ).map(([status, daysAgo]) => ({
         schoolId: a.school.id,
         studentId: a.student.id,
         sectionSubjectId: ss.id,
-        date: new Date(today - (i + 1) * DAY),
+        date: new Date(today - daysAgo * DAY),
         period: 1,
         status,
         markedByUserId: principal.id,
       })),
+    });
+    const parent = await createTestUser({
+      role: Role.PARENT,
+      schoolId: a.school.id,
+    });
+    await prisma.auditLog.createMany({
+      data: [
+        {
+          actorUserId: parent.id,
+          schoolId: a.school.id,
+          action: 'LOGIN',
+          createdAt: new Date(Date.now() - 3 * DAY),
+        },
+        {
+          actorUserId: principal.id,
+          schoolId: a.school.id,
+          action: 'USER_DEACTIVATE',
+          entityType: 'User',
+          entityId: 'teacher-1',
+          metadata: { role: Role.TEACHER },
+          createdAt: new Date(Date.now() - 2 * DAY),
+        },
+      ],
     });
 
     const b = await branch('Bravo', 'AED', 20_000, 20_000);
@@ -145,27 +226,49 @@ describe('Director overview (e2e)', () => {
     expect(row(a.school.id).data).toMatchObject({
       currency: 'PKR',
       enrolled: 1,
-      attendance: { num: 1, den: 2, value: 0.5 },
+      attendance: {
+        now: { num: 1, den: 2, value: 0.5 },
+        prev: { num: 1, den: 1, value: 1 },
+      },
+      pass: {
+        now: { num: 0, den: 1, value: 0 },
+        prev: { num: 1, den: 1, value: 1 },
+      },
       collectionRate: { num: 50_000, den: 100_000, value: 0.5 },
+      pace: { now: { value: 0.5 }, prev: { den: 0, value: null } },
       overdue: 0,
+      registers: { silent3: 0, silent5: 0, of: 1 },
+      exams: { reviewWaitingDays: null, overdue7: 1, overdue14: 0 },
+      parents: { now: { num: 1, den: 1 }, prev: { num: 0, den: 1 } },
+      teacherLeavers: 1,
       principal: { active: 1, daysSinceLogin: 20 },
     });
-    expect(row(b.school.id).data.principal).toEqual({
-      active: 0,
-      daysSinceLogin: null,
+    expect(row(a.school.id).data.timetable).toMatchObject({
+      published: 0,
+      sessionDays: 100,
+    });
+    expect(row(b.school.id).data).toMatchObject({
+      registers: { silent3: 1, silent5: 1, of: 1 },
+      teacherLeavers: 0,
+      principal: { active: 0, daysSinceLogin: null },
     });
     expect(row(c.id)).toMatchObject({
       status: 'no_year',
-      data: { enrolled: null, collectionRate: null },
+      data: { enrolled: null, collectionRate: null, registers: null },
     });
 
     expect(res.body.group).toEqual({
       enrolled: 2,
-      attendance: { num: 1, den: 2, value: 0.5 },
-      collectionRate: {
-        PKR: { num: 50_000, den: 100_000, value: 0.5 },
-        AED: { num: 20_000, den: 20_000, value: 1 },
+      attendance: {
+        now: { num: 1, den: 2, value: 0.5 },
+        prev: { num: 1, den: 1, value: 1 },
       },
+      pass: {
+        now: { num: 0, den: 1, value: 0 },
+        prev: { num: 1, den: 1, value: 1 },
+      },
+      // PKR 50% and AED 100%: each branch counts once, amounts are never pooled.
+      collection: { average: 0.75, branches: 2, paceNow: 0.75, pacePrev: null },
     });
     // The overview always reads the last 30 days; a range filter does not change it.
     expect(res.body.window.preset).toBe('30d');

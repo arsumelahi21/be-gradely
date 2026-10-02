@@ -2,6 +2,8 @@ import { BadRequestException } from '@nestjs/common';
 import {
   lastTwelveMonths,
   nthWorkingDayBack,
+  previousWindow,
+  yearBefore,
   pickYear,
   rangeTtl,
   ratio,
@@ -121,5 +123,30 @@ describe('nthWorkingDayBack', () => {
     expect(nthWorkingDayBack([], NOW, 5).toISOString().slice(0, 10)).toBe(
       '2026-10-03',
     );
+  });
+});
+
+describe('previousWindow and yearBefore', () => {
+  it('returns the window of the same length right before', () => {
+    const prev = previousWindow(resolveWindow({}, NOW));
+    expect(prev.window).toMatchObject({ from: '2026-08-10', to: '2026-09-08' });
+    expect(prev.endExclusive.toISOString()).toBe('2026-09-09T00:00:00.000Z');
+    expect(prev.days).toBe(30);
+  });
+
+  it('finds the session before a given one, or null', () => {
+    const y = (id: string, start: string) => ({
+      id,
+      startDate: new Date(start),
+      endDate: new Date(start),
+    });
+    const years = [
+      y('2026', '2026-04-01'),
+      y('2024', '2024-04-01'),
+      y('2025', '2025-04-01'),
+    ];
+    expect(yearBefore(years, years[0])?.id).toBe('2025');
+    expect(yearBefore(years, years[1])).toBeNull();
+    expect(yearBefore(years, null)).toBeNull();
   });
 });

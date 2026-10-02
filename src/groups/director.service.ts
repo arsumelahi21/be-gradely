@@ -16,6 +16,7 @@ import {
   RangeWindow,
   pickYear,
   resolveWindow,
+  yearBefore,
   ymd,
 } from './insights';
 
@@ -48,6 +49,8 @@ export interface BranchContext {
   year: YearRef | null;
   /** Always the current session, for "this month" metrics even when ay=previous. */
   currentYear: YearRef | null;
+  /** The session before `year`, for "this session vs last". */
+  priorYear: YearRef | null;
   actor: Actor;
   range: RangeWindow;
   now: Date;
@@ -216,9 +219,11 @@ export class DirectorService {
       const single = selected.length === 1 && query.branch === selected[0].id;
       const rows = await this.fanOut(selected, async (branch) => {
         const own = years.get(branch.id) ?? [];
+        const year = pickYear(own, query.ay ?? 'current', now);
         const ctx: BranchContext = {
           branch,
-          year: pickYear(own, query.ay ?? 'current', now),
+          year,
+          priorYear: yearBefore(own, year),
           currentYear: pickCurrentAcademicYear(own, now),
           actor: this.pinnedActor(scope.directorId, branch),
           range,

@@ -146,3 +146,33 @@ export function nthWorkingDayBack(
     if (days.has(WEEKDAYS[day.getUTCDay()]) && ++found === n) return day;
   }
 }
+
+/** The window of the same length that ends the day before this one starts. */
+export function previousWindow(range: RangeWindow): RangeWindow {
+  const end = new Date(range.start.getTime() - DAY_MS);
+  const start = new Date(range.start.getTime() - range.days * DAY_MS);
+  return {
+    window: {
+      from: ymd(start),
+      to: ymd(end),
+      preset: range.window.preset,
+      basis: 'range',
+    },
+    start,
+    endExclusive: range.start,
+    days: range.days,
+  };
+}
+
+/** The session that started before this one, for "this session vs last". */
+export function yearBefore<T extends YearSpan>(
+  years: T[],
+  year: T | null,
+): T | null {
+  if (!year) return null;
+  return (
+    years
+      .filter((y) => y.startDate < year.startDate)
+      .sort((a, b) => b.startDate.getTime() - a.startDate.getTime())[0] ?? null
+  );
+}

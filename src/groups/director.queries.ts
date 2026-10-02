@@ -533,4 +533,54 @@ export class DirectorQueriesService {
            GROUP BY u."role"`,
     );
   }
+
+  /**
+   * Fee pace: of a billing month's live challans, how much had been paid by `cutoff`.
+   * Comparing this month at today with last month at the same day shows a slowdown early.
+   */
+  collectionPace(schoolId: string, year: number, month: number, cutoff: Date) {
+    return this.cached(
+      schoolId,
+      'q2-pace',
+      { y: year, m: month, cutoff: cutoff.toISOString().slice(0, 10) },
+      60,
+      async () => {
+        const [row] = await this.prisma.$queryRaw<
+          { billed: bigint | null; paid: bigint | null }[]
+        >`
+          SELECT (SELECT SUM(c."netAmount") FROM "Challan" c
+                   WHERE c."schoolId" = ${schoolId} AND c."periodYear" = ${year}
+                     AND c."periodMonth" = ${month} AND c."status" <> 'CANCELLED')::bigint AS billed,
+                 (SELECT SUM(p."amount") FROM "Payment" p
+                    JOIN "Challan" c ON c."id" = p."challanId"
+                   WHERE c."schoolId" = ${schoolId} AND c."periodYear" = ${year}
+                     AND c."periodMonth" = ${month} AND c."status" <> 'CANCELLED'
+                     AND p."voidedAt" IS NULL AND p."paidAt" < ${cutoff})::bigint AS paid`;
+        return { billed: Number(row.billed ?? 0), paid: Number(row.paid ?? 0) };
+      },
+    );
+  }
+
+  /**
+   * Teachers who left in the window: deactivated or deleted. Only the audit log keeps the date
+   * (users.service setActive/remove), so history starts when those audits did (2026-10-01).
+   */
+  teacherLeavers(schoolId: string, range: RangeWindow) {
+    const { from, to } = range.window;
+    return this.cached(
+      schoolId,
+      'q-leavers',
+      { from, to },
+      rangeTtl(range.days),
+      async () => {
+        const [row] = await this.prisma.$queryRaw<{ n: number }[]>`
+        SELECT COUNT(DISTINCT "entityId")::int AS n FROM "AuditLog"
+         WHERE "schoolId" = ${schoolId}
+           AND "action" IN ('USER_DEACTIVATE', 'USER_DELETE')
+           AND "metadata"->>'role' = 'TEACHER'
+           AND "createdAt" >= ${range.start} AND "createdAt" < ${range.endExclusive}`;
+        return row.n;
+      },
+    );
+  }
 }
