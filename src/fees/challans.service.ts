@@ -395,19 +395,7 @@ export class ChallansService extends BaseSchoolScopedService {
 
       try {
         const challanIds = await this.prisma.$transaction(async (tx) => {
-          // The HIGHEST number ever issued, not a row count: a challan can now
-          // be cascade-deleted with its student or academic year, and a count
-          // would then walk back onto numbers already spent — which collide on
-          // @@unique([schoolId, challanNo]) and brick generation for the school,
-          // because the retry below rebuilds the same plan and collides again.
-          // BIGINT, not INTEGER: test fixtures mint challan numbers from a
-          // timestamp, which overflows int4.
-          const [{ max }] = await tx.$queryRaw<{ max: bigint | null }[]>`
-            SELECT MAX(CAST(regexp_replace("challanNo", '^.*-', '') AS BIGINT)) AS max
-            FROM "Challan"
-            WHERE "schoolId" = ${plan.schoolId}
-          `;
-          const existingCount = Number(max ?? 0);
+          const existingCount = await this.highestChallanNo(tx, plan.schoolId);
           const ids: string[] = [];
 
           for (const [i, row] of plan.toGenerate.entries()) {
@@ -1096,6 +1084,26 @@ export class ChallansService extends BaseSchoolScopedService {
     };
   }
 
+  /**
+   * The HIGHEST number ever issued, not a row count: a challan can be
+   * cascade-deleted with its student or academic year, and a count would then
+   * walk back onto numbers already spent — which collide on
+   * @@unique([schoolId, challanNo]) and brick generation for the school.
+   * BIGINT, not INTEGER: test fixtures mint challan numbers from a timestamp,
+   * which overflows int4.
+   */
+  private async highestChallanNo(
+    tx: Prisma.TransactionClient,
+    schoolId: string,
+  ): Promise<number> {
+    const [{ max }] = await tx.$queryRaw<{ max: bigint | null }[]>`
+      SELECT MAX(CAST(regexp_replace("challanNo", '^.*-', '') AS BIGINT)) AS max
+      FROM "Challan"
+      WHERE "schoolId" = ${schoolId}
+    `;
+    return Number(max ?? 0);
+  }
+
   private async resolveBankAccount(schoolId: string, requested?: string) {
     if (requested) {
       const account = await this.prisma.bankAccount.findUnique({
@@ -1385,9 +1393,7 @@ export class ChallansService extends BaseSchoolScopedService {
     let challanIds: string[];
     try {
       challanIds = await this.prisma.$transaction(async (tx) => {
-        const existingCount = await tx.challan.count({
-          where: { schoolId: batch.schoolId },
-        });
+        const existingCount = await this.highestChallanNo(tx, batch.schoolId);
         const ids: string[] = [];
         for (const [i, row] of batch.toGenerate.entries()) {
           const created = await tx.challan.create({
