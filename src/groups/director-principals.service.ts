@@ -54,7 +54,7 @@ export class DirectorPrincipalsService {
     );
   }
 
-  private async branchPrincipals({
+  async branchPrincipals({
     branch,
     now,
   }: BranchContext): Promise<PrincipalsData> {

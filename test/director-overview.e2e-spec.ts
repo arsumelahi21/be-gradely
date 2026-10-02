@@ -204,14 +204,13 @@ describe('Director overview (e2e)', () => {
     const b = await branch('Bravo', 'AED', 20_000, 20_000);
     const c = await createTestSchool({ name: 'Charlie' });
 
-    const group = await prisma.schoolGroup.create({ data: { name: 'G' } });
+    const director = await createTestUser({ role: Role.DIRECTOR });
+    const group = await prisma.schoolGroup.create({
+      data: { name: 'G', directorId: director.id },
+    });
     await prisma.school.updateMany({
       where: { id: { in: [a.school.id, b.school.id, c.id] } },
       data: { groupId: group.id },
-    });
-    const director = await createTestUser({
-      role: Role.DIRECTOR,
-      groupId: group.id,
     });
     const login = await request(app.getHttpServer())
       .post('/api/auth/login')

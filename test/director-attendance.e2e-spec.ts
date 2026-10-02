@@ -184,14 +184,13 @@ describe('Director attendance insights (e2e)', () => {
       },
     });
 
-    const group = await prisma.schoolGroup.create({ data: { name: 'G' } });
+    const director = await createTestUser({ role: Role.DIRECTOR });
+    const group = await prisma.schoolGroup.create({
+      data: { name: 'G', directorId: director.id },
+    });
     await prisma.school.updateMany({
       where: { id: { in: [a.id, b.id] } },
       data: { groupId: group.id },
-    });
-    const director = await createTestUser({
-      role: Role.DIRECTOR,
-      groupId: group.id,
     });
     const login = await api()
       .post('/api/auth/login')

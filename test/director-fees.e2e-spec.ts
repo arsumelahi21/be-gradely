@@ -224,14 +224,13 @@ describe('Director fees insights (e2e)', () => {
     const c = await branch('Charlie', 'PKR', false);
     const foreign = await createTestSchool({ name: 'Delta' });
 
-    const group = await prisma.schoolGroup.create({ data: { name: 'G' } });
+    const director = await createTestUser({ role: Role.DIRECTOR });
+    const group = await prisma.schoolGroup.create({
+      data: { name: 'G', directorId: director.id },
+    });
     await prisma.school.updateMany({
       where: { id: { in: [a.school.id, b.school.id, c.school.id] } },
       data: { groupId: group.id },
-    });
-    const director = await createTestUser({
-      role: Role.DIRECTOR,
-      groupId: group.id,
     });
     const login = await api()
       .post('/api/auth/login')

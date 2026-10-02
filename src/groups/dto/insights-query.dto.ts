@@ -18,6 +18,12 @@ export class InsightsQueryDto {
   @MaxLength(64)
   branch?: string;
 
+  /** 'all' or one of the director's groups; narrows the branches before `branch` applies. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  group?: string;
+
   @IsOptional()
   @IsIn(['current', 'previous'])
   ay?: 'current' | 'previous';

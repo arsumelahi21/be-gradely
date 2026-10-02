@@ -5,6 +5,9 @@ import { FeesModule } from '../fees/fees.module';
 import { AttendanceModule } from '../attendance/attendance.module';
 import { AcademicsModule } from '../academics/academics.module';
 import { GroupsController } from './groups.controller';
+import { DirectorsController } from './directors.controller';
+import { DirectorsService } from './directors.service';
+import { DirectorMapService } from './director-map.service';
 import { GroupsService } from './groups.service';
 import { DirectorController } from './director.controller';
 import { DirectorService } from './director.service';
@@ -27,9 +30,10 @@ import { DirectorOverviewService } from './director-overview.service';
     AttendanceModule,
     AcademicsModule,
   ],
-  controllers: [GroupsController, DirectorController],
+  controllers: [GroupsController, DirectorsController, DirectorController],
   providers: [
     GroupsService,
+    DirectorsService,
     DirectorService,
     DirectorScopeGuard,
     DirectorQueriesService,
@@ -41,6 +45,7 @@ import { DirectorOverviewService } from './director-overview.service';
     DirectorPrincipalsService,
     DirectorActivityService,
     DirectorOverviewService,
+    DirectorMapService,
   ],
   exports: [DirectorService],
 })

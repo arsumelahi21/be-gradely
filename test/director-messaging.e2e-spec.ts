@@ -41,15 +41,16 @@ describe('Director messaging (e2e)', () => {
       'Far Principal',
     );
 
-    const group = await prisma.schoolGroup.create({ data: { name: 'G' } });
+    const director = await createTestUser({
+      role: Role.DIRECTOR,
+      fullName: 'Dana Director',
+    });
+    const group = await prisma.schoolGroup.create({
+      data: { name: 'G', directorId: director.id },
+    });
     await prisma.school.update({
       where: { id: a.id },
       data: { groupId: group.id },
-    });
-    const director = await createTestUser({
-      role: Role.DIRECTOR,
-      groupId: group.id,
-      fullName: 'Dana Director',
     });
     const sa = await createTestUser({ role: Role.SUPER_ADMIN });
     const login = await api()

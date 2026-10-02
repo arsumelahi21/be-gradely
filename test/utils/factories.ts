@@ -32,7 +32,6 @@ export async function createTestSchool(
 export interface CreateTestUserInput {
   role: Role;
   schoolId?: string | null;
-  groupId?: string | null;
   email?: string;
   password?: string;
   fullName?: string;
@@ -47,7 +46,6 @@ export async function createTestUser(input: CreateTestUserInput) {
   const {
     role,
     schoolId = null,
-    groupId = null,
     email = `user-${uniq()}@test.local`,
     password = DEFAULT_PASSWORD,
     fullName = 'Test User',
@@ -69,7 +67,6 @@ export async function createTestUser(input: CreateTestUserInput) {
       passwordHash,
       role: role as any,
       schoolId,
-      groupId,
       isActive,
       ...(isAdmin ? { fullName } : {}),
     },

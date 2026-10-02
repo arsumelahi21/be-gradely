@@ -13,12 +13,29 @@ import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-export class GroupNameDto {
+export class CreateGroupDto {
   @Transform(trim)
   @IsString()
   @IsNotEmpty()
   @MaxLength(120)
   name: string;
+
+  /** Every group has exactly one director, chosen when it is created. */
+  @IsUUID()
+  directorId: string;
+}
+
+export class UpdateGroupDto {
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  name?: string;
+
+  @IsOptional()
+  @IsUUID()
+  directorId?: string;
 }
 
 export class ListGroupsQueryDto extends PaginationQueryDto {
@@ -56,4 +73,30 @@ export class CreateDirectorDto {
   @IsOptional()
   @IsString()
   phoneDialCode?: string;
+}
+
+export class UpdateDirectorDto {
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  fullName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(8)
+  phoneDialCode?: string;
+}
+
+export class ListDirectorsQueryDto extends PaginationQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
 }

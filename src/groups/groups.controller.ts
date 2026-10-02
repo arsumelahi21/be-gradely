@@ -17,9 +17,9 @@ import { Role } from '../common/types/role.type';
 import { GroupsService } from './groups.service';
 import {
   AttachSchoolDto,
-  CreateDirectorDto,
-  GroupNameDto,
+  CreateGroupDto,
   ListGroupsQueryDto,
+  UpdateGroupDto,
 } from './dto/group.dto';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -29,7 +29,7 @@ export class GroupsController {
   constructor(private groups: GroupsService) {}
 
   @Post()
-  create(@Body() dto: GroupNameDto, @Req() req: any) {
+  create(@Body() dto: CreateGroupDto, @Req() req: any) {
     return this.groups.create(dto, req.user);
   }
 
@@ -44,8 +44,17 @@ export class GroupsController {
   }
 
   @Patch(':id')
-  rename(@Param('id') id: string, @Body() dto: GroupNameDto, @Req() req: any) {
-    return this.groups.rename(id, dto, req.user);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateGroupDto,
+    @Req() req: any,
+  ) {
+    return this.groups.update(id, dto, req.user);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string, @Req() req: any) {
+    return this.groups.remove(id, req.user);
   }
 
   @Post(':id/schools')
@@ -69,14 +78,5 @@ export class GroupsController {
   @Delete(':id/targets')
   resetTargets(@Param('id') id: string, @Req() req: any) {
     return this.groups.resetTargets(id, req.user);
-  }
-
-  @Post(':id/directors')
-  createDirector(
-    @Param('id') id: string,
-    @Body() dto: CreateDirectorDto,
-    @Req() req: any,
-  ) {
-    return this.groups.createDirector(id, dto, req.user);
   }
 }

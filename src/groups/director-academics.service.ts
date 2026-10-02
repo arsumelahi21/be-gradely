@@ -112,7 +112,7 @@ export class DirectorAcademicsService {
     );
   }
 
-  private async branchAcademics(ctx: BranchContext): Promise<AcademicsData> {
+  async branchAcademics(ctx: BranchContext): Promise<AcademicsData> {
     const { branch, year, priorYear, now, single } = ctx;
     const cutoff = new Date(now.getTime() - RESULTS_OVERDUE_DAYS * DAY_MS);
     const [sections, backlog, overdue, before, terms, subjects] =

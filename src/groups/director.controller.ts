@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  Param,
+  ParseUUIDPipe,
   Patch,
   Query,
   Req,
@@ -22,6 +24,7 @@ import { DirectorStaffingService } from './director-staffing.service';
 import { DirectorPrincipalsService } from './director-principals.service';
 import { DirectorActivityService } from './director-activity.service';
 import { DirectorOverviewService } from './director-overview.service';
+import { DirectorMapService } from './director-map.service';
 import { InsightsQueryDto } from './dto/insights-query.dto';
 import { UpdateTargetsDto } from './dto/targets.dto';
 import { GroupsService } from './groups.service';
@@ -43,6 +46,7 @@ export class DirectorController {
     private activity: DirectorActivityService,
     private overview: DirectorOverviewService,
     private groups: GroupsService,
+    private map: DirectorMapService,
   ) {}
 
   @Get('branches')
@@ -109,6 +113,16 @@ export class DirectorController {
   @Get('insights/overview')
   overviewInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
     return this.overview.insights(req.directorScope, query);
+  }
+
+  // ParseUUIDPipe answers a malformed id with 400; any well-formed id outside the scope is a 404.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('map/:branchId')
+  mapBranch(
+    @Param('branchId', ParseUUIDPipe) branchId: string,
+    @Req() req: any,
+  ) {
+    return this.map.branch(req.directorScope, branchId);
   }
 
   @Get('targets')

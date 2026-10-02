@@ -243,9 +243,10 @@ describe('Chatbot (e2e)', () => {
 
   // ---- Ownership ----------------------------------------------------------
 
-  it('never returns another user’s chat, even to a same-school admin', async () => {
+  // A school has one principal, so the other same-school chatbot user is a teacher.
+  it('never returns another user’s chat, even to someone in the same school', async () => {
     const ownerToken = await tokenForRole(Role.SCHOOL_ADMIN);
-    const otherToken = await tokenForRole(Role.SCHOOL_ADMIN);
+    const otherToken = await tokenForRole(Role.TEACHER);
 
     const created = await request(server())
       .post('/api/chatbot/chats')

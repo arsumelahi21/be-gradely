@@ -216,8 +216,10 @@ export class MessagingService extends BaseSchoolScopedService {
         where: {
           id: recipient.id,
           isActive: true,
-          group: {
-            schools: { some: { id: actor.schoolId ?? '', isActive: true } },
+          directedGroups: {
+            some: {
+              schools: { some: { id: actor.schoolId ?? '', isActive: true } },
+            },
           },
         },
         select: { id: true },
@@ -736,7 +738,9 @@ export class MessagingService extends BaseSchoolScopedService {
     const serves = await this.prisma.user.findFirst({
       where: {
         id: reported.id,
-        group: { schools: { some: { id: actor.schoolId ?? '' } } },
+        directedGroups: {
+          some: { schools: { some: { id: actor.schoolId ?? '' } } },
+        },
       },
       select: { id: true },
     });
@@ -848,7 +852,7 @@ export class MessagingService extends BaseSchoolScopedService {
           { role: Role.SUPER_ADMIN },
           {
             role: Role.DIRECTOR,
-            group: { schools: { some: { id: schoolId } } },
+            directedGroups: { some: { schools: { some: { id: schoolId } } } },
           },
         );
       }

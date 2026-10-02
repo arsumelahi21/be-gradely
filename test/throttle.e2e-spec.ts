@@ -112,11 +112,14 @@ describe('Rate limiting (e2e)', () => {
   });
 
   describe('signed-in requests', () => {
+    // Two schools: a school has one active principal (User_one_active_principal_per_school).
     async function twoAdmins() {
-      const school = await createTestSchool();
       const [a, b] = await Promise.all(
-        [1, 2].map(() =>
-          createTestUser({ role: Role.SCHOOL_ADMIN, schoolId: school.id }),
+        [1, 2].map(async () =>
+          createTestUser({
+            role: Role.SCHOOL_ADMIN,
+            schoolId: (await createTestSchool()).id,
+          }),
         ),
       );
       return { a, b };

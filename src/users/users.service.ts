@@ -41,6 +41,18 @@ import {
 import { schoolAdminUserIds } from '../common/notifications/recipients';
 import { generateTemporaryPassword } from './temp-password';
 
+/** The partial index User_one_active_principal_per_school, hit by a race the pre-check missed. */
+function throwIfPrincipalTaken(e: any): never {
+  const target: unknown = e?.meta?.target;
+  // Exactly this index: [schoolId, userCode] is unique too, and a clash there isn't this.
+  const isPrincipalIndex =
+    target === 'User_one_active_principal_per_school' ||
+    (Array.isArray(target) && target.length === 1 && target[0] === 'schoolId');
+  if (e?.code === 'P2002' && isPrincipalIndex)
+    throw new ConflictException('This school already has an active principal');
+  throw e;
+}
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -96,12 +108,35 @@ export class UsersService {
       throw new BadRequestException('Invalid schoolId');
   }
 
-  async create(dto: CreateUserDto, actor: Actor) {
-    // A director needs a groupId, which this DTO cannot carry; the DB CHECK would 500.
-    if (dto.role === Role.DIRECTOR)
-      throw new BadRequestException(
-        'Directors are created from a school group',
+  /**
+   * One active principal per school. The partial unique index
+   * User_one_active_principal_per_school is the race backstop; this check exists so the 409
+   * can name who already holds the post.
+   */
+  private async assertNoActivePrincipal(schoolId: string, exceptId?: string) {
+    const current = await this.prisma.user.findFirst({
+      where: {
+        schoolId,
+        role: Role.SCHOOL_ADMIN,
+        isActive: true,
+        ...(exceptId && { id: { not: exceptId } }),
+      },
+      select: {
+        fullName: true,
+        email: true,
+        school: { select: { name: true } },
+      },
+    });
+    if (current)
+      throw new ConflictException(
+        `${current.school?.name ?? 'This school'} already has an active principal, ${current.fullName || current.email}. Deactivate them first.`,
       );
+  }
+
+  async create(dto: CreateUserDto, actor: Actor) {
+    // This DTO carries a school; a director never has one, and has its own /directors flow.
+    if (dto.role === Role.DIRECTOR)
+      throw new BadRequestException('Directors are created under Directors');
     if (actor.role === Role.SUPER_ADMIN) {
       // SUPER_ADMIN can create anyone, but only SUPER_ADMIN can have null schoolId
       if (dto.role !== Role.SUPER_ADMIN) {
@@ -128,6 +163,8 @@ export class UsersService {
       actor.role === Role.SCHOOL_ADMIN
         ? actor.schoolId!
         : (dto.schoolId ?? null);
+    if (dto.role === Role.SCHOOL_ADMIN && finalSchoolId)
+      await this.assertNoActivePrincipal(finalSchoolId);
 
     // Duplicate checks — fail fast with 409 Conflict before writing anything,
     // so an admin never silently overwrites or duplicates an existing record.
@@ -467,7 +504,7 @@ export class UsersService {
         if (isP2002 && (target?.includes?.('email') ?? false)) {
           throw new ConflictException('Email already exists');
         }
-        throw e;
+        throwIfPrincipalTaken(e);
       }
     }
 
@@ -947,22 +984,31 @@ export class UsersService {
     if (actor.role !== Role.SUPER_ADMIN && actor.role !== Role.SCHOOL_ADMIN) {
       throw new ForbiddenException('Not allowed');
     }
+    if (
+      isActive &&
+      !user.isActive &&
+      user.role === Role.SCHOOL_ADMIN &&
+      user.schoolId
+    )
+      await this.assertNoActivePrincipal(user.schoolId, id);
 
-    const updated = await this.prisma.user.update({
-      where: { id },
-      // Only deactivation revokes tokens, so a no-op "activate" logs nobody out.
-      data: {
-        isActive,
-        ...(!isActive && { refreshTokenHash: null }),
-      },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        isActive: true,
-        schoolId: true,
-      },
-    });
+    const updated = await this.prisma.user
+      .update({
+        where: { id },
+        // Only deactivation revokes tokens, so a no-op "activate" logs nobody out.
+        data: {
+          isActive,
+          ...(!isActive && { refreshTokenHash: null }),
+        },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          isActive: true,
+          schoolId: true,
+        },
+      })
+      .catch(throwIfPrincipalTaken);
 
     // The users/students/teachers lists are cached per school for 5 minutes and are
     // filtered on isActive, so without this they served the old flag until the TTL.
@@ -1007,7 +1053,7 @@ export class UsersService {
       }
     }
 
-    // A director belongs to a group, never a school (DB CHECK User_director_group_check).
+    // A director oversees groups, never one school (DB CHECK User_director_school_check).
     if (user.role === Role.DIRECTOR && dto.schoolId) {
       throw new BadRequestException('A director cannot be assigned a school');
     }
@@ -1093,6 +1139,8 @@ export class UsersService {
       }
       if (dto.schoolId) {
         await this.ensureSchoolExists(dto.schoolId);
+        if (user.role === Role.SCHOOL_ADMIN && user.isActive)
+          await this.assertNoActivePrincipal(dto.schoolId, id);
       }
     }
 
@@ -1108,10 +1156,9 @@ export class UsersService {
     }
 
     if (Object.keys(userUpdateData).length > 0) {
-      await this.prisma.user.update({
-        where: { id },
-        data: userUpdateData,
-      });
+      await this.prisma.user
+        .update({ where: { id }, data: userUpdateData })
+        .catch(throwIfPrincipalTaken);
     }
 
     if (user.role === Role.TEACHER && user.teacherProfile) {

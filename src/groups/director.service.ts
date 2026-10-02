@@ -11,7 +11,7 @@ import { Role } from '../common/types/role.type';
 import { Actor } from '../common/types/actor.type';
 import { pickCurrentAcademicYear } from '../common/academic-year';
 import { InsightsQueryDto } from './dto/insights-query.dto';
-import { StoredTargets, parseStoredTargets } from './targets';
+import { StoredTargets, branchTargets, parseStoredTargets } from './targets';
 import {
   InsightsWindow,
   RangeWindow,
@@ -29,13 +29,20 @@ export interface ScopeBranch {
   currency: string;
   isActive: boolean;
   feeDueDayOfMonth: number;
+  groupId: string;
+}
+
+export interface ScopeGroup {
+  id: string;
+  name: string;
+  targets: StoredTargets;
 }
 
 export interface DirectorScope {
   directorId: string;
-  group: { id: string; name: string };
+  /** Every group this user directs; empty until the super admin assigns one. */
+  groups: ScopeGroup[];
   branches: ScopeBranch[];
-  targets: StoredTargets;
 }
 
 export interface YearRef {
@@ -139,7 +146,8 @@ export class DirectorService {
         refreshTokenHash: { not: null },
       },
       select: {
-        group: {
+        directedGroups: {
+          orderBy: { name: 'asc' },
           select: {
             id: true,
             name: true,
@@ -154,20 +162,24 @@ export class DirectorService {
                 currency: true,
                 isActive: true,
                 feeDueDayOfMonth: true,
+                groupId: true,
               },
             },
           },
         },
       },
     });
-    // The DB CHECK guarantees a director has a group; a missing one means "not a director".
-    if (!director?.group) throw new UnauthorizedException();
-    const { schools, targets, ...group } = director.group;
+    if (!director) throw new UnauthorizedException();
     return {
       directorId: userId,
-      group,
-      branches: schools,
-      targets: parseStoredTargets(targets),
+      groups: director.directedGroups.map(({ id, name, targets }) => ({
+        id,
+        name,
+        targets: parseStoredTargets(targets),
+      })),
+      branches: director.directedGroups.flatMap((g) =>
+        g.schools.map((s) => ({ ...s, groupId: g.id })),
+      ),
     };
   }
 
@@ -175,9 +187,10 @@ export class DirectorService {
     const years = await this.activeYears(scope.branches.map((b) => b.id));
     const now = new Date();
     return {
-      group: scope.group,
+      groups: scope.groups.map(({ id, name }) => ({ id, name })),
       branches: scope.branches.map((b) => ({
         schoolId: b.id,
+        groupId: b.groupId,
         name: b.name,
         code: b.code,
         city: b.city,
@@ -191,11 +204,30 @@ export class DirectorService {
   }
 
   /** A foreign or unknown id is a 404 with the same body, so it never confirms another school exists. */
-  selectBranches(scope: DirectorScope, branch?: string): ScopeBranch[] {
-    if (!branch || branch === 'all') return scope.branches;
-    const found = scope.branches.find((b) => b.id === branch);
+  selectBranches(
+    scope: DirectorScope,
+    branch?: string,
+    group?: string,
+  ): ScopeBranch[] {
+    let branches = scope.branches;
+    if (group && group !== 'all') {
+      if (!scope.groups.some((g) => g.id === group))
+        throw new NotFoundException('Group not found');
+      branches = branches.filter((b) => b.groupId === group);
+    }
+    if (!branch || branch === 'all') return branches;
+    const found = branches.find((b) => b.id === branch);
     if (!found) throw new NotFoundException('Branch not found');
     return [found];
+  }
+
+  /** A branch's targets: its group's network level, then the branch's own override. */
+  targetsFor(scope: DirectorScope, branch: ScopeBranch) {
+    const group = scope.groups.find((g) => g.id === branch.groupId);
+    return branchTargets(
+      group?.targets ?? { network: {}, branches: {} },
+      branch.id,
+    );
   }
 
   /**
@@ -211,7 +243,7 @@ export class DirectorService {
   ): Promise<Insights<T, G>> {
     const now = new Date();
     const range = resolveWindow(query, now);
-    const selected = this.selectBranches(scope, query.branch);
+    const selected = this.selectBranches(scope, query.branch, query.group);
 
     // One fan-out per director at a time, so a few open tabs can't drain the DB pool.
     if (opts.oneAtATime) {

@@ -19,10 +19,14 @@ const READ_WHITELIST: Record<string, string[]> = {
   assignments: ['getSchoolStats'],
 };
 
+// directors.* is the Super Admin's management of director accounts, not the director's own path.
 const sources = readdirSync(__dirname)
   .filter(
     (f) =>
-      f.startsWith('director') && f.endsWith('.ts') && !f.endsWith('.spec.ts'),
+      f.startsWith('director') &&
+      !f.startsWith('directors.') &&
+      f.endsWith('.ts') &&
+      !f.endsWith('.spec.ts'),
   )
   .map((f) => ({ file: f, text: readFileSync(join(__dirname, f), 'utf8') }));
 

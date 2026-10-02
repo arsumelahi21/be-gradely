@@ -43,9 +43,12 @@ export class TargetValuesDto {
   resultsDays?: number;
 }
 
-// No groupId: the group always comes from the director's own scope.
 export class UpdateTargetsDto {
-  /** Omitted: the network-wide level. Otherwise one of the director's branches (404 if not). */
+  /** One of the groups this director directs; anything else is a 404. */
+  @IsUUID()
+  groupId: string;
+
+  /** Omitted: the group's network level. Otherwise one of that group's branches (404 if not). */
   @IsOptional()
   @IsUUID()
   branchId?: string;

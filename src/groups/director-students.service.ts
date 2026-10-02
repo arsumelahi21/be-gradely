@@ -105,7 +105,7 @@ export class DirectorStudentsService {
     );
   }
 
-  private async branchStudents(ctx: BranchContext): Promise<StudentsData> {
+  async branchStudents(ctx: BranchContext): Promise<StudentsData> {
     const { branch, year, range, now } = ctx;
     const [enrolment, sections, roster, admissions, monthly, leavers] =
       await Promise.all([

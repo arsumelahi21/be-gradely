@@ -119,7 +119,7 @@ export class DirectorAttendanceService {
     return result;
   }
 
-  private async branchAttendance(ctx: BranchContext): Promise<AttendanceData> {
+  async branchAttendance(ctx: BranchContext): Promise<AttendanceData> {
     const { actor, branch, year, range, now } = ctx;
     const before = previousWindow(range);
     // A custom window is allowed here (README §1, the one M13 exception); its key is per window.

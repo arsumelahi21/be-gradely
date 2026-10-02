@@ -495,6 +495,30 @@ export class DirectorQueriesService {
     );
   }
 
+  /** The session's date sheets by stage, for the network map. Rejected ones are left out. */
+  examPipeline(schoolId: string, academicYearId: string) {
+    return this.cached(
+      schoolId,
+      'exam-pipeline',
+      { ay: academicYearId },
+      60,
+      async () => {
+        const [row] = await this.prisma.$queryRaw<
+          { draft: number; review: number; marking: number; final: number }[]
+        >`
+          SELECT COUNT(*) FILTER (WHERE "status" IN ('DRAFT', 'CHANGES_REQUESTED'))::int AS draft,
+                 COUNT(*) FILTER (WHERE "status" = 'PENDING_REVIEW')::int AS review,
+                 COUNT(*) FILTER (WHERE "status" = 'PUBLISHED'
+                                    AND "resultStatus" <> 'FINALIZED')::int AS marking,
+                 COUNT(*) FILTER (WHERE "status" = 'PUBLISHED'
+                                    AND "resultStatus" = 'FINALIZED')::int AS final
+            FROM "Examination"
+           WHERE "schoolId" = ${schoolId} AND "academicYearId" = ${academicYearId}`;
+        return row;
+      },
+    );
+  }
+
   /** Q7c: date sheets waiting for the principal's review, across every session (it is a queue). */
   examBacklog(schoolId: string) {
     return this.cached(schoolId, 'exam-backlog', {}, 60, async () => {

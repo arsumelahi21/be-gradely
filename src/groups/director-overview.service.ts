@@ -13,7 +13,7 @@ import {
 } from './director.service';
 import { DirectorQueriesService } from './director.queries';
 import { InsightsQueryDto } from './dto/insights-query.dto';
-import { Targets, branchTargets } from './targets';
+import { Targets } from './targets';
 import {
   RangeWindow,
   Ratio,
@@ -120,7 +120,7 @@ export class DirectorOverviewService {
       scope,
       fixed,
       (ctx) =>
-        this.branchOverview(ctx, branchTargets(scope.targets, ctx.branch.id)),
+        this.branchOverview(ctx, this.director.targetsFor(scope, ctx.branch)),
       (rows) => this.rollUp(rows),
     );
   }

@@ -60,8 +60,14 @@ describe('Directors and school groups (e2e)', () => {
         createTestSchool({ name }),
       ),
     );
-    const g1 = await prisma.schoolGroup.create({ data: { name: 'G1' } });
-    const g2 = await prisma.schoolGroup.create({ data: { name: 'G2' } });
+    const d1 = await createTestUser({ role: Role.DIRECTOR });
+    const d2 = await createTestUser({ role: Role.DIRECTOR });
+    const g1 = await prisma.schoolGroup.create({
+      data: { name: 'G1', directorId: d1.id },
+    });
+    const g2 = await prisma.schoolGroup.create({
+      data: { name: 'G2', directorId: d2.id },
+    });
     await prisma.school.updateMany({
       where: { id: { in: [a.id, b.id] } },
       data: { groupId: g1.id },
@@ -70,8 +76,6 @@ describe('Directors and school groups (e2e)', () => {
       where: { id: d.id },
       data: { groupId: g2.id },
     });
-    const d1 = await createTestUser({ role: Role.DIRECTOR, groupId: g1.id });
-    const d2 = await createTestUser({ role: Role.DIRECTOR, groupId: g1.id });
     const principalB = await createTestUser({
       role: Role.SCHOOL_ADMIN,
       schoolId: b.id,
@@ -80,31 +84,33 @@ describe('Directors and school groups (e2e)', () => {
   }
 
   describe('schema', () => {
-    it('installs the director CHECK constraint', async () => {
-      const rows = await prisma.$queryRaw<{ def: string }[]>`
+    // Raw SQL, invisible to migrate diff: checked here instead.
+    it('installs the director CHECK and the one-active-principal index', async () => {
+      const checks = await prisma.$queryRaw<{ def: string }[]>`
         SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
-         WHERE conname = 'User_director_group_check'`;
-      expect(rows).toHaveLength(1);
+         WHERE conname = 'User_director_school_check'`;
+      expect(checks).toHaveLength(1);
+      const indexes = await prisma.$queryRaw<{ indexdef: string }[]>`
+        SELECT indexdef FROM pg_indexes
+         WHERE indexname = 'User_one_active_principal_per_school'`;
+      expect(indexes[0].indexdef).toMatch(/UNIQUE.*WHERE/);
     });
 
-    it('rejects a director without a group, a director with a school and a grouped teacher', async () => {
+    it('rejects a director with a school and a second active principal, at the database', async () => {
       const school = await createTestSchool();
-      const group = await prisma.schoolGroup.create({ data: { name: 'G' } });
-      await expect(createTestUser({ role: Role.DIRECTOR })).rejects.toThrow();
       await expect(
-        createTestUser({
-          role: Role.DIRECTOR,
-          groupId: group.id,
-          schoolId: school.id,
-        }),
+        createTestUser({ role: Role.DIRECTOR, schoolId: school.id }),
       ).rejects.toThrow();
+      await createTestUser({ role: Role.SCHOOL_ADMIN, schoolId: school.id });
       await expect(
-        createTestUser({
-          role: Role.TEACHER,
-          schoolId: school.id,
-          groupId: group.id,
-        }),
+        createTestUser({ role: Role.SCHOOL_ADMIN, schoolId: school.id }),
       ).rejects.toThrow();
+      // History is fine: deactivated principals don't count.
+      await createTestUser({
+        role: Role.SCHOOL_ADMIN,
+        schoolId: school.id,
+        isActive: false,
+      });
     });
   });
 
@@ -169,6 +175,7 @@ describe('Directors and school groups (e2e)', () => {
           'GET /director/principals',
           'GET /director/insights/activity',
           'GET /director/insights/overview',
+          'GET /director/map/:branchId',
           // The one director write: its own group's targets row.
           'GET /director/targets',
           'PATCH /director/targets',
@@ -211,12 +218,11 @@ describe('Directors and school groups (e2e)', () => {
 
   describe('a signed-in director', () => {
     it('signs in, reads its profile and its own self-service routes', async () => {
-      const { d1, g1 } = await fixture();
+      const { d1 } = await fixture();
       const token = await loginToken(d1.email, d1.password);
 
       const me = await api().get('/api/auth/me').set(auth(token));
       expect(me.status).toBe(200);
-      expect(me.body.groupId).toBe(g1.id);
       expect(me.body.school).toBeNull();
 
       expect(
@@ -243,6 +249,7 @@ describe('Directors and school groups (e2e)', () => {
         api().get('/api/dashboard/school-overview'),
         api().get('/api/schools'),
         api().get('/api/groups'),
+        api().get('/api/directors'),
         api().post('/api/users').send({}),
         api()
           .patch(`/api/users/${principalB.id}/active`)
@@ -278,7 +285,7 @@ describe('Directors and school groups (e2e)', () => {
 
       const res = await api().get('/api/director/branches').set(auth(token));
       expect(res.status).toBe(200);
-      expect(res.body.group).toEqual({ id: g1.id, name: 'G1' });
+      expect(res.body.groups).toEqual([{ id: g1.id, name: 'G1' }]);
       expect(res.body.branches.map((x: any) => x.name)).toEqual([
         'Alpha',
         'Bravo',
@@ -289,6 +296,7 @@ describe('Directors and school groups (e2e)', () => {
           'city',
           'code',
           'currency',
+          'groupId',
           'isActive',
           'name',
           'schoolId',
@@ -302,19 +310,54 @@ describe('Directors and school groups (e2e)', () => {
       expect(res.body.branches[1].academicYear).toBeNull();
     });
 
-    it('gets an empty list for a group with no schools', async () => {
-      const group = await prisma.schoolGroup.create({
-        data: { name: 'Empty' },
-      });
-      const d = await createTestUser({
-        role: Role.DIRECTOR,
-        groupId: group.id,
-      });
+    it('gets an empty list for a group with no schools, or with no group at all', async () => {
+      const d = await createTestUser({ role: Role.DIRECTOR });
       const token = await loginToken(d.email, d.password);
+      const none = await api().get('/api/director/branches').set(auth(token));
+      expect(none.status).toBe(200);
+      expect(none.body).toEqual({ groups: [], branches: [] });
+
+      await prisma.schoolGroup.create({
+        data: { name: 'Empty', directorId: d.id },
+      });
+      const res = await api().get('/api/director/branches').set(auth(token));
+      expect(res.body.groups.map((g: any) => g.name)).toEqual(['Empty']);
+      expect(res.body.branches).toEqual([]);
+    });
+
+    it('sees every group it directs, and can narrow to one', async () => {
+      const { d1, g1, standalone } = await fixture();
+      const g3 = await prisma.schoolGroup.create({
+        data: { name: 'G3', directorId: d1.id },
+      });
+      await prisma.school.update({
+        where: { id: standalone.id },
+        data: { groupId: g3.id },
+      });
+      const token = await loginToken(d1.email, d1.password);
 
       const res = await api().get('/api/director/branches').set(auth(token));
-      expect(res.status).toBe(200);
-      expect(res.body.branches).toEqual([]);
+      expect(res.body.groups.map((g: any) => g.name)).toEqual(['G1', 'G3']);
+      expect(res.body.branches.map((b: any) => [b.name, b.groupId])).toEqual([
+        ['Alpha', g1.id],
+        ['Bravo', g1.id],
+        ['Solo', g3.id],
+      ]);
+
+      const insights = (q: string) =>
+        api().get(`/api/director/insights/students${q}`).set(auth(token));
+      const only = await insights(`?group=${g3.id}`);
+      expect(only.body.branches.map((b: any) => b.name)).toEqual(['Solo']);
+      // Another director's group, or a branch outside the chosen group: the same 404.
+      const { g2 } = await fixture();
+      expect((await insights(`?group=${g2.id}`)).status).toBe(404);
+      expect(
+        (await insights(`?group=${g3.id}&branch=${standalone.id}`)).status,
+      ).toBe(200);
+      const alpha = res.body.branches[0].schoolId;
+      expect((await insights(`?group=${g3.id}&branch=${alpha}`)).status).toBe(
+        404,
+      );
     });
   });
 
@@ -457,13 +500,16 @@ describe('Directors and school groups (e2e)', () => {
 
   describe('super admin /groups', () => {
     it('creates, lists, paginates and renames groups', async () => {
-      const { saToken, g1 } = await fixture();
+      const { saToken, g1, d1, principalB } = await fixture();
       const created = await api()
         .post('/api/groups')
         .set(auth(saToken))
-        .send({ name: '  New Group  ' });
+        .send({ name: '  New Group  ', directorId: d1.id });
       expect(created.status).toBe(201);
-      expect(created.body.name).toBe('New Group');
+      expect(created.body).toMatchObject({
+        name: 'New Group',
+        directorId: d1.id,
+      });
 
       const all = await api().get('/api/groups').set(auth(saToken));
       expect(all.body.map((g: any) => g.name)).toEqual([
@@ -471,7 +517,10 @@ describe('Directors and school groups (e2e)', () => {
         'G2',
         'New Group',
       ]);
-      expect(all.body[0]).toMatchObject({ schoolCount: 2, directorCount: 2 });
+      expect(all.body[0]).toMatchObject({
+        schoolCount: 2,
+        director: { id: d1.id },
+      });
 
       const page = await api()
         .get('/api/groups?page=2&pageSize=2')
@@ -487,18 +536,22 @@ describe('Directors and school groups (e2e)', () => {
       expect(
         (await api().get(`/api/groups/${g1.id}`).set(auth(saToken))).body.name,
       ).toBe('Renamed');
+      const post = (body: object) =>
+        api().post('/api/groups').set(auth(saToken)).send(body);
+      expect((await post({ name: ' ', directorId: d1.id })).status).toBe(400);
+      expect((await post({ name: 'No director' })).status).toBe(400);
+      // A principal is not a director.
       expect(
-        (await api().post('/api/groups').set(auth(saToken)).send({ name: ' ' }))
-          .status,
-      ).toBe(400);
+        (await post({ name: 'X', directorId: principalB.id })).status,
+      ).toBe(404);
     });
 
     it('returns a group with explicit school and director fields only', async () => {
       const { saToken, g1 } = await fixture();
       const res = await api().get(`/api/groups/${g1.id}`).set(auth(saToken));
       expect(res.status).toBe(200);
-      expect(Object.keys(res.body.directors[0]).sort()).toEqual(
-        ['email', 'fullName', 'id', 'isActive', 'mustChangePassword'].sort(),
+      expect(Object.keys(res.body.director).sort()).toEqual(
+        ['email', 'fullName', 'id', 'isActive'].sort(),
       );
       expect(JSON.stringify(res.body)).not.toMatch(
         /passwordHash|refreshTokenHash/,
@@ -568,78 +621,62 @@ describe('Directors and school groups (e2e)', () => {
       ).toBeNull();
     });
 
-    it('creates a director who signs in with the password the super admin chose', async () => {
-      const { saToken, g1 } = await fixture();
-      const body = {
-        email: 'director@test.local',
-        password: 'Chosen@123',
-        fullName: 'Dana Director',
-      };
-      const res = await api()
-        .post(`/api/groups/${g1.id}/directors`)
+    it('gives a group another director, who takes over its branches and conversations', async () => {
+      const { saToken, g1, b, d1, d2, principalB } = await fixture();
+      const thread = await prisma.messageThread.create({
+        data: {
+          schoolId: b.id,
+          type: 'DIRECT',
+          participants: {
+            create: [{ userId: d1.id }, { userId: principalB.id }],
+          },
+        },
+      });
+      const t1 = await loginToken(d1.email, d1.password);
+      const t2 = await loginToken(d2.email, d2.password);
+
+      await api()
+        .patch(`/api/groups/${g1.id}`)
         .set(auth(saToken))
-        .send(body);
-      expect(res.status).toBe(201);
-      expect(res.body.director).toMatchObject({
-        email: body.email,
-        fullName: body.fullName,
-        isActive: true,
-        mustChangePassword: false,
-      });
-      expect(JSON.stringify(res.body)).not.toContain(body.password);
+        .send({ directorId: d2.id })
+        .expect(200);
 
-      const token = await loginToken(body.email, body.password);
+      const branches = async (t: string) =>
+        (await api().get('/api/director/branches').set(auth(t))).body.branches
+          .map((x: any) => x.name)
+          .sort();
+      expect(await branches(t1)).toEqual([]);
+      expect(await branches(t2)).toEqual(['Alpha', 'Bravo', 'Delta']);
+      const left = await prisma.threadParticipant.findMany({
+        where: { threadId: thread.id },
+      });
+      expect(left.map((x) => x.userId)).toEqual([principalB.id]);
       expect(
-        (await api().get('/api/director/branches').set(auth(token))).status,
-      ).toBe(200);
-
-      const row = await prisma.user.findUniqueOrThrow({
-        where: { email: body.email },
-      });
-      expect(row).toMatchObject({
-        role: Role.DIRECTOR,
-        groupId: g1.id,
-        schoolId: null,
-      });
+        (await api().patch(`/api/groups/${g1.id}`).set(auth(saToken)).send({}))
+          .status,
+      ).toBe(400);
     });
 
-    it('validates the director body', async () => {
-      const { saToken, g1, d1, a } = await fixture();
-      const post = (body: object) =>
-        api()
-          .post(`/api/groups/${g1.id}/directors`)
+    it('deletes a group only once it has no branches', async () => {
+      const { saToken, g1, a, b } = await fixture();
+      const del = () => api().delete(`/api/groups/${g1.id}`).set(auth(saToken));
+      expect((await del()).status).toBe(409);
+      for (const id of [a.id, b.id])
+        await api()
+          .delete(`/api/groups/${g1.id}/schools/${id}`)
           .set(auth(saToken))
-          .send({
-            email: 'n@test.local',
-            password: 'Chosen@123',
-            fullName: 'N',
-            ...body,
-          });
-
-      expect((await post({ password: 'short12' })).status).toBe(400);
-      expect((await post({ schoolId: a.id })).status).toBe(400);
-      expect((await post({ role: Role.SCHOOL_ADMIN })).status).toBe(400);
-      expect((await post({ email: d1.email })).status).toBe(409);
-      expect(
-        (
-          await api()
-            .post('/api/groups/00000000-0000-4000-8000-000000000000/directors')
-            .set(auth(saToken))
-            .send({
-              email: 'n@test.local',
-              password: 'Chosen@123',
-              fullName: 'N',
-            })
-        ).status,
-      ).toBe(404);
+          .expect(200);
+      expect((await del()).status).toBe(200);
+      expect(await prisma.schoolGroup.count({ where: { id: g1.id } })).toBe(0);
+      expect((await del()).status).toBe(404);
     });
 
     it('audits group changes, with the branch on attach and detach', async () => {
-      const { saToken, sa, g1, standalone } = await fixture();
+      const { saToken, sa, g1, d1, standalone } = await fixture();
       const created = await api()
         .post('/api/groups')
         .set(auth(saToken))
-        .send({ name: 'Audited' });
+        .send({ name: 'Audited', directorId: d1.id });
       await api()
         .patch(`/api/groups/${created.body.id}`)
         .set(auth(saToken))
@@ -652,7 +689,7 @@ describe('Directors and school groups (e2e)', () => {
         .delete(`/api/groups/${g1.id}/schools/${standalone.id}`)
         .set(auth(saToken));
       await api()
-        .post(`/api/groups/${g1.id}/directors`)
+        .post('/api/directors')
         .set(auth(saToken))
         .send({ email: 'a@test.local', password: 'Chosen@123', fullName: 'A' });
 
@@ -667,7 +704,7 @@ describe('Directors and school groups (e2e)', () => {
     });
 
     it('is super admin only', async () => {
-      const { g1, principalB, a } = await fixture();
+      const { g1, d1, principalB, a } = await fixture();
       const teacher = await createTestUser({
         role: Role.TEACHER,
         schoolId: a.id,
@@ -677,20 +714,205 @@ describe('Directors and school groups (e2e)', () => {
         const calls = [
           api().get('/api/groups'),
           api().get(`/api/groups/${g1.id}`),
-          api().post('/api/groups').send({ name: 'X' }),
+          api().post('/api/groups').send({ name: 'X', directorId: d1.id }),
           api().patch(`/api/groups/${g1.id}`).send({ name: 'X' }),
+          api().delete(`/api/groups/${g1.id}`),
           api().post(`/api/groups/${g1.id}/schools`).send({ schoolId: a.id }),
           api().delete(`/api/groups/${g1.id}/schools/${a.id}`),
-          api().post(`/api/groups/${g1.id}/directors`).send({
+          api().get('/api/directors'),
+          api().get(`/api/directors/${d1.id}`),
+          api().post('/api/directors').send({
             email: 'z@test.local',
             password: 'Chosen@123',
             fullName: 'Z',
           }),
+          api().patch(`/api/directors/${d1.id}`).send({ fullName: 'Z' }),
+          api().delete(`/api/directors/${d1.id}`),
         ];
         for (const call of calls) {
           expect((await call.set(auth(token))).status).toBe(403);
         }
       }
+    });
+  });
+
+  describe('super admin /directors', () => {
+    it('creates a director who signs in with the password the super admin chose', async () => {
+      const { saToken } = await fixture();
+      const body = {
+        email: 'director@test.local',
+        password: 'Chosen@123',
+        fullName: 'Dana Director',
+      };
+      const res = await api()
+        .post('/api/directors')
+        .set(auth(saToken))
+        .send(body);
+      expect(res.status).toBe(201);
+      expect(res.body).toMatchObject({
+        email: body.email,
+        fullName: body.fullName,
+        isActive: true,
+        mustChangePassword: false,
+        directedGroups: [],
+      });
+      expect(JSON.stringify(res.body)).not.toMatch(
+        /Chosen@123|passwordHash|refreshTokenHash/,
+      );
+
+      const token = await loginToken(body.email, body.password);
+      expect(
+        (await api().get('/api/director/branches').set(auth(token))).status,
+      ).toBe(200);
+      const row = await prisma.user.findUniqueOrThrow({
+        where: { email: body.email },
+      });
+      expect(row).toMatchObject({ role: Role.DIRECTOR, schoolId: null });
+    });
+
+    it('validates the director body', async () => {
+      const { saToken, d1, a } = await fixture();
+      const post = (body: object) =>
+        api()
+          .post('/api/directors')
+          .set(auth(saToken))
+          .send({
+            email: 'n@test.local',
+            password: 'Chosen@123',
+            fullName: 'N',
+            ...body,
+          });
+      expect((await post({ password: 'short12' })).status).toBe(400);
+      expect((await post({ schoolId: a.id })).status).toBe(400);
+      expect((await post({ role: Role.SCHOOL_ADMIN })).status).toBe(400);
+      expect((await post({ email: d1.email })).status).toBe(409);
+    });
+
+    it('lists, edits and shows the groups each director oversees', async () => {
+      const { saToken, d1, g1, principalB } = await fixture();
+      const list = await api()
+        .get('/api/directors?page=1&pageSize=10&search=')
+        .set(auth(saToken));
+      expect(list.body.total).toBe(2);
+      const mine = list.body.items.find((d: any) => d.id === d1.id);
+      expect(mine.directedGroups).toEqual([
+        { id: g1.id, name: 'G1', _count: { schools: 2 } },
+      ]);
+
+      const edited = await api()
+        .patch(`/api/directors/${d1.id}`)
+        .set(auth(saToken))
+        .send({ fullName: 'Renamed Director' });
+      expect(edited.body.fullName).toBe('Renamed Director');
+      // Only directors live here.
+      expect(
+        (await api().get(`/api/directors/${principalB.id}`).set(auth(saToken)))
+          .status,
+      ).toBe(404);
+    });
+
+    it('deletes a director only once they oversee no group', async () => {
+      const { saToken, d1, d2, g1 } = await fixture();
+      const del = () =>
+        api().delete(`/api/directors/${d1.id}`).set(auth(saToken));
+      const refused = await del();
+      expect(refused.status).toBe(409);
+      expect(refused.body.message).toContain('G1');
+
+      await api()
+        .patch(`/api/groups/${g1.id}`)
+        .set(auth(saToken))
+        .send({ directorId: d2.id })
+        .expect(200);
+      expect((await del()).status).toBe(200);
+      expect(await prisma.user.count({ where: { id: d1.id } })).toBe(0);
+    });
+
+    it('refuses to delete a director whose messages principals still have', async () => {
+      const { saToken, b, principalB } = await fixture();
+      const d = await createTestUser({ role: Role.DIRECTOR });
+      const thread = await prisma.messageThread.create({
+        data: {
+          schoolId: b.id,
+          type: 'DIRECT',
+          participants: {
+            create: [{ userId: d.id }, { userId: principalB.id }],
+          },
+        },
+      });
+      await prisma.message.create({
+        data: {
+          threadId: thread.id,
+          senderId: d.id,
+          body: 'Please send the report',
+        },
+      });
+      const res = await api()
+        .delete(`/api/directors/${d.id}`)
+        .set(auth(saToken));
+      expect(res.status).toBe(409);
+      expect(res.body.message).toMatch(/Deactivate them instead/);
+      expect(await prisma.message.count({ where: { senderId: d.id } })).toBe(1);
+    });
+  });
+
+  describe('one active principal per branch', () => {
+    const principalBody = (schoolId: string, email: string) => ({
+      email,
+      password: 'Password@123',
+      role: Role.SCHOOL_ADMIN,
+      fullName: 'Second Principal',
+      phone: '03001234567',
+      schoolId,
+    });
+
+    it('refuses a second active principal on create, naming the current one', async () => {
+      const { saToken, b, a } = await fixture();
+      const res = await api()
+        .post('/api/users')
+        .set(auth(saToken))
+        .send(principalBody(b.id, 'second@test.local'));
+      expect(res.status).toBe(409);
+      expect(res.body.message).toMatch(/already has an active principal/);
+      // Alpha has none yet, so it can have one.
+      expect(
+        (
+          await api()
+            .post('/api/users')
+            .set(auth(saToken))
+            .send(principalBody(a.id, 'alpha@test.local'))
+        ).status,
+      ).toBe(201);
+    });
+
+    it('refuses to reactivate or move a principal into a school that has one', async () => {
+      const { saToken, a, b } = await fixture();
+      const old = await createTestUser({
+        role: Role.SCHOOL_ADMIN,
+        schoolId: b.id,
+        isActive: false,
+      });
+      expect(
+        (
+          await api()
+            .patch(`/api/users/${old.id}/active`)
+            .set(auth(saToken))
+            .send({ isActive: true })
+        ).status,
+      ).toBe(409);
+
+      const alphaPrincipal = await createTestUser({
+        role: Role.SCHOOL_ADMIN,
+        schoolId: a.id,
+      });
+      expect(
+        (
+          await api()
+            .patch(`/api/users/${alphaPrincipal.id}`)
+            .set(auth(saToken))
+            .send({ schoolId: b.id })
+        ).status,
+      ).toBe(409);
     });
   });
 });

@@ -225,7 +225,7 @@ export class DirectorFeesService {
     return result;
   }
 
-  private async branchFees(ctx: BranchContext): Promise<FeesData> {
+  async branchFees(ctx: BranchContext): Promise<FeesData> {
     const { branch, year, currentYear, now, range } = ctx;
     const thisYear = now.getUTCFullYear();
     const thisMonth = now.getUTCMonth() + 1;

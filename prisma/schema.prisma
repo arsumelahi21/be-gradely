@@ -72,18 +72,22 @@ model School {
   @@index([groupId])
 }
 
-// A group of branches (each a normal School tenant) overseen by DIRECTOR users.
-// The CHECK User_director_group_check (raw SQL, invisible to Prisma) pins every
-// User with a groupId to role DIRECTOR and a null schoolId.
+// A group of branches (each a normal School tenant) overseen by exactly one DIRECTOR; one
+// director may oversee several groups. The CHECK User_director_school_check (raw SQL,
+// invisible to Prisma) keeps every DIRECTOR's schoolId null.
 model SchoolGroup {
-  id        String   @id @default(uuid())
-  name      String
+  id         String   @id @default(uuid())
+  name       String
+  /// Restrict: a director who still oversees a group can't be deleted.
+  directorId String
+  director   User     @relation("GroupDirector", fields: [directorId], references: [id], onDelete: Restrict)
   /// The director's overview targets: { network, branches: { [schoolId]: … } }, see groups/targets.ts.
-  targets   Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  schools   School[]
-  directors User[]
+  targets    Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  schools    School[]
+
+  @@index([directorId])
 }
 
 // School branding logo — bytes isolated in their own table (like UserPhoto), so
@@ -117,8 +121,7 @@ model User {
   studentProfile        StudentProfile?
   teacherProfile        TeacherProfile?
   school                School?              @relation(fields: [schoolId], references: [id])
-  groupId               String?
-  group                 SchoolGroup?         @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  directedGroups        SchoolGroup[]        @relation("GroupDirector")
   socialLinks           SocialLink[]
   quizzesCreated        Quiz[]
   settings              UserSettings?
@@ -146,7 +149,6 @@ model User {
   // schoolId lookups (leading column), so the standalone [schoolId] is dropped.
   @@index([schoolId, role])
   @@index([role])
-  @@index([groupId])
 }
 
 model UserSettings {

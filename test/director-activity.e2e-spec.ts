@@ -59,14 +59,13 @@ describe('Director activity insights (e2e)', () => {
         createdAt: new Date(Date.now() - days * DAY),
       })),
     });
-    const group = await prisma.schoolGroup.create({ data: { name: 'G' } });
+    const director = await createTestUser({ role: Role.DIRECTOR });
+    const group = await prisma.schoolGroup.create({
+      data: { name: 'G', directorId: director.id },
+    });
     await prisma.school.update({
       where: { id: a.id },
       data: { groupId: group.id },
-    });
-    const director = await createTestUser({
-      role: Role.DIRECTOR,
-      groupId: group.id,
     });
     const login = await request(app.getHttpServer())
       .post('/api/auth/login')

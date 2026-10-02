@@ -67,7 +67,7 @@ export class DirectorStaffingService {
     );
   }
 
-  private async branchStaffing(ctx: BranchContext): Promise<StaffingData> {
+  async branchStaffing(ctx: BranchContext): Promise<StaffingData> {
     const { actor, branch, year, now } = ctx;
     const last90 = resolveWindow({ preset: '90d' }, now);
     const [staff, enrolment, overview, joined, left] = await Promise.all([
