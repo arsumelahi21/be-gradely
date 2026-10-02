@@ -206,12 +206,59 @@ export class MessagingService extends BaseSchoolScopedService {
   }
 
   private async assertParticipant(threadId: string, userId: string) {
+    const thread = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      select: { type: true, sectionId: true },
+    });
+    if (!thread) throw new NotFoundException('Thread not found');
+    if (thread.type === ThreadType.CLASS && thread.sectionId) {
+      await this.syncClassParticipants(threadId, thread.sectionId);
+    }
     const p = await this.prisma.threadParticipant.findUnique({
       where: { threadId_userId: { threadId, userId } },
-      select: { id: true },
+      select: { clearedAt: true },
     });
     if (!p)
       throw new ForbiddenException('You are not a participant of this thread');
+    return p;
+  }
+
+  /**
+   * A class chat's members are its current roster, re-derived on every use:
+   * leavers lose it, joiners see only what is sent after they join. Admins stay:
+   * they are on no roster and join a class chat only by starting it.
+   * ponytail: re-derives on each read (the inbox polls every 5 s); cache or
+   * sync on roster writes if class chats get busy.
+   */
+  private async syncClassParticipants(threadId: string, sectionId: string) {
+    const [roster, rows] = await Promise.all([
+      this.deriveClassParticipants(sectionId),
+      this.prisma.threadParticipant.findMany({
+        where: { threadId },
+        select: { userId: true, user: { select: { role: true } } },
+      }),
+    ]);
+    const current = new Set(rows.map((r) => r.userId));
+    const joined = [...roster].filter((id) => !current.has(id));
+    const left = rows
+      .filter(
+        (r) =>
+          !roster.has(r.userId) &&
+          r.user.role !== Role.SCHOOL_ADMIN &&
+          r.user.role !== Role.SUPER_ADMIN,
+      )
+      .map((r) => r.userId);
+    if (!joined.length && !left.length) return;
+    const now = new Date();
+    await this.prisma.$transaction([
+      this.prisma.threadParticipant.deleteMany({
+        where: { threadId, userId: { in: left } },
+      }),
+      this.prisma.threadParticipant.createMany({
+        data: joined.map((userId) => ({ threadId, userId, clearedAt: now })),
+        skipDuplicates: true,
+      }),
+    ]);
   }
 
   // ---- thread creation ---------------------------------------------------
@@ -968,6 +1015,7 @@ export class MessagingService extends BaseSchoolScopedService {
   }
 
   async getThread(threadId: string, actor: Actor) {
+    await this.assertParticipant(threadId, actor.userId);
     const thread = await this.prisma.messageThread.findUnique({
       where: { id: threadId },
       include: {
@@ -977,9 +1025,6 @@ export class MessagingService extends BaseSchoolScopedService {
       },
     });
     if (!thread) throw new NotFoundException('Thread not found');
-    if (!thread.participants.some((p) => p.userId === actor.userId)) {
-      throw new ForbiddenException('You are not a participant of this thread');
-    }
     return this.presentThread(thread, actor.userId);
   }
 
@@ -1025,12 +1070,7 @@ export class MessagingService extends BaseSchoolScopedService {
     actor: Actor,
     query: { page?: number; pageSize?: number },
   ) {
-    const mine = await this.prisma.threadParticipant.findUnique({
-      where: { threadId_userId: { threadId, userId: actor.userId } },
-      select: { clearedAt: true },
-    });
-    if (!mine)
-      throw new ForbiddenException('You are not a participant of this thread');
+    const mine = await this.assertParticipant(threadId, actor.userId);
     const { page, pageSize, skip, take } = resolvePagination(query);
 
     // The caller doesn't see: messages before they cleared the chat, nor any

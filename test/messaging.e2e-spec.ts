@@ -224,6 +224,93 @@ describe('Messaging (e2e)', () => {
     expect(ids).toEqual(expected);
   });
 
+  describe('membership follows the roster', () => {
+    const http = () => request(app.getHttpServer());
+    const as = async (user: {
+      id: string;
+      role: string;
+      schoolId: string | null;
+      email: string;
+    }) => `Bearer ${await tokenFor(app, user)}`;
+    const openClass = async (cls: Awaited<ReturnType<typeof seedClass>>) =>
+      (
+        await http()
+          .post('/api/messaging/threads')
+          .set('Authorization', await as(cls.teacherUser))
+          .send({ type: 'CLASS', sectionId: cls.section.id })
+          .expect(201)
+      ).body.id as string;
+    const messagesOf = async (
+      threadId: string,
+      user: Parameters<typeof as>[0],
+    ) =>
+      http()
+        .get(`/api/messaging/threads/${threadId}/messages`)
+        .set('Authorization', await as(user));
+    const guardianOf = async (schoolId: string, studentId: string) => {
+      const user = await createTestUser({ role: Role.PARENT, schoolId });
+      const profile = await prisma.parentProfile.create({
+        data: { userId: user.id, fullName: 'Guardian' },
+      });
+      await prisma.parentStudent.create({
+        data: { parentId: profile.id, studentId },
+      });
+      return { user, profile };
+    };
+
+    it('drops a student who left the section, and their parent, from its class chat', async () => {
+      const cls = await seedClass({ studentCount: 2 });
+      const [stayer, leaver] = cls.students;
+      const parent = await guardianOf(cls.school.id, leaver.profile.id);
+      const threadId = await openClass(cls);
+
+      await prisma.enrollment.updateMany({
+        where: { studentId: leaver.profile.id, sectionId: cls.section.id },
+        data: { status: 'INACTIVE' },
+      });
+
+      expect((await messagesOf(threadId, leaver.user)).status).toBe(403);
+      expect((await messagesOf(threadId, parent.user)).status).toBe(403);
+      expect((await messagesOf(threadId, stayer.user)).status).toBe(200);
+    });
+
+    it('adds a newly enrolled student, who sees only messages sent after joining', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const threadId = await openClass(cls);
+      const say = async (body: string) =>
+        http()
+          .post(`/api/messaging/threads/${threadId}/messages`)
+          .set('Authorization', await as(cls.teacherUser))
+          .send({ body })
+          .expect(201);
+      await say('before');
+
+      const joiner = await createTestUser({
+        role: Role.STUDENT,
+        schoolId: cls.school.id,
+      });
+      const profile = await prisma.studentProfile.create({
+        data: { userId: joiner.id, schoolId: cls.school.id, fullName: 'New' },
+      });
+      await prisma.enrollment.create({
+        data: {
+          studentId: profile.id,
+          sectionId: cls.section.id,
+          academicYearId: cls.academicYear.id,
+          status: 'ACTIVE',
+        },
+      });
+      await say('after');
+
+      const threads = await http()
+        .get('/api/messaging/threads')
+        .set('Authorization', await as(joiner));
+      expect(threads.body.items.map((t: any) => t.id)).toContain(threadId);
+      const seen = await messagesOf(threadId, joiner);
+      expect(seen.body.items.map((m: any) => m.body)).toEqual(['after']);
+    });
+  });
+
   it('stores and returns a message body verbatim (XSS is data, not markup)', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const studentToken = await tokenFor(app, cls.students[0].user);
