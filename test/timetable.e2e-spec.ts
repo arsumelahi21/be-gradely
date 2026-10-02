@@ -985,6 +985,40 @@ describe('Timetable V2 (e2e)', () => {
         .set('Authorization', `Bearer ${token}`)
         .send(entries ? { entries } : {});
 
+    it('publish refuses a room another section uses at that time', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const t2 = await addTeacher(cls.school.id);
+      const other = await addSection(cls.school.id, cls.classGrade.id, t2.id);
+      const aPeriods = await setup(cls.section.id, token, {
+        dayStartMin: 600,
+        dayEndMin: 690,
+      });
+      const bPeriods = await setup(other.section.id, token, {
+        dayStartMin: 630,
+        dayEndMin: 720,
+      });
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: aPeriods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+        teacherId: cls.teacherProfile.id,
+        room: 'Room 3',
+      }).expect(201);
+
+      const res = await publish(other.section.id, token, [
+        {
+          dayOfWeek: 'MONDAY',
+          periodId: bPeriods[0].id,
+          sectionSubjectId: other.sectionSubject.id,
+          teacherId: t2.id,
+          room: 'room 3',
+        },
+      ]);
+      expect(res.status).toBe(409);
+      expect(res.body.message).toMatch(/Room "Room 3"/);
+    });
+
     it('validation finds a room clash behind a non-clashing overlap', async () => {
       const cls = await seedClass({ studentCount: 1 });
       const token = await adminFor(cls.school.id);
@@ -1067,6 +1101,67 @@ describe('Timetable V2 (e2e)', () => {
         periodId: aPeriods[0].id,
         sectionSubjectId: cls.sectionSubject.id,
       }).expect(201);
+    });
+
+    it('two publishes racing for one teacher: only one wins', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const other = await addSection(
+        cls.school.id,
+        cls.classGrade.id,
+        cls.teacherProfile.id,
+      );
+      const slot = { dayStartMin: 600, dayEndMin: 690 };
+      const grids = [
+        {
+          ss: cls.sectionSubject,
+          periods: await setup(cls.section.id, token, slot),
+        },
+        {
+          ss: other.sectionSubject,
+          periods: await setup(other.section.id, token, slot),
+        },
+      ];
+      const ids = (
+        await prisma.timetable.findMany({
+          where: { sectionId: { in: [cls.section.id, other.section.id] } },
+        })
+      ).map((t) => t.id);
+
+      // Hold both grids' rows so each publish has read the other section
+      // before either can write — the only way the race is reproducible.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const locker = prisma.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT id FROM "Timetable" WHERE id = ANY(${ids}) FOR UPDATE`;
+          await held;
+        },
+        { timeout: 30_000 },
+      );
+      const publishes = Promise.all(
+        grids.map((g) =>
+          publish(g.ss.sectionId, token, [
+            {
+              dayOfWeek: 'MONDAY',
+              periodId: g.periods[0].id,
+              sectionSubjectId: g.ss.id,
+              teacherId: cls.teacherProfile.id,
+            },
+          ]).then((r) => r.status),
+        ),
+      );
+      for (let waiting = 0; waiting < 2; ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const [row] = await prisma.$queryRaw<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+        waiting = row.n;
+      }
+      release();
+      await locker;
+
+      expect((await publishes).sort()).toEqual([201, 409]);
     });
 
     it('the legacy publish refuses an archived grid', async () => {

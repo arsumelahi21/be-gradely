@@ -1329,6 +1329,9 @@ export class TimetableService extends BaseSchoolScopedService {
     tx: Tx,
     slot: CandidateSlot,
   ): Promise<EntryConflict[]> {
+    // Held to commit, so two writers can't both pass the check below and
+    // double-book a teacher or room across sections.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${slot.academicYearId}))`;
     const conflicts: EntryConflict[] = [];
     const notSelf = slot.excludeEntryId
       ? { id: { not: slot.excludeEntryId } }
@@ -1772,6 +1775,7 @@ export class TimetableService extends BaseSchoolScopedService {
     section: {
       id: string;
       name: string;
+      room: string | null;
       schoolId: string;
       classGrade: { id: string; name: string } | null;
     },
@@ -1947,39 +1951,56 @@ export class TimetableService extends BaseSchoolScopedService {
         }
       }
     }
-    // Teacher: no overlap with OTHER sections this year.
-    const otherBusy = await this.prisma.timetableEntry.findMany({
-      where: {
-        academicYearId,
-        teacherId: { in: teacherIds },
-        timetableId: { not: timetable.id },
-      },
-      select: {
-        teacherId: true,
-        dayOfWeek: true,
-        startMin: true,
-        endMin: true,
-        section: {
-          select: { name: true, classGrade: { select: { name: true } } },
-        },
-      },
-    });
-    for (const e of built) {
-      const clash = otherBusy.find(
-        (b) =>
-          b.teacherId === e.teacherId &&
-          b.dayOfWeek === e.dayOfWeek &&
-          overlaps(e.startMin, e.endMin, b.startMin, b.endMin),
-      );
-      if (clash) {
-        throw new ConflictException({
-          message: `A teacher already teaches ${this.classLabel(clash.section)} at an overlapping time`,
-        });
-      }
-    }
-
     // ---- atomic reconcile + publish ----
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Other sections are read under the same lock as findConflicts, so two
+      // publishes can't both pass and double-book a teacher or room.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${academicYearId}))`;
+      // ponytail: loads every other grid of the session; filter by day/teacher/room if schools outgrow it.
+      const others = await tx.timetableEntry.findMany({
+        where: {
+          academicYearId,
+          timetableId: { not: timetable.id },
+          timetable: LIVE_GRID,
+        },
+        select: {
+          teacherId: true,
+          dayOfWeek: true,
+          startMin: true,
+          endMin: true,
+          room: true,
+          section: {
+            select: {
+              name: true,
+              room: true,
+              classGrade: { select: { name: true } },
+            },
+          },
+        },
+      });
+      for (const e of built) {
+        const room = (e.room ?? section.room ?? '').trim().toLowerCase();
+        for (const b of others) {
+          if (
+            b.dayOfWeek !== e.dayOfWeek ||
+            !overlaps(e.startMin, e.endMin, b.startMin, b.endMin)
+          ) {
+            continue;
+          }
+          if (b.teacherId === e.teacherId) {
+            throw new ConflictException({
+              message: `A teacher already teaches ${this.classLabel(b.section)} at an overlapping time`,
+            });
+          }
+          const otherRoom = (b.room ?? b.section.room ?? '').trim();
+          if (room && otherRoom.toLowerCase() === room) {
+            throw new ConflictException({
+              message: `Room "${otherRoom}" is already used by ${this.classLabel(b.section)} at an overlapping time`,
+            });
+          }
+        }
+      }
+
       for (const [id, r] of retimes) {
         await tx.timetablePeriod.update({
           where: { id },
