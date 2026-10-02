@@ -1001,5 +1001,32 @@ describe('Timetable V2 (e2e)', () => {
       });
       expect(tt.status).toBe('ARCHIVED');
     });
+
+    it('regenerating periods refuses to wipe saved lectures', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const periods = await setup(cls.section.id, token, {
+        dayStartMin: 600,
+        dayEndMin: 690,
+      });
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: periods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+      }).expect(201);
+
+      await request(server())
+        .put(`/api/timetable/sections/${cls.section.id}/periods`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          periods: [{ index: 1, startMin: 600, endMin: 650, kind: 'CLASS' }],
+        })
+        .expect(409);
+      expect(
+        await prisma.timetableEntry.count({
+          where: { sectionId: cls.section.id },
+        }),
+      ).toBe(1);
+    });
   });
 });

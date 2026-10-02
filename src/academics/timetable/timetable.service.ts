@@ -682,6 +682,14 @@ export class TimetableService extends BaseSchoolScopedService {
     if (errors.length) throw new BadRequestException(errors.join('; '));
 
     return this.prisma.$transaction(async (tx) => {
+      // Entries cascade with their periods; refuse rather than wipe lectures.
+      if (
+        await tx.timetableEntry.count({ where: { timetableId: timetable.id } })
+      ) {
+        throw new ConflictException(
+          'This timetable already has lectures; regenerating its periods would delete them',
+        );
+      }
       await tx.timetablePeriod.deleteMany({
         where: { timetableId: timetable.id },
       });
@@ -1169,18 +1177,6 @@ export class TimetableService extends BaseSchoolScopedService {
     } catch (e) {
       throw this.translateWriteError(e);
     }
-  }
-
-  async deleteEntry(id: string, actor: Actor) {
-    this.ensureAdmin(actor);
-    const entry = await this.prisma.timetableEntry.findUnique({
-      where: { id },
-      select: { id: true, schoolId: true },
-    });
-    if (!entry) throw new NotFoundException('Assignment not found');
-    this.enforceScope(actor, entry.schoolId);
-    await this.prisma.timetableEntry.delete({ where: { id } });
-    return { id };
   }
 
   /** Live pre-check for the editor — same engine, returns instead of throwing. */
