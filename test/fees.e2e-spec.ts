@@ -3755,9 +3755,7 @@ describe('Fees — challan generation (e2e)', () => {
     });
 
     describe('payments move the derived schedule', () => {
-      async function planWithChallan(
-        plan?: (cls: any) => Record<string, unknown>,
-      ) {
+      async function planWithChallan() {
         const cls = await seedBillableClass({ studentCount: 1 });
         const studentId = cls.students[0].profile.id;
         // Billed monthly FIRST, then put on a plan — a real sequence, and the
@@ -3768,9 +3766,7 @@ describe('Fees — challan generation (e2e)', () => {
           .set('Authorization', `Bearer ${cls.adminToken}`)
           .send(generateBody(cls))
           .expect(201);
-        await putPlan(cls, studentId, plan ? plan(cls) : planBody(cls)).expect(
-          200,
-        );
+        await putPlan(cls, studentId, planBody(cls)).expect(200);
         const challan = await prisma.challan.findFirstOrThrow({
           where: { studentId },
         });
@@ -3778,18 +3774,7 @@ describe('Fees — challan generation (e2e)', () => {
       }
 
       it('waterfalls a payment oldest-due-first, with no installment write', async () => {
-        // Later rows fall due after today, so the part-paid one is not yet OVERDUE (KI-115).
-        const ahead = (days: number) =>
-          new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
-        const { cls, studentId, challan } = await planWithChallan((c) =>
-          planBody(c, {
-            installments: [
-              { amount: 10000, dueDate: '2026-09-01' },
-              { amount: 10000, dueDate: ahead(30) },
-              { amount: 10000, dueDate: ahead(60) },
-            ],
-          }),
-        );
+        const { cls, studentId, challan } = await planWithChallan();
 
         await http()
           .post(`/api/fees/challans/${challan.id}/payments`)
