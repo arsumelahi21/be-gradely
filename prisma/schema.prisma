@@ -1422,6 +1422,9 @@ model Challan {
   generatedByUserId String?
   cancelledAt       DateTime?
   cancelReason      String?
+  /// The challan this one's balance was carried into as arrears. Such a
+  /// cancelled challan keeps its month; one an admin cancelled frees it.
+  supersededById    String?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -1451,11 +1454,15 @@ model Challan {
   // re-shaped underneath it. A plan edit that would orphan an issued challan is
   // refused with an explanation rather than silently rewriting history.
   installment        FeeInstallment?     @relation(fields: [installmentId], references: [id], onDelete: SetNull)
+  supersededBy       Challan?            @relation("ChallanSupersede", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes         Challan[]           @relation("ChallanSupersede")
 
-  // THE duplicate rule — a second challan for the same student/period is
-  // impossible at the database level, not merely unlikely.
-  @@unique([studentId, academicYearId, periodYear, periodMonth])
   @@unique([schoolId, challanNo])
+  // THE duplicate rule — one live challan per student/period — is the partial
+  // unique index "Challan_one_live_per_month" (migration
+  // 20261002100000_rebill_cancelled_months): Prisma can't express it. An
+  // admin-cancelled challan frees its month; a carried one does not.
+  @@index([studentId, academicYearId, periodYear, periodMonth])
   @@index([schoolId, periodYear, periodMonth, status]) // coverage grid + report filters
   @@index([studentId, issueDate]) // student/parent fee history
   @@index([schoolId, dueDate, status]) // overdue detection

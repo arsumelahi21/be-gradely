@@ -231,15 +231,8 @@ export class PaymentsService extends BaseSchoolScopedService {
           cancelReason: dto.reason?.trim() || null,
         },
       });
-      // ponytail: linked by the cancelReason generation writes, the only link
-      // stored; add a supersededById column if it ever needs to be exact.
       const carried = await tx.challan.findMany({
-        where: {
-          schoolId: challan.schoolId,
-          studentId: challan.studentId,
-          status: ChallanStatus.CANCELLED,
-          cancelReason: `Carried forward to ${challan.challanNo}`,
-        },
+        where: { supersededById: challanId, status: ChallanStatus.CANCELLED },
         select: { id: true, challanNo: true },
       });
       if (carried.length) {
@@ -249,6 +242,7 @@ export class PaymentsService extends BaseSchoolScopedService {
             status: ChallanStatus.UNPAID,
             cancelledAt: null,
             cancelReason: null,
+            supersededById: null,
           },
         });
       }

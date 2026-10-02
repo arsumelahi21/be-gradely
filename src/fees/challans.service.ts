@@ -471,6 +471,7 @@ export class ChallansService extends BaseSchoolScopedService {
                   status: ChallanStatus.CANCELLED,
                   cancelledAt: new Date(),
                   cancelReason: `Carried forward to ${created.challanNo}`,
+                  supersededById: created.id,
                 },
               });
               // A payment landed on one since the plan was read, so this
@@ -720,6 +721,8 @@ export class ChallansService extends BaseSchoolScopedService {
             academicYearId: dto.academicYearId,
             periodYear: dto.periodYear,
             periodMonth: dto.periodMonth,
+            // An admin-cancelled challan frees its month; a carried one doesn't.
+            NOT: { status: ChallanStatus.CANCELLED, supersededById: null },
           },
           select: { studentId: true, challanNo: true },
         })

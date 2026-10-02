@@ -896,6 +896,7 @@ describe('Subject-based fees (e2e)', () => {
         status: 'UNPAID',
         cancelledAt: null,
         cancelReason: null,
+        supersededById: null,
       });
       // The debt is owed again: the next month carries it.
       await f.run({ periodMonth: 11 }).expect(201);
@@ -928,5 +929,46 @@ describe('Subject-based fees (e2e)', () => {
       ]);
       expect((await f.challanOf(f.m.id)).status).toBe('PARTIALLY_PAID');
     });
+
+    it('bills a month again once an admin has cancelled its challan', async () => {
+      const f = await billedStudent();
+      await http()
+        .post(`/api/fees/challans/${f.september.id}/cancel`)
+        .set(f.auth)
+        .send({ reason: 'Wrong fee' })
+        .expect(201);
+
+      const res = await f.run().expect(201);
+
+      expect(res.body.generated).toBe(1);
+      const septembers = await prisma.challan.findMany({
+        where: { studentId: f.m.id, periodMonth: 9 },
+        orderBy: { createdAt: 'asc' },
+      });
+      expect(septembers.map((c) => c.status)).toEqual(['CANCELLED', 'UNPAID']);
+    });
+
+    it('keeps a month closed once its balance is carried into a later challan', async () => {
+      const f = await billedStudent();
+      await f.run({ periodMonth: 10 }).expect(201);
+      const october = await f.challanOf(f.m.id, 10);
+      expect(
+        (
+          await prisma.challan.findUniqueOrThrow({
+            where: { id: f.september.id },
+          })
+        ).supersededById,
+      ).toBe(october.id);
+
+      const res = await f.run().expect(201);
+
+      expect(res.body.generated).toBe(0);
+      expect(
+        await prisma.challan.count({
+          where: { studentId: f.m.id, periodMonth: 9 },
+        }),
+      ).toBe(1);
+    });
+
   });
 });
