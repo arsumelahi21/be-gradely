@@ -2,7 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CacheService } from '../common/services/cache.service';
-import { RangeWindow, lastTwelveMonths, rangeTtl } from './insights';
+import { RangeWindow, lastTwelveMonths, rangeTtl, ratio } from './insights';
+
+const DAY_MS = 86_400_000;
 
 export const PAYMENT_METHODS = [
   'CASH',
@@ -557,6 +559,60 @@ export class DirectorQueriesService {
                      AND c."periodMonth" = ${month} AND c."status" <> 'CANCELLED'
                      AND p."voidedAt" IS NULL AND p."paidAt" < ${cutoff})::bigint AS paid`;
         return { billed: Number(row.billed ?? 0), paid: Number(row.paid ?? 0) };
+      },
+    );
+  }
+
+  /** This month at today against last month at the same day of the month. */
+  async pace(schoolId: string, now: Date) {
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth();
+    const dayCount = now.getUTCDate();
+    // On the 31st, a 30-day month is judged at its end, not a day into the next.
+    const cutoff = (year: number, month: number) =>
+      new Date(
+        Math.min(
+          Date.UTC(year, month, 1) + dayCount * DAY_MS,
+          Date.UTC(year, month + 1, 1),
+        ),
+      );
+    const prevMonth = new Date(Date.UTC(y, m - 1, 1));
+    const [thisMonth, lastMonth] = await Promise.all([
+      this.collectionPace(schoolId, y, m + 1, cutoff(y, m)),
+      this.collectionPace(
+        schoolId,
+        prevMonth.getUTCFullYear(),
+        prevMonth.getUTCMonth() + 1,
+        cutoff(prevMonth.getUTCFullYear(), prevMonth.getUTCMonth()),
+      ),
+    ]);
+    return {
+      now: ratio(thisMonth.paid, thisMonth.billed),
+      prev: ratio(lastMonth.paid, lastMonth.billed),
+    };
+  }
+
+  /**
+   * Students with 2+ overdue challans this session: the ones heading for default. Overdue is
+   * fee-calculator's isOverdue: not paid or cancelled, and due before today.
+   */
+  defaulters(schoolId: string, academicYearId: string, today: Date) {
+    const day = new Date(
+      Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
+    );
+    return this.cached(
+      schoolId,
+      'q2-defaulters',
+      { ay: academicYearId, day: day.toISOString().slice(0, 10) },
+      60,
+      async () => {
+        const [row] = await this.prisma.$queryRaw<{ n: number }[]>`
+          SELECT COUNT(*)::int AS n FROM (
+            SELECT "studentId" FROM "Challan"
+             WHERE "schoolId" = ${schoolId} AND "academicYearId" = ${academicYearId}
+               AND "status" IN ('UNPAID', 'PARTIALLY_PAID') AND "dueDate" < ${day}
+             GROUP BY "studentId" HAVING COUNT(*) >= 2) late`;
+        return row.n;
       },
     );
   }

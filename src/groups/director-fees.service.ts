@@ -15,7 +15,7 @@ import {
   PaymentMethodKey,
 } from './director.queries';
 import { InsightsQueryDto } from './dto/insights-query.dto';
-import { Ratio, daysSince, ratio } from './insights';
+import { Ratio, daysSince, meanRate, ratio } from './insights';
 
 type Minor = number;
 type ByMethod = Record<PaymentMethodKey, { amount: Minor; count: number }>;
@@ -94,6 +94,10 @@ export interface FeesData {
     oldestAgeDays: number | null;
   };
   billedThisMonth: number;
+  /** This month's bills paid by today, against last month's by the same day. */
+  pace: { now: Ratio; prev: Ratio };
+  /** Students with 2+ overdue challans this session. */
+  defaulters: number | null;
   coverage: Coverage | null;
   byClass?: {
     className: string;
@@ -121,6 +125,9 @@ interface CurrencyTotals {
 
 export interface FeesGroup {
   byCurrency: Record<string, CurrencyTotals>;
+  /** Averages of branch rates, so currencies never mix. */
+  pace: { now: number | null; prev: number | null };
+  defaulters: number;
   statusMix: StatusMix;
   queue: { pendingReceipts: number; oldestAgeDays: number | null };
   coverage: {
@@ -223,15 +230,25 @@ export class DirectorFeesService {
     const { branch, year, currentYear, now, range } = ctx;
     const thisYear = now.getUTCFullYear();
     const thisMonth = now.getUTCMonth() + 1;
-    const [snapshot, cashRows, monthly, accrual, coverage, byClass] =
-      await Promise.all([
-        this.queries.feeSnapshot(branch.id, thisYear, thisMonth),
-        this.queries.cash(branch.id, range),
-        this.queries.cashMonthly(branch.id, now),
-        year ? this.accrual(ctx, year) : null,
-        currentYear ? this.coverage(ctx, currentYear) : null,
-        ctx.single && year ? this.byClass(ctx, year) : undefined,
-      ]);
+    const [
+      snapshot,
+      cashRows,
+      monthly,
+      accrual,
+      coverage,
+      byClass,
+      pace,
+      defaulters,
+    ] = await Promise.all([
+      this.queries.feeSnapshot(branch.id, thisYear, thisMonth),
+      this.queries.cash(branch.id, range),
+      this.queries.cashMonthly(branch.id, now),
+      year ? this.accrual(ctx, year) : null,
+      currentYear ? this.coverage(ctx, currentYear) : null,
+      ctx.single && year ? this.byClass(ctx, year) : undefined,
+      this.queries.pace(branch.id, now),
+      year ? this.queries.defaulters(branch.id, year.id, now) : null,
+    ]);
 
     const byMethod = emptyByMethod();
     for (const r of cashRows)
@@ -255,6 +272,8 @@ export class DirectorFeesService {
         oldestAgeDays: oldest ? daysSince(oldest, now) : null,
       },
       billedThisMonth: snapshot.billedThisMonth,
+      pace,
+      defaulters,
       coverage,
       ...(byClass && { byClass }),
     };
@@ -467,6 +486,17 @@ export class DirectorFeesService {
         .map(([month, amount]) => ({ month, amount }))
         .sort((x, y) => x.month.localeCompare(y.month));
     }
-    return { byCurrency, statusMix, queue, coverage };
+    const withData = rows.filter((r) => r.data);
+    return {
+      byCurrency,
+      pace: {
+        now: meanRate(withData.map((r) => r.data!.pace.now.value)),
+        prev: meanRate(withData.map((r) => r.data!.pace.prev.value)),
+      },
+      defaulters: withData.reduce((s, r) => s + (r.data!.defaulters ?? 0), 0),
+      statusMix,
+      queue,
+      coverage,
+    };
   }
 }

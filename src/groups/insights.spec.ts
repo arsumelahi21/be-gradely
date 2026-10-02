@@ -1,13 +1,14 @@
 import { BadRequestException } from '@nestjs/common';
 import {
   lastTwelveMonths,
+  meanRate,
   nthWorkingDayBack,
-  previousWindow,
-  yearBefore,
   pickYear,
+  previousWindow,
   rangeTtl,
   ratio,
   resolveWindow,
+  yearBefore,
 } from './insights';
 
 const NOW = new Date('2026-10-08T09:00:00Z');
@@ -148,5 +149,13 @@ describe('previousWindow and yearBefore', () => {
     expect(yearBefore(years, years[0])?.id).toBe('2025');
     expect(yearBefore(years, years[1])).toBeNull();
     expect(yearBefore(years, null)).toBeNull();
+  });
+});
+
+describe('meanRate', () => {
+  it('averages the rates that exist, each counting once', () => {
+    expect(meanRate([0.5, 1, null, undefined])).toBe(0.75);
+    expect(meanRate([1 / 3])).toBe(0.3333);
+    expect(meanRate([null])).toBeNull();
   });
 });

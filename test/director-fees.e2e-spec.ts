@@ -279,6 +279,50 @@ describe('Director fees insights (e2e)', () => {
     });
   });
 
+  it('warns early: this month against last by the same day, and students with 2+ overdue challans', async () => {
+    const { a, token } = await fixture();
+    const last = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
+    );
+    const sana = await prisma.challan.findFirstOrThrow({
+      where: { schoolId: a.school.id, status: 'UNPAID' },
+    });
+    // Sana's second overdue challan, from last month: she is now at risk. Areeba's
+    // unpaid challan is not due yet, so one late payer is not counted.
+    await challan(a, sana.studentId, {
+      gross: 200_000,
+      status: 'UNPAID',
+      due: daysAgo(20),
+      periodYear: last.getUTCFullYear(),
+      periodMonth: last.getUTCMonth() + 1,
+    });
+    const areeba = await prisma.challan.findFirstOrThrow({
+      where: { schoolId: a.school.id, status: 'PAID', paidAmount: 500_000 },
+    });
+    await challan(a, areeba.studentId, {
+      gross: 100_000,
+      status: 'UNPAID',
+      due: new Date(now.getTime() + 3 * DAY),
+      periodYear: 2001,
+      periodMonth: 1,
+    });
+
+    const res = await fees(token);
+    expect(row(res.body, a.school.id).data).toMatchObject({
+      defaulters: 1,
+      // 500k paid of 900k billed this month; nothing of last month's 200k.
+      pace: {
+        now: { num: 500_000, den: 900_000 },
+        prev: { num: 0, den: 200_000, value: 0 },
+      },
+    });
+    // Rates averaged per branch: Alpha 55.56% and Bravo 50%; last month only Alpha billed.
+    expect(res.body.group).toMatchObject({
+      defaulters: 1,
+      pace: { now: 0.5278, prev: 0 },
+    });
+  });
+
   it('counts cash by payment date, never voided payments, separately from accrual', async () => {
     const { a, token } = await fixture();
     const last30 = row((await fees(token)).body, a.school.id).data.cash;

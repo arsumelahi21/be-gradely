@@ -18,6 +18,7 @@ import {
   RangeWindow,
   Ratio,
   daysSince,
+  meanRate,
   nthWorkingDayBack,
   previousWindow,
   ratio,
@@ -93,13 +94,6 @@ const sumRatio = (rows: Ratio[]) =>
     rows.reduce((s, r) => s + r.den, 0),
   );
 
-const mean = (values: (number | null | undefined)[]) => {
-  const v = values.filter((x): x is number => x !== null && x !== undefined);
-  return v.length
-    ? Math.round((v.reduce((s, x) => s + x, 0) / v.length) * 10_000) / 10_000
-    : null;
-};
-
 /** Overview (12-V2-PLAN §2): a scorecard and early warnings, from the same cached figures as the tabs. */
 @Injectable()
 export class DirectorOverviewService {
@@ -147,7 +141,7 @@ export class DirectorOverviewService {
     ] = await Promise.all([
       this.attendanceRate(ctx, last30),
       this.attendanceRate(ctx, before30),
-      this.pace(branch.id, now),
+      this.queries.pace(branch.id, now),
       this.parentSignIns(branch.id, last30, before30),
       this.queries.teacherLeavers(branch.id, last30),
       this.principals(branch.id, now),
@@ -240,35 +234,6 @@ export class DirectorOverviewService {
       rows.reduce((s, r) => s + r.passed, 0),
       rows.reduce((s, r) => s + r.decided, 0),
     );
-  }
-
-  /** This month at today against last month at the same day of the month. */
-  private async pace(schoolId: string, now: Date) {
-    const y = now.getUTCFullYear();
-    const m = now.getUTCMonth();
-    const dayCount = now.getUTCDate();
-    // On the 31st, a 30-day month is judged at its end, not a day into the next.
-    const cutoff = (year: number, month: number) =>
-      new Date(
-        Math.min(
-          Date.UTC(year, month, 1) + dayCount * DAY_MS,
-          Date.UTC(year, month + 1, 1),
-        ),
-      );
-    const prevMonth = new Date(Date.UTC(y, m - 1, 1));
-    const [thisMonth, lastMonth] = await Promise.all([
-      this.queries.collectionPace(schoolId, y, m + 1, cutoff(y, m)),
-      this.queries.collectionPace(
-        schoolId,
-        prevMonth.getUTCFullYear(),
-        prevMonth.getUTCMonth() + 1,
-        cutoff(prevMonth.getUTCFullYear(), prevMonth.getUTCMonth()),
-      ),
-    ]);
-    return {
-      now: ratio(thisMonth.paid, thisMonth.billed),
-      prev: ratio(lastMonth.paid, lastMonth.billed),
-    };
   }
 
   private async parentSignIns(
@@ -369,10 +334,10 @@ export class DirectorOverviewService {
         ),
       },
       collection: {
-        average: mean(rates),
+        average: meanRate(rates),
         branches: rates.filter((v) => v !== null && v !== undefined).length,
-        paceNow: mean(withData.map((r) => r.data!.pace.now.value)),
-        pacePrev: mean(withData.map((r) => r.data!.pace.prev.value)),
+        paceNow: meanRate(withData.map((r) => r.data!.pace.now.value)),
+        pacePrev: meanRate(withData.map((r) => r.data!.pace.prev.value)),
       },
     };
   }

@@ -42,6 +42,14 @@ export function ratio(num: number, den: number): Ratio {
   };
 }
 
+/** Average of the rates that exist, each branch counting once (rates in different currencies can't be pooled). */
+export function meanRate(values: (number | null | undefined)[]): number | null {
+  const v = values.filter((x): x is number => x !== null && x !== undefined);
+  return v.length
+    ? Math.round((v.reduce((s, x) => s + x, 0) / v.length) * 10_000) / 10_000
+    : null;
+}
+
 function parseDay(value: string | undefined, name: string): Date {
   const d = value ? new Date(`${value}T00:00:00.000Z`) : new Date(NaN);
   // The round-trip rejects impossible dates such as 2026-02-30.
