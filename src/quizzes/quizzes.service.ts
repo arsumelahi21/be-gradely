@@ -935,8 +935,9 @@ export class QuizzesService extends BaseSchoolScopedService {
       dto.answers ?? {},
     );
 
-    const updated = await this.prisma.quizAttempt.update({
-      where: { id: attemptId },
+    // Conditional on IN_PROGRESS, so of two racing submits only one is graded.
+    const { count } = await this.prisma.quizAttempt.updateMany({
+      where: { id: attemptId, status: QuizAttemptStatus.IN_PROGRESS },
       data: {
         answers: (dto.answers ?? {}) as any,
         score,
@@ -945,6 +946,9 @@ export class QuizzesService extends BaseSchoolScopedService {
         submittedAt: new Date(),
       },
     });
+    if (count === 0) {
+      throw new BadRequestException('This attempt was already submitted');
+    }
 
     // Notify the student + their parents of the score, and the teacher that the
     // quiz was completed (decoupled via the event bus).
@@ -958,7 +962,7 @@ export class QuizzesService extends BaseSchoolScopedService {
     this.eventEmitter.emit(NOTIFICATION_CREATE, {
       ...graded,
       userIds: [actor.userId],
-      link: `/quizzes/attempt/${updated.id}`,
+      link: `/quizzes/attempt/${attemptId}`,
     } as NotificationCreateEvent);
     // The parent portal has no quiz page; the score is in the body.
     const parents = await parentUserIds(this.prisma, [student.id]);
@@ -981,8 +985,8 @@ export class QuizzesService extends BaseSchoolScopedService {
     }
 
     return {
-      attemptId: updated.id,
-      status: updated.status,
+      attemptId,
+      status: QuizAttemptStatus.GRADED,
       score,
       maxScore,
     };

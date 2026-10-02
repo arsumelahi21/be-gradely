@@ -288,6 +288,49 @@ describe('Quizzes (e2e)', () => {
     ]);
   });
 
+  it('grades one of two racing submits and refuses the other', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const { quizId, questions } = await createAndPublish(cls);
+    const token = await tokenFor(app, cls.students[0].user);
+    const { attemptId } = (
+      await request(app.getHttpServer())
+        .post(`/api/quizzes/${quizId}/attempts`)
+        .set('Authorization', `Bearer ${token}`)
+    ).body;
+
+    // Hold the attempt's row so both submits pass the status check, then
+    // queue on the write together — the only way the race is reproducible.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const locker = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "QuizAttempt" WHERE id = ${attemptId} FOR UPDATE`;
+        await held;
+      },
+      { timeout: 30_000 },
+    );
+    const submits = Promise.all(
+      [{ [questions[0].id]: 'b' }, { [questions[0].id]: 'a' }].map((answers) =>
+        request(app.getHttpServer())
+          .patch(`/api/quizzes/attempts/${attemptId}/submit`)
+          .set('Authorization', `Bearer ${token}`)
+          .send({ answers })
+          .then((r) => r.status),
+      ),
+    );
+    for (let waiting = 0; waiting < 2; ) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const [row] = await prisma.$queryRaw<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+      waiting = row.n;
+    }
+    release();
+    await locker;
+
+    expect((await submits).sort()).toEqual([200, 400]);
+  });
+
   // ---- editing a draft (Phase 2) ------------------------------------------
 
   /** Create a quiz and leave it UNPUBLISHED — the editable state. */
