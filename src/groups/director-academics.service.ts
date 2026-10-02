@@ -9,7 +9,7 @@ import {
 } from './director.service';
 import { DirectorQueriesService } from './director.queries';
 import { InsightsQueryDto } from './dto/insights-query.dto';
-import { Ratio, daysSince, ratio } from './insights';
+import { Ratio, daysSince, pairedChange, ratio } from './insights';
 
 // 00 §7: a published examination whose last paper was more than 14 days ago should have results.
 const RESULTS_OVERDUE_DAYS = 14;
@@ -38,8 +38,8 @@ export interface AcademicsData {
   results: Score | null;
   /** The whole session before the selected one. */
   resultsBefore: Score | null;
-  /** In term order; exams without a term are left out. */
-  byTerm: ({ name: string } & Score)[] | null;
+  /** Exams without a term are left out; `position` is the term's place among all the session's terms. */
+  byTerm: ({ name: string; position: number } & Score)[] | null;
   subjects: SubjectMarks[] | null;
   byLevel:
     | ({ key: string; label: string; level: number | null } & Score)[]
@@ -57,7 +57,8 @@ export interface AcademicsData {
 
 export interface AcademicsGroup {
   results: Score;
-  resultsBefore: Score;
+  /** Pass rate points against the previous session, from branches that have both. */
+  passChange: number | null;
   /** Terms lined up by their order in each branch's session, since names and ids differ. */
   byTerm: ({ label: string } & Score)[];
   /** Lowest average mark first, matched by subject name across branches. */
@@ -172,6 +173,7 @@ export class DirectorAcademicsService {
         : null,
       byTerm: (terms ?? []).map((t) => ({
         name: t.name,
+        position: t.position,
         ...score(t.obtained, t.max, t.passed, t.decided),
       })),
       subjects,
@@ -194,8 +196,8 @@ export class DirectorAcademicsService {
 
   private rollUp(rows: BranchResult<AcademicsData>[]): AcademicsGroup {
     let results = score(0, 0, 0, 0);
-    let resultsBefore = score(0, 0, 0, 0);
-    const terms: { names: Set<string>; score: Score }[] = [];
+    const passPairs: [Ratio, Ratio | undefined][] = [];
+    const terms = new Map<number, { names: Set<string>; score: Score }>();
     const subjects = new Map<
       string,
       {
@@ -222,13 +224,16 @@ export class DirectorAcademicsService {
         );
       if (status !== 'ok' || !data.results || !data.byLevel) continue;
       results = add(results, data.results);
-      if (data.resultsBefore)
-        resultsBefore = add(resultsBefore, data.resultsBefore);
-      data.byTerm?.forEach((t, i) => {
-        terms[i] ??= { names: new Set(), score: score(0, 0, 0, 0) };
-        terms[i].names.add(t.name.trim());
-        terms[i].score = add(terms[i].score, t);
-      });
+      passPairs.push([data.results.pass, data.resultsBefore?.pass]);
+      for (const t of data.byTerm ?? []) {
+        const term = terms.get(t.position) ?? {
+          names: new Set<string>(),
+          score: score(0, 0, 0, 0),
+        };
+        term.names.add(t.name.trim());
+        term.score = add(term.score, t);
+        terms.set(t.position, term);
+      }
       for (const sub of data.subjects ?? []) {
         const acc = subjects.get(sub.key) ?? {
           name: sub.name,
@@ -251,12 +256,14 @@ export class DirectorAcademicsService {
     }
     return {
       results,
-      resultsBefore,
-      byTerm: terms.map((t, i) => ({
-        // One shared name reads better than "Term 2"; mixed names fall back to the position.
-        label: t.names.size === 1 ? [...t.names][0] : `Term ${i + 1}`,
-        ...t.score,
-      })),
+      passChange: pairedChange(passPairs),
+      byTerm: [...terms.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([position, t]) => ({
+          // One shared name reads better than "Term 2"; mixed names fall back to the position.
+          label: t.names.size === 1 ? [...t.names][0] : `Term ${position}`,
+          ...t.score,
+        })),
       weakestSubjects: [...subjects.values()]
         .filter((s) => s.marks >= SUBJECT_MIN_MARKS)
         .map((s) => ({

@@ -12,6 +12,7 @@ import { InsightsQueryDto } from './dto/insights-query.dto';
 import {
   Ratio,
   nthWorkingDayBack,
+  pairedChange,
   previousWindow,
   ratio,
   ymd,
@@ -31,7 +32,6 @@ interface BelowFloor {
 export interface AttendanceData {
   /** Marks, not students: present + late over every mark in the window. */
   rate: Ratio;
-  /** The same-length window just before this one. */
   rateBefore: Ratio;
   daily: { date: string; rate: number | null }[];
   below: BelowFloor | null;
@@ -40,7 +40,8 @@ export interface AttendanceData {
 
 export interface AttendanceGroup {
   rate: Ratio;
-  rateBefore: Ratio;
+  /** Points, from branches with marks in both windows only. */
+  rateChange: number | null;
   below: BelowFloor;
   notMarking: { sections: number; of: number };
 }
@@ -183,16 +184,12 @@ export class DirectorAttendanceService {
   private rollUp(rows: BranchResult<AttendanceData>[]): AttendanceGroup {
     let attended = 0;
     let marks = 0;
-    let attendedBefore = 0;
-    let marksBefore = 0;
     const below = { students: 0, studentsBefore: 0, eligible: 0, enrolled: 0 };
     const notMarking = { sections: 0, of: 0 };
     for (const { status, data } of rows) {
       if (!data) continue;
       attended += data.rate.num;
       marks += data.rate.den;
-      attendedBefore += data.rateBefore.num;
-      marksBefore += data.rateBefore.den;
       if (status !== 'ok') continue;
       if (data.below) {
         below.students += data.below.students;
@@ -207,7 +204,11 @@ export class DirectorAttendanceService {
     }
     return {
       rate: ratio(attended, marks),
-      rateBefore: ratio(attendedBefore, marksBefore),
+      rateChange: pairedChange(
+        rows.flatMap((r) =>
+          r.data ? [[r.data.rate, r.data.rateBefore] as [Ratio, Ratio]] : [],
+        ),
+      ),
       below: {
         students: below.students,
         studentsBefore: below.studentsBefore,

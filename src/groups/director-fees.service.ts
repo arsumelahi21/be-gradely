@@ -96,7 +96,6 @@ export interface FeesData {
   billedThisMonth: number;
   /** This month's bills paid by today, against last month's by the same day. */
   pace: { now: Ratio; prev: Ratio };
-  /** Students with 2+ overdue challans this session. */
   defaulters: number | null;
   coverage: Coverage | null;
   byClass?: {

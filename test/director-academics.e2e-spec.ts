@@ -254,6 +254,15 @@ describe('Director academics insights (e2e)', () => {
     });
 
     // Only Grade 5's examination belongs to a term.
+    // An earlier term with no results yet keeps its place: Term 1 is the second term.
+    await prisma.academicTerm.create({
+      data: {
+        schoolId: a.id,
+        academicYearId: year.id,
+        name: 'Orientation',
+        sortOrder: -1,
+      },
+    });
     const term = await prisma.academicTerm.create({
       data: { schoolId: a.id, academicYearId: year.id, name: 'Term 1' },
     });
@@ -294,13 +303,15 @@ describe('Director academics insights (e2e)', () => {
     expect(alpha.byTerm).toEqual([
       {
         name: 'Term 1',
+        position: 2,
         obtained: 110,
         max: 200,
         avgScorePercent: 55,
         pass: { num: 1, den: 2, value: 0.5 },
       },
     ]);
-    expect(res.body.group.resultsBefore.pass.value).toBe(1);
+    // 2 of 3 passed now against 1 of 1 last session.
+    expect(res.body.group.passChange).toBe(-33);
     expect(res.body.group.byTerm).toMatchObject([
       { label: 'Term 1', pass: { value: 0.5 } },
     ]);

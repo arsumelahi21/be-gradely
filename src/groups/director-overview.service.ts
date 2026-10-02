@@ -19,6 +19,8 @@ import {
   Ratio,
   daysSince,
   meanRate,
+  pairedChange,
+  pairedMeanChange,
   nthWorkingDayBack,
   previousWindow,
   ratio,
@@ -74,8 +76,9 @@ export interface OverviewData {
 
 export interface OverviewGroup {
   enrolled: number;
-  attendance: Trend;
-  pass: { now: Ratio; prev: Ratio };
+  /** `change` is in points, from branches that have both periods only. */
+  attendance: { now: Ratio; change: number | null };
+  pass: { now: Ratio; change: number | null };
   /**
    * Fee rates in different currencies can't be pooled by amount, so the headline is the plain
    * average of branch rates, each branch counting once (decided 2026-10-02).
@@ -83,8 +86,7 @@ export interface OverviewGroup {
   collection: {
     average: number | null;
     branches: number;
-    paceNow: number | null;
-    pacePrev: number | null;
+    paceChange: number | null;
   };
 }
 
@@ -209,11 +211,15 @@ export class DirectorOverviewService {
       collectionRate: ratio(summary.totalCollected, summary.totalExpected),
       overdue: summary.overdueAmount,
       teachingGaps: staff.uncovered + staff.noClassTeacher,
-      timetable: {
-        published: tt.counts.published,
-        sections: tt.counts.total,
-        sessionDays: daysSince((currentYear ?? year).startDate, now),
-      },
+      // A past session's timetables are archived at promotion, so "not published" means nothing there.
+      timetable:
+        year.id === currentYear?.id
+          ? {
+              published: tt.counts.published,
+              sections: tt.counts.total,
+              sessionDays: daysSince(year.startDate, now),
+            }
+          : null,
       registers,
       exams,
       belowFloor: { now: below.below, prev: belowBefore.below },
@@ -323,21 +329,30 @@ export class DirectorOverviewService {
       enrolled: ok.reduce((s, r) => s + (r.data!.enrolled ?? 0), 0),
       attendance: {
         now: sumRatio(withData.map((r) => r.data!.attendance.now)),
-        prev: sumRatio(withData.map((r) => r.data!.attendance.prev)),
+        change: pairedChange(
+          withData.map((r) => [
+            r.data!.attendance.now,
+            r.data!.attendance.prev,
+          ]),
+        ),
       },
       pass: {
         now: sumRatio(
           ok.flatMap((r) => (r.data!.pass ? [r.data!.pass.now] : [])),
         ),
-        prev: sumRatio(
-          ok.flatMap((r) => (r.data!.pass?.prev ? [r.data!.pass.prev] : [])),
+        change: pairedChange(
+          ok.map((r) => [r.data!.pass?.now, r.data!.pass?.prev]),
         ),
       },
       collection: {
         average: meanRate(rates),
         branches: rates.filter((v) => v !== null && v !== undefined).length,
-        paceNow: meanRate(withData.map((r) => r.data!.pace.now.value)),
-        pacePrev: meanRate(withData.map((r) => r.data!.pace.prev.value)),
+        paceChange: pairedMeanChange(
+          withData.map((r) => [
+            r.data!.pace.now.value,
+            r.data!.pace.prev.value,
+          ]),
+        ),
       },
     };
   }

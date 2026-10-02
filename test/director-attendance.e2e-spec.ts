@@ -238,7 +238,8 @@ describe('Director attendance insights (e2e)', () => {
     });
     expect(res.body.group).toEqual({
       rate: { num: 19, den: 37, value: 0.5135 },
-      rateBefore: { num: 0, den: 1, value: 0 },
+      // Only Bravo has marks in both windows: 100% now against 0% before.
+      rateChange: 100,
       below: {
         students: 1,
         studentsBefore: 0,

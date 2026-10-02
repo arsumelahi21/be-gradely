@@ -221,6 +221,8 @@ describe('Director overview (e2e)', () => {
       .set({ Authorization: `Bearer ${login.body.accessToken}` });
     expect(res.status).toBe(200);
 
+    const row2 = (body: any, id: string) =>
+      body.branches.find((r: any) => r.schoolId === id);
     const row = (id: string) =>
       res.body.branches.find((r: any) => r.schoolId === id);
     expect(row(a.school.id).data).toMatchObject({
@@ -259,18 +261,20 @@ describe('Director overview (e2e)', () => {
 
     expect(res.body.group).toEqual({
       enrolled: 2,
-      attendance: {
-        now: { num: 1, den: 2, value: 0.5 },
-        prev: { num: 1, den: 1, value: 1 },
-      },
-      pass: {
-        now: { num: 0, den: 1, value: 0 },
-        prev: { num: 1, den: 1, value: 1 },
-      },
-      // PKR 50% and AED 100%: each branch counts once, amounts are never pooled.
-      collection: { average: 0.75, branches: 2, paceNow: 0.75, pacePrev: null },
+      // Only Alpha has both periods, so the changes are Alpha's.
+      attendance: { now: { num: 1, den: 2, value: 0.5 }, change: -50 },
+      pass: { now: { num: 0, den: 1, value: 0 }, change: -100 },
+      // PKR 50% and AED 100%: each branch counts once, amounts are never pooled. No branch
+      // billed last month, so there is no pace change.
+      collection: { average: 0.75, branches: 2, paceChange: null },
     });
     // The overview always reads the last 30 days; a range filter does not change it.
     expect(res.body.window.preset).toBe('30d');
+
+    // A past session's timetables are archived, so they are not judged at all.
+    const previous = await request(app.getHttpServer())
+      .get('/api/director/insights/overview?ay=previous')
+      .set({ Authorization: `Bearer ${login.body.accessToken}` });
+    expect(row2(previous.body, a.school.id).data.timetable).toBeNull();
   });
 });

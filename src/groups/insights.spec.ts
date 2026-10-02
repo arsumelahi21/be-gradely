@@ -2,6 +2,8 @@ import { BadRequestException } from '@nestjs/common';
 import {
   lastTwelveMonths,
   meanRate,
+  pairedChange,
+  pairedMeanChange,
   nthWorkingDayBack,
   pickYear,
   previousWindow,
@@ -157,5 +159,35 @@ describe('meanRate', () => {
     expect(meanRate([0.5, 1, null, undefined])).toBe(0.75);
     expect(meanRate([1 / 3])).toBe(0.3333);
     expect(meanRate([null])).toBeNull();
+  });
+});
+
+describe('pairedChange', () => {
+  const r = (num: number, den: number) => ratio(num, den);
+  it('ignores a branch without both figures', () => {
+    // A held 80% → 80%; B is new at 50%: no branch got worse, so no change.
+    expect(
+      pairedChange([
+        [r(8, 10), r(8, 10)],
+        [r(5, 10), null],
+      ]),
+    ).toBe(0);
+    expect(
+      pairedChange([
+        [r(7, 10), r(9, 10)],
+        [r(5, 10), r(0, 0)],
+      ]),
+    ).toBe(-20);
+    expect(pairedChange([[r(5, 10), null]])).toBeNull();
+  });
+
+  it('averages rates that cannot be pooled', () => {
+    expect(
+      pairedMeanChange([
+        [0.5, 0.7],
+        [0.9, null],
+      ]),
+    ).toBe(-20);
+    expect(pairedMeanChange([[null, 0.5]])).toBeNull();
   });
 });

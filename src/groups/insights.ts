@@ -50,6 +50,41 @@ export function meanRate(values: (number | null | undefined)[]): number | null {
     : null;
 }
 
+/**
+ * Change in points between two periods, pooled only over branches that have both figures:
+ * a new branch with no history would otherwise move the network figure on its own.
+ */
+export function pairedChange(
+  pairs: [Ratio | null | undefined, Ratio | null | undefined][],
+): number | null {
+  const both = pairs.filter(
+    (p): p is [Ratio, Ratio] => !!p[0]?.den && !!p[1]?.den,
+  );
+  if (!both.length) return null;
+  const now = ratio(
+    both.reduce((s, [n]) => s + n.num, 0),
+    both.reduce((s, [n]) => s + n.den, 0),
+  );
+  const prev = ratio(
+    both.reduce((s, [, p]) => s + p.num, 0),
+    both.reduce((s, [, p]) => s + p.den, 0),
+  );
+  return Math.round((now.value! - prev.value!) * 100);
+}
+
+/** As pairedChange, for rates that can only be averaged (fees in different currencies). */
+export function pairedMeanChange(
+  pairs: [number | null | undefined, number | null | undefined][],
+): number | null {
+  const both = pairs.filter(
+    (p): p is [number, number] => p[0] != null && p[1] != null,
+  );
+  if (!both.length) return null;
+  const now = meanRate(both.map(([n]) => n))!;
+  const prev = meanRate(both.map(([, p]) => p))!;
+  return Math.round((now - prev) * 100);
+}
+
 function parseDay(value: string | undefined, name: string): Date {
   const d = value ? new Date(`${value}T00:00:00.000Z`) : new Date(NaN);
   // The round-trip rejects impossible dates such as 2026-02-30.

@@ -429,25 +429,34 @@ export class DirectorQueriesService {
       this.prisma.$queryRaw<
         {
           name: string;
+          position: number;
           obtained: number;
           max: number;
           passed: number;
           decided: number;
         }[]
       >(Prisma.sql`
-        SELECT t."name",
+        -- Positions count every term of the session, so a term with no results yet can't
+        -- shift the next one into its place when branches are lined up.
+        WITH t AS (
+          SELECT "id", "name",
+                 ROW_NUMBER() OVER (ORDER BY "sortOrder", "name")::int AS position
+            FROM "AcademicTerm"
+           WHERE "schoolId" = ${schoolId} AND "academicYearId" = ${academicYearId}
+        )
+        SELECT t."name", t.position,
                SUM(er."totalObtained")::int                         AS obtained,
                SUM(er."totalMax")::int                              AS max,
                COUNT(*) FILTER (WHERE er."passed")::int             AS passed,
                COUNT(*) FILTER (WHERE er."passed" IS NOT NULL)::int AS decided
           FROM "Examination" x
-          JOIN "AcademicTerm" t       ON t."id" = x."termId"
+          JOIN t                      ON t."id" = x."termId"
           JOIN "ExaminationResult" er ON er."examinationId" = x."id"
          WHERE x."schoolId" = ${schoolId} AND x."academicYearId" = ${academicYearId}
            AND x."status" = 'PUBLISHED' AND x."resultStatus" = 'FINALIZED'
            AND er."finalizedAt" IS NOT NULL AND er."totalMax" > 0
-         GROUP BY t."id", t."sortOrder", t."name"
-         ORDER BY t."sortOrder", t."name"`),
+         GROUP BY t."id", t.position, t."name"
+         ORDER BY t.position`),
     );
   }
 
@@ -740,7 +749,6 @@ export class DirectorQueriesService {
     );
   }
 
-  /** Teacher accounts created in the window, the other half of turnover. */
   teacherJoiners(schoolId: string, range: RangeWindow) {
     const { from, to } = range.window;
     return this.cached(
