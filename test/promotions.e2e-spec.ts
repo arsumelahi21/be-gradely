@@ -128,6 +128,7 @@ describe('Class promotion (e2e)', () => {
   ) => ({
     sourceAcademicYearId: f.currentYear.id,
     targetAcademicYearId: f.nextYear.id,
+    sourceClassGradeId: f.grade5.id,
     students: f.students.map((s) => ({
       studentId: s.id,
       destinationClassGradeId: f.grade6.id,
@@ -537,6 +538,53 @@ describe('Class promotion (e2e)', () => {
       expect(created).not.toBeNull();
     });
 
+    it('bills a created section like its class, else like the section the students leave', async () => {
+      const f = await seedPromotionFixture(2);
+      const token = await tokenFor(app, f.admin);
+      const grade7 = await prisma.classGrade.create({
+        data: { schoolId: f.school.id, name: 'Grade 7' },
+      });
+      await prisma.section.updateMany({
+        where: { id: { in: [f.section6a.id, f.section5b.id] } },
+        data: { feeBillingMode: 'SUBJECT' },
+      });
+      await prisma.enrollment.updateMany({
+        where: { studentId: f.students[1].id },
+        data: { sectionId: f.section5b.id },
+      });
+
+      await request(app.getHttpServer())
+        .post('/api/promotions/execute')
+        .set('Authorization', `Bearer ${token}`)
+        .send(
+          plan(f, {
+            createMissingSections: true,
+            students: [
+              {
+                studentId: f.students[0].id,
+                destinationClassGradeId: f.grade6.id,
+                destinationSectionName: 'C',
+              },
+              {
+                studentId: f.students[1].id,
+                destinationClassGradeId: grade7.id,
+                destinationSectionName: 'A',
+              },
+            ],
+          }),
+        )
+        .expect(201);
+
+      const modeOf = async (classGradeId: string, name: string) =>
+        (
+          await prisma.section.findFirstOrThrow({
+            where: { classGradeId, name },
+          })
+        ).feeBillingMode;
+      expect(await modeOf(f.grade6.id, 'C')).toBe('SUBJECT');
+      expect(await modeOf(grade7.id, 'A')).toBe('SUBJECT');
+    });
+
     it('sends selected students to different destination sections in one run', async () => {
       const f = await seedPromotionFixture(2);
       const token = await tokenFor(app, f.admin);
@@ -583,6 +631,7 @@ describe('Class promotion (e2e)', () => {
         .send({
           sourceAcademicYearId: f.currentYear.id,
           targetAcademicYearId: f.currentYear.id,
+          sourceClassGradeId: f.grade5.id,
           students: [
             {
               studentId: f.students[0].id,
@@ -755,6 +804,7 @@ describe('Class promotion (e2e)', () => {
           .send({
             sourceAcademicYearId: f.currentYear.id,
             targetAcademicYearId: f.nextYear.id,
+            sourceClassGradeId: f.grade5.id,
             students: [
               {
                 studentId: f.students[0].id,
@@ -1243,6 +1293,408 @@ describe('Class promotion (e2e)', () => {
         .expect(201);
 
       expect(res.body.promoted).toBe(2);
+    });
+  });
+
+  describe('students who only take a subject from the promoted class', () => {
+    type Fixture = Awaited<ReturnType<typeof seedPromotionFixture>>;
+    const api = (token: string, route: 'preview' | 'execute', body: object) =>
+      request(app.getHttpServer())
+        .post(`/api/promotions/${route}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(body);
+
+    /** An elective in `sectionId` with its own teacher and a live timetable this session. */
+    async function offer(f: Fixture, sectionId: string) {
+      const teacherUser = await createTestUser({
+        role: Role.TEACHER,
+        schoolId: f.school.id,
+      });
+      const teacher = await prisma.teacherProfile.create({
+        data: {
+          userId: teacherUser.id,
+          schoolId: f.school.id,
+          fullName: 'Teacher',
+        },
+      });
+      const subject = await prisma.subject.create({
+        data: { schoolId: f.school.id, name: `Chemistry-${uniq()}` },
+      });
+      const offering = await prisma.sectionSubject.create({
+        data: {
+          sectionId,
+          subjectId: subject.id,
+          teacherId: teacher.id,
+          isElective: true,
+        },
+      });
+      await prisma.sectionTeacher.create({
+        data: { sectionId, teacherId: teacher.id },
+      });
+      const timetable = await prisma.timetable.create({
+        data: {
+          schoolId: f.school.id,
+          academicYearId: f.currentYear.id,
+          sectionId,
+          status: 'PUBLISHED',
+          workingDays: ['MONDAY'],
+        },
+      });
+      return { teacher, offering, timetable };
+    }
+
+    /** A student placed in `sectionId` that session, optionally picking `offeringId` too. */
+    async function placed(
+      f: Fixture,
+      sectionId: string,
+      academicYearId: string,
+      offeringId?: string,
+    ) {
+      const user = await createTestUser({
+        role: Role.STUDENT,
+        schoolId: f.school.id,
+      });
+      const profile = await prisma.studentProfile.create({
+        data: {
+          userId: user.id,
+          schoolId: f.school.id,
+          fullName: `Outsider ${uniq()}`,
+          monthlyFeeAmount: 0,
+        },
+      });
+      await prisma.enrollment.create({
+        data: { studentId: profile.id, sectionId, academicYearId },
+      });
+      if (offeringId) {
+        await prisma.studentSubject.create({
+          data: {
+            schoolId: f.school.id,
+            academicYearId,
+            studentId: profile.id,
+            sectionSubjectId: offeringId,
+          },
+        });
+      }
+      return profile;
+    }
+
+    const placementsOf = (studentId: string) =>
+      prisma.enrollment.findMany({
+        where: { studentId },
+        select: { sectionId: true, academicYearId: true, status: true },
+      });
+    const picksOf = (studentId: string) =>
+      prisma.studentSubject.findMany({
+        where: { studentId },
+        select: { sectionSubjectId: true, academicYearId: true },
+      });
+
+    it("promotes only the section's own students, in preview and execute alike, and leaves a sibling who takes its subject untouched", async () => {
+      const f = await seedPromotionFixture(2);
+      const token = await tokenFor(app, f.admin);
+      const chem = await offer(f, f.section5a.id);
+      const sibling = await placed(
+        f,
+        f.section5b.id,
+        f.currentYear.id,
+        chem.offering.id,
+      );
+
+      const roster = await request(app.getHttpServer())
+        .get('/api/promotions/students')
+        .set('Authorization', `Bearer ${token}`)
+        .query({
+          academicYearId: f.currentYear.id,
+          classGradeId: f.grade5.id,
+          sectionId: f.section5a.id,
+        })
+        .expect(200);
+      expect(
+        roster.body.students.map((s: { studentId: string }) => s.studentId),
+      ).not.toContain(sibling.id);
+
+      // A request naming her anyway — stale, or not from the dialog at all.
+      const body = plan(f, {
+        sourceSectionId: f.section5a.id,
+        students: [...f.students, sibling].map((s) => ({
+          studentId: s.id,
+          destinationClassGradeId: f.grade6.id,
+          destinationSectionId: f.section6a.id,
+        })),
+      });
+      const preview = await api(token, 'preview', body).expect(201);
+      const executed = await api(token, 'execute', body).expect(201);
+      for (const res of [preview, executed]) {
+        expect(res.body.counts).toMatchObject({ PROMOTE: 2, NOT_ENROLLED: 1 });
+        expect(
+          res.body.items.find(
+            (i: { studentId: string }) => i.studentId === sibling.id,
+          ).outcome,
+        ).toBe('NOT_ENROLLED');
+      }
+      expect(executed.body.promoted).toBe(2);
+
+      expect(await placementsOf(sibling.id)).toEqual([
+        {
+          sectionId: f.section5b.id,
+          academicYearId: f.currentYear.id,
+          status: 'ACTIVE',
+        },
+      ]);
+      expect(await picksOf(sibling.id)).toEqual([
+        {
+          sectionSubjectId: chem.offering.id,
+          academicYearId: f.currentYear.id,
+        },
+      ]);
+
+      // None of 5A's own students remain, yet she still sits its subject.
+      expect(executed.body.sectionsReset).toBe(0);
+      const offering = await prisma.sectionSubject.findUniqueOrThrow({
+        where: { id: chem.offering.id },
+      });
+      expect(offering.teacherId).toBe(chem.teacher.id);
+      expect(
+        await prisma.sectionTeacher.count({
+          where: { sectionId: f.section5a.id },
+        }),
+      ).toBe(1);
+      expect(
+        (
+          await prisma.timetable.findUniqueOrThrow({
+            where: { id: chem.timetable.id },
+          })
+        ).status,
+      ).toBe('PUBLISHED');
+    });
+
+    it('never moves a student placed in another class, even when a request names them', async () => {
+      const f = await seedPromotionFixture(1);
+      const token = await tokenFor(app, f.admin);
+      const senior = await placed(f, f.section6a.id, f.currentYear.id);
+
+      const res = await api(
+        token,
+        'execute',
+        plan(f, {
+          students: [...f.students, senior].map((s) => ({
+            studentId: s.id,
+            destinationClassGradeId: f.grade6.id,
+            destinationSectionId: f.section6a.id,
+          })),
+        }),
+      ).expect(201);
+
+      expect(res.body.counts).toMatchObject({ PROMOTE: 1, NOT_ENROLLED: 1 });
+      expect(await placementsOf(senior.id)).toEqual([
+        {
+          sectionId: f.section6a.id,
+          academicYearId: f.currentYear.id,
+          status: 'ACTIVE',
+        },
+      ]);
+    });
+
+    it('keeps the teachers of a section a sibling picks from in the session being promoted into', async () => {
+      const f = await seedPromotionFixture(2);
+      const token = await tokenFor(app, f.admin);
+      const chem = await offer(f, f.section5a.id);
+      const nextYearPicker = await placed(
+        f,
+        f.section5b.id,
+        f.nextYear.id,
+        chem.offering.id,
+      );
+
+      const res = await api(token, 'execute', plan(f)).expect(201);
+
+      expect(res.body.promoted).toBe(2);
+      expect(res.body.sectionsReset).toBe(0);
+      expect(
+        (
+          await prisma.sectionSubject.findUniqueOrThrow({
+            where: { id: chem.offering.id },
+          })
+        ).teacherId,
+      ).toBe(chem.teacher.id);
+      expect(
+        await prisma.sectionTeacher.count({
+          where: { sectionId: f.section5a.id },
+        }),
+      ).toBe(1);
+      expect(await picksOf(nextYearPicker.id)).toEqual([
+        { sectionSubjectId: chem.offering.id, academicYearId: f.nextYear.id },
+      ]);
+    });
+
+    it("gives promoted students new-session picks only from the destination's own offerings, copies no teaching set-up, and writes none twice", async () => {
+      const f = await seedPromotionFixture(2);
+      const token = await tokenFor(app, f.admin);
+      const chem = await offer(f, f.section5a.id);
+      for (const s of f.students) {
+        await prisma.studentSubject.create({
+          data: {
+            schoolId: f.school.id,
+            academicYearId: f.currentYear.id,
+            studentId: s.id,
+            sectionSubjectId: chem.offering.id,
+          },
+        });
+      }
+      const subject = await prisma.subject.create({
+        data: { schoolId: f.school.id, name: `Physics-${uniq()}` },
+      });
+      const physics6 = await prisma.sectionSubject.create({
+        data: {
+          sectionId: f.section6a.id,
+          subjectId: subject.id,
+          isElective: true,
+        },
+      });
+
+      await api(token, 'execute', plan(f)).expect(201);
+      const rerun = await api(token, 'execute', plan(f)).expect(201);
+      expect(rerun.body.promoted).toBe(0);
+
+      for (const s of f.students) {
+        const picks = await picksOf(s.id);
+        // The finished session keeps its history; the new one points only at
+        // the destination's offering, once.
+        expect(picks).toHaveLength(2);
+        expect(picks).toEqual(
+          expect.arrayContaining([
+            {
+              sectionSubjectId: chem.offering.id,
+              academicYearId: f.currentYear.id,
+            },
+            { sectionSubjectId: physics6.id, academicYearId: f.nextYear.id },
+          ]),
+        );
+      }
+      expect(
+        (
+          await prisma.sectionSubject.findUniqueOrThrow({
+            where: { id: physics6.id },
+          })
+        ).teacherId,
+      ).toBeNull();
+      expect(
+        await prisma.sectionTeacher.count({
+          where: { sectionId: f.section6a.id },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.timetable.count({ where: { sectionId: f.section6a.id } }),
+      ).toBe(0);
+    });
+
+    it('rolls back every placement, pick and teacher change when the section clean-up fails', async () => {
+      const f = await seedPromotionFixture(2);
+      const token = await tokenFor(app, f.admin);
+      const chem = await offer(f, f.section5a.id);
+      const subject = await prisma.subject.create({
+        data: { schoolId: f.school.id, name: `Physics-${uniq()}` },
+      });
+      await prisma.sectionSubject.create({
+        data: {
+          sectionId: f.section6a.id,
+          subjectId: subject.id,
+          isElective: true,
+        },
+      });
+      const prismaSvc = app.get(PrismaService);
+      // The clean-up's last write, after the teacher has already been cleared.
+      const spy = jest
+        .spyOn(prismaSvc, '$transaction')
+        .mockImplementationOnce((fn: any) =>
+          (prismaSvc as any).$transaction((tx: any) =>
+            fn(
+              new Proxy(tx, {
+                get(target, prop) {
+                  if (prop !== 'sectionTeacher') return target[prop];
+                  return new Proxy(target.sectionTeacher, {
+                    get(inner, key) {
+                      if (key === 'deleteMany') {
+                        return () => {
+                          throw new Error('forced clean-up failure');
+                        };
+                      }
+                      return inner[key];
+                    },
+                  });
+                },
+              }),
+            ),
+          ),
+        );
+
+      try {
+        await api(token, 'execute', plan(f)).expect(500);
+      } finally {
+        spy.mockRestore();
+      }
+
+      for (const s of f.students) {
+        expect(await placementsOf(s.id)).toEqual([
+          {
+            sectionId: f.section5a.id,
+            academicYearId: f.currentYear.id,
+            status: 'ACTIVE',
+          },
+        ]);
+        expect(await picksOf(s.id)).toEqual([]);
+      }
+      expect(
+        (
+          await prisma.sectionSubject.findUniqueOrThrow({
+            where: { id: chem.offering.id },
+          })
+        ).teacherId,
+      ).toBe(chem.teacher.id);
+      expect(
+        await prisma.sectionTeacher.count({
+          where: { sectionId: f.section5a.id },
+        }),
+      ).toBe(1);
+      expect(
+        (
+          await prisma.timetable.findUniqueOrThrow({
+            where: { id: chem.timetable.id },
+          })
+        ).status,
+      ).toBe('PUBLISHED');
+    });
+
+    it("refuses another school's class as the source, and a section outside it", async () => {
+      const f = await seedPromotionFixture(1);
+      const other = await seedPromotionFixture(1);
+      const token = await tokenFor(app, f.admin);
+
+      await api(
+        token,
+        'execute',
+        plan(f, { sourceClassGradeId: other.grade5.id }),
+      ).expect(404);
+      await api(
+        token,
+        'preview',
+        plan(f, { sourceSectionId: other.section5a.id }),
+      ).expect(400);
+      await api(
+        token,
+        'execute',
+        plan(f, { sourceSectionId: f.section6a.id }),
+      ).expect(400);
+      await api(token, 'execute', {
+        ...plan(f),
+        sourceClassGradeId: undefined,
+      }).expect(400);
+
+      expect(
+        await prisma.enrollment.count({
+          where: { academicYearId: f.nextYear.id },
+        }),
+      ).toBe(0);
     });
   });
 });

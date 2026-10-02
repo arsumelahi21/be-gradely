@@ -42,6 +42,22 @@ export class SectionsService extends BaseSchoolScopedService {
       throw new NotFoundException('Class grade not found');
     }
     this.enforceScope(actor, grade.schoolId);
+    // Falling back to the column default would bill a subject-wise class by
+    // Monthly Fee — often Rs 0, which reads as PAID and is never billable again.
+    let feeBillingMode = dto.feeBillingMode;
+    if (!feeBillingMode) {
+      const modes = await this.prisma.section.findMany({
+        where: { classGradeId: grade.id },
+        distinct: ['feeBillingMode'],
+        select: { feeBillingMode: true },
+      });
+      if (modes.length > 1) {
+        throw new BadRequestException(
+          `Sections of ${grade.name} bill differently — choose Class-wise or Subject-wise for "${dto.name}".`,
+        );
+      }
+      feeBillingMode = modes[0]?.feeBillingMode;
+    }
     const created = await this.prisma.section
       .create({
         data: {
@@ -49,6 +65,7 @@ export class SectionsService extends BaseSchoolScopedService {
           schoolId: grade.schoolId,
           name: dto.name,
           room: dto.room ?? null,
+          ...(feeBillingMode && { feeBillingMode }),
         },
       })
       // @@unique([classGradeId, name]) — without this the form just says
@@ -217,6 +234,7 @@ export class SectionsService extends BaseSchoolScopedService {
           schoolId,
           ...(dto.name !== undefined && { name: dto.name }),
           ...(dto.room !== undefined && { room: dto.room }),
+          ...(dto.feeBillingMode && { feeBillingMode: dto.feeBillingMode }),
           ...(dto.isActive !== undefined && { isActive: dto.isActive }),
         },
       })

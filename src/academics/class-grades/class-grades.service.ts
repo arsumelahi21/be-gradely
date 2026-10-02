@@ -32,7 +32,6 @@ export class ClassGradesService extends BaseSchoolScopedService {
           description: dto.description ?? null,
           defaultMonthlyFee: dto.defaultMonthlyFee ?? null,
           level: dto.level ?? null,
-          ...(dto.feeBillingMode && { feeBillingMode: dto.feeBillingMode }),
         },
         include: {
           sections: true,
@@ -128,7 +127,6 @@ export class ClassGradesService extends BaseSchoolScopedService {
           }),
           // Same reasoning: level -3 is PG, so `!== undefined` not truthiness.
           ...(dto.level !== undefined && { level: dto.level }),
-          ...(dto.feeBillingMode && { feeBillingMode: dto.feeBillingMode }),
           ...(dto.isActive !== undefined && { isActive: dto.isActive }),
         },
         include: {

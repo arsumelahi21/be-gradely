@@ -2441,6 +2441,7 @@ describe('Student subject enrollment (e2e)', () => {
           .send({
             sourceAcademicYearId: f.academicYear.id,
             targetAcademicYearId: nextYear.id,
+            sourceClassGradeId: f.sectionB.classGradeId,
             students: [
               {
                 studentId: leaver.id,

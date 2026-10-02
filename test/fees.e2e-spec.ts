@@ -731,8 +731,54 @@ describe('Fees — challan generation (e2e)', () => {
     expect(undiscounted.netAmount).toBe(500000);
   });
 
-  it('settles a zero-fee challan immediately as PAID', async () => {
-    const cls = await seedBillableClass({ studentCount: 1, fee: 0 });
+  it('refuses to bill a student with nothing to charge, and bills the rest', async () => {
+    const cls = await seedBillableClass({ studentCount: 2 });
+    const [billable, unconfigured] = cls.students;
+    await prisma.studentProfile.update({
+      where: { id: unconfigured.profile.id },
+      data: { monthlyFeeAmount: 0 },
+    });
+
+    const res = await http()
+      .post('/api/fees/challans/generate')
+      .set('Authorization', `Bearer ${cls.adminToken}`)
+      .send(generateBody(cls))
+      .expect(201);
+
+    expect(res.body).toMatchObject({ generated: 1, skipped: 1 });
+    expect(res.body.blocked).toEqual([
+      expect.objectContaining({
+        studentId: unconfigured.profile.id,
+        reason: 'NOTHING_TO_BILL',
+      }),
+    ]);
+    // The month stays free, so it can be billed once the fee is set — an
+    // issued zero challan would have settled as PAID and locked it for good.
+    expect(
+      await prisma.challan.count({
+        where: { studentId: unconfigured.profile.id },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.challan.count({ where: { studentId: billable.profile.id } }),
+    ).toBe(1);
+  });
+
+  it('still bills a fully discounted student, whose challan is their proof', async () => {
+    const cls = await seedBillableClass({ studentCount: 1 });
+    const scholarship = await prisma.discount.create({
+      data: {
+        schoolId: cls.school.id,
+        name: 'Full scholarship',
+        type: 'PERCENT',
+        value: 100,
+        isActive: true,
+      },
+    });
+    await prisma.studentProfile.update({
+      where: { id: cls.students[0].profile.id },
+      data: { discountId: scholarship.id },
+    });
 
     await http()
       .post('/api/fees/challans/generate')
@@ -741,8 +787,9 @@ describe('Fees — challan generation (e2e)', () => {
       .expect(201);
 
     const challan = await prisma.challan.findFirstOrThrow({
-      where: { schoolId: cls.school.id },
+      where: { studentId: cls.students[0].profile.id },
     });
+    expect(challan.grossAmount).toBe(500000);
     expect(challan.netAmount).toBe(0);
     expect(challan.status).toBe('PAID');
   });
@@ -3014,18 +3061,27 @@ describe('Fees — challan generation (e2e)', () => {
   describe('installment plans', () => {
     const settle = () => new Promise((r) => setTimeout(r, 500));
 
-    /** A plan body totalling 30,000 across 3 monthly installments. */
+    /**
+     * Installment status is derived against TODAY, so these dates are relative
+     * to it. Fixed ones rot: `2026-10-01` read as not-yet-due when this was
+     * written and turned OVERDUE the morning of 2026-10-02, failing the
+     * waterfall test on every branch at once.
+     */
+    const daysFromToday = (days: number) =>
+      new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+
+    /** A plan body totalling 30,000 across 3 installments: one due, two not. */
     const planBody = (
       cls: { academicYear: { id: string } },
       overrides: Record<string, unknown> = {},
     ) => ({
       academicYearId: cls.academicYear.id,
       totalAmount: 30000,
-      startDate: '2026-09-01',
+      startDate: daysFromToday(-30),
       installments: [
-        { amount: 10000, dueDate: '2026-09-01' },
-        { amount: 10000, dueDate: '2026-10-01' },
-        { amount: 10000, dueDate: '2026-11-01' },
+        { amount: 10000, dueDate: daysFromToday(-30) },
+        { amount: 10000, dueDate: daysFromToday(30) },
+        { amount: 10000, dueDate: daysFromToday(60) },
       ],
       ...overrides,
     });

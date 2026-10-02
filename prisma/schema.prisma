@@ -356,9 +356,6 @@ model ClassGrade {
   /// are listed: PG -3, Nursery -2, Prep -1, then 1..10 matching the grade
   /// number. NULL for classes created before levels existed — they sort last.
   level             Int?
-  /// How this class's monthly challans are priced. MONTHLY bills each student's
-  /// `monthlyFeeAmount`; SUBJECT bills the subjects they take, at SubjectFee.
-  feeBillingMode    FeeBillingMode @default(MONTHLY)
   isActive          Boolean        @default(true)
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
@@ -378,6 +375,11 @@ model Section {
   classGradeId     String
   name             String
   room             String?
+  /// How students PLACED here are billed. MONTHLY bills their `monthlyFeeAmount`
+  /// plus any subject taken from another section; SUBJECT bills every subject
+  /// they take, at SubjectFee. A subject taken from here by a student of a
+  /// sibling section follows that student's own section, never this one.
+  feeBillingMode   FeeBillingMode   @default(MONTHLY)
   isActive         Boolean          @default(true)
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
