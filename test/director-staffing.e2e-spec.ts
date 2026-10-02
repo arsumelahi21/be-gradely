@@ -185,4 +185,41 @@ describe('Director staffing insights (e2e)', () => {
       subjectsWithoutTeacher: { count: 1, of: 2 },
     });
   });
+
+  it('counts teacher turnover over the last 90 days', async () => {
+    const { a, token } = await fixture();
+    const audit = (
+      action: string,
+      role: string,
+      daysAgo: number,
+      id: string,
+    ) => ({
+      actorUserId: 'principal',
+      schoolId: a.id,
+      action,
+      entityType: 'User',
+      entityId: id,
+      metadata: { role },
+      createdAt: new Date(Date.now() - daysAgo * DAY),
+    });
+    await prisma.auditLog.createMany({
+      data: [
+        audit('USER_DEACTIVATE', 'TEACHER', 10, 't-left'),
+        // Deactivated then deleted: one leaver, not two.
+        audit('USER_DELETE', 'TEACHER', 5, 't-left'),
+        audit('USER_DEACTIVATE', 'TEACHER', 100, 't-long-ago'),
+        audit('USER_DEACTIVATE', 'STUDENT', 10, 's-left'),
+      ],
+    });
+    const joined = await prisma.user.count({
+      where: { schoolId: a.id, role: 'TEACHER' },
+    });
+    const res = await api()
+      .get('/api/director/insights/staffing')
+      .set({ Authorization: `Bearer ${token}` });
+    const alpha = res.body.branches.find((r: any) => r.schoolId === a.id).data;
+    expect(joined).toBeGreaterThan(0);
+    expect(alpha.turnover).toEqual({ joined, left: 1 });
+    expect(res.body.group.turnover.left).toBe(1);
+  });
 });

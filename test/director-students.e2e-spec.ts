@@ -284,6 +284,32 @@ describe('Director students insights (e2e)', () => {
     expect(body.coverage).toEqual({ ok: 2, total: 3 });
   });
 
+  it('counts students who left in the window, from the audit log', async () => {
+    const { a, token } = await fixture();
+    const audit = (role: string, daysAgo: number, id: string) => ({
+      actorUserId: 'principal',
+      schoolId: a.id,
+      action: 'USER_DEACTIVATE',
+      entityType: 'User',
+      entityId: id,
+      metadata: { role },
+      createdAt: new Date(Date.now() - daysAgo * DAY),
+    });
+    await prisma.auditLog.createMany({
+      data: [
+        audit('STUDENT', 5, 's1'),
+        audit('STUDENT', 40, 's2'),
+        audit('TEACHER', 5, 't1'),
+      ],
+    });
+    const { body } = await students(token);
+    expect(row(body, a.id).data.leavers).toBe(1);
+    expect(body.group.leavers).toBe(1);
+    expect(
+      row((await students(token, '?preset=90d')).body, a.id).data.leavers,
+    ).toBe(2);
+  });
+
   it('reads the previous session by relative position', async () => {
     const { a, b, token } = await fixture();
     const { body } = await students(token, '?ay=previous');

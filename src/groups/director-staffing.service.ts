@@ -8,7 +8,7 @@ import {
 } from './director.service';
 import { DirectorQueriesService } from './director.queries';
 import { InsightsQueryDto } from './dto/insights-query.dto';
-import { Ratio, ratio } from './insights';
+import { Ratio, ratio, resolveWindow } from './insights';
 
 interface Coverage {
   count: number;
@@ -26,6 +26,8 @@ export interface StaffingData {
   subjectsWithoutTeacher: Coverage | null;
   sectionsWithoutClassTeacher: Coverage | null;
   timetables: { published: number; sections: number; share: Ratio } | null;
+  /** Teachers who joined and left in the last 90 days, whatever the page filter. */
+  turnover: { joined: number; left: number };
 }
 
 export interface StaffingGroup {
@@ -38,6 +40,7 @@ export interface StaffingGroup {
   subjectsWithoutTeacher: Coverage;
   sectionsWithoutClassTeacher: Coverage;
   timetables: { published: number; sections: number; share: Ratio };
+  turnover: { joined: number; left: number };
 }
 
 const perTeacher = (students: number, teachers: number) => ({
@@ -65,8 +68,9 @@ export class DirectorStaffingService {
   }
 
   private async branchStaffing(ctx: BranchContext): Promise<StaffingData> {
-    const { actor, branch, year } = ctx;
-    const [staff, enrolment, overview] = await Promise.all([
+    const { actor, branch, year, now } = ctx;
+    const last90 = resolveWindow({ preset: '90d' }, now);
+    const [staff, enrolment, overview, joined, left] = await Promise.all([
       this.queries.staffing(branch.id, year?.id ?? null),
       year ? this.queries.enrolment(branch.id, year.id) : null,
       // getOverview throws without a session, and it has no cache of its own (00 §9).
@@ -75,10 +79,14 @@ export class DirectorStaffingService {
             this.timetable.getOverview(actor, { academicYearId: year.id }),
           )
         : null,
+      this.queries.teacherJoiners(branch.id, last90),
+      this.queries.leavers(branch.id, 'TEACHER', last90),
     ]);
+    const turnover = { joined, left };
     if (!year || !enrolment || !overview)
       return {
         teachers: staff.teachers,
+        turnover,
         studentsPerTeacher: null,
         subjectsWithoutTeacher: null,
         sectionsWithoutClassTeacher: null,
@@ -88,6 +96,7 @@ export class DirectorStaffingService {
     const { published, total } = overview.counts;
     return {
       teachers: staff.teachers,
+      turnover,
       studentsPerTeacher: perTeacher(
         enrolment.reduce((s, r) => s + r.n, 0),
         staff.teachers,
@@ -114,10 +123,13 @@ export class DirectorStaffingService {
       classTeachers: { count: 0, of: 0 },
       published: 0,
       sections: 0,
+      turnover: { joined: 0, left: 0 },
     };
     for (const { status, data } of rows) {
       if (!data) continue;
       group.teachers += data.teachers;
+      group.turnover.joined += data.turnover.joined;
+      group.turnover.left += data.turnover.left;
       if (status !== 'ok' || !data.studentsPerTeacher) continue;
       // Ratio of the same branches: students and teachers both from branches with a session.
       group.students += data.studentsPerTeacher.students;
@@ -131,6 +143,7 @@ export class DirectorStaffingService {
     }
     return {
       teachers: group.teachers,
+      turnover: group.turnover,
       studentsPerTeacher: perTeacher(group.students, group.sessionTeachers),
       subjectsWithoutTeacher: group.subjects,
       sectionsWithoutClassTeacher: group.classTeachers,

@@ -39,6 +39,8 @@ export interface StudentsData {
   sections: SectionStats | null;
   inactive: number;
   admissions: { count: number; monthly: { month: string; count: number }[] };
+  /** Students deactivated or deleted in the window (audited only since 2026-10-01). */
+  leavers: number;
 }
 
 export interface StudentsGroup {
@@ -49,6 +51,7 @@ export interface StudentsGroup {
   byLevel: LevelRow[];
   sections: SectionStats;
   admissions: { count: number; monthly: { month: string; count: number }[] };
+  leavers: number;
 }
 
 const LEVEL_LABEL = new Map(CLASS_LEVELS.map((l) => [l.value, l.label]));
@@ -104,18 +107,20 @@ export class DirectorStudentsService {
 
   private async branchStudents(ctx: BranchContext): Promise<StudentsData> {
     const { branch, year, range, now } = ctx;
-    const [enrolment, sections, roster, admissions, monthly] =
+    const [enrolment, sections, roster, admissions, monthly, leavers] =
       await Promise.all([
         year ? this.queries.enrolment(branch.id, year.id) : null,
         year ? this.queries.activeSections(branch.id) : null,
         this.queries.roster(branch.id, year?.id ?? null),
         this.queries.admissions(branch.id, range),
         this.queries.admissionsMonthly(branch.id, now),
+        this.queries.leavers(branch.id, 'STUDENT', range),
       ]);
 
     const base = {
       inactive: roster.inactive,
       admissions: { count: admissions, monthly },
+      leavers,
     };
     if (!enrolment || !sections)
       return {
@@ -192,6 +197,7 @@ export class DirectorStudentsService {
         avgSize: avgSize(0, 0),
       },
       admissions: { count: 0, monthly: [] },
+      leavers: 0,
     };
     const levels = new Map<string, LevelRow>();
     const monthly = new Map<string, number>();
@@ -200,6 +206,7 @@ export class DirectorStudentsService {
       if (!d) continue;
       group.inactive += d.inactive;
       group.admissions.count += d.admissions.count;
+      group.leavers += d.leavers;
       for (const m of d.admissions.monthly)
         monthly.set(m.month, (monthly.get(m.month) ?? 0) + m.count);
 

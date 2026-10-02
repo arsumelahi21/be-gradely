@@ -143,7 +143,7 @@ export class DirectorOverviewService {
       this.attendanceRate(ctx, before30),
       this.queries.pace(branch.id, now),
       this.parentSignIns(branch.id, last30, before30),
-      this.queries.teacherLeavers(branch.id, last30),
+      this.queries.leavers(branch.id, 'TEACHER', last30),
       this.principals(branch.id, now),
       this.queries.feeSnapshot(
         branch.id,

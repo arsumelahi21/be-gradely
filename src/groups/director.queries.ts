@@ -681,25 +681,44 @@ export class DirectorQueriesService {
   }
 
   /**
-   * Teachers who left in the window: deactivated or deleted. Only the audit log keeps the date
-   * (users.service setActive/remove), so history starts when those audits did (2026-10-01).
+   * Users of a role who left in the window: deactivated or deleted. Only the audit log keeps the
+   * date (users.service setActive/remove), so history starts when those audits did (2026-10-01).
    */
-  teacherLeavers(schoolId: string, range: RangeWindow) {
+  leavers(schoolId: string, role: 'TEACHER' | 'STUDENT', range: RangeWindow) {
     const { from, to } = range.window;
     return this.cached(
       schoolId,
       'q-leavers',
-      { from, to },
+      { role, from, to },
       rangeTtl(range.days),
       async () => {
         const [row] = await this.prisma.$queryRaw<{ n: number }[]>`
         SELECT COUNT(DISTINCT "entityId")::int AS n FROM "AuditLog"
          WHERE "schoolId" = ${schoolId}
            AND "action" IN ('USER_DEACTIVATE', 'USER_DELETE')
-           AND "metadata"->>'role' = 'TEACHER'
+           AND "metadata"->>'role' = ${role}
            AND "createdAt" >= ${range.start} AND "createdAt" < ${range.endExclusive}`;
         return row.n;
       },
+    );
+  }
+
+  /** Teacher accounts created in the window, the other half of turnover. */
+  teacherJoiners(schoolId: string, range: RangeWindow) {
+    const { from, to } = range.window;
+    return this.cached(
+      schoolId,
+      'q-joiners',
+      { from, to },
+      rangeTtl(range.days),
+      () =>
+        this.prisma.user.count({
+          where: {
+            schoolId,
+            role: 'TEACHER',
+            createdAt: { gte: range.start, lt: range.endExclusive },
+          },
+        }),
     );
   }
 }
