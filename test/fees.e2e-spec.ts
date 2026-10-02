@@ -3420,6 +3420,23 @@ describe('Fees — challan generation (e2e)', () => {
         expect(new Set(numbers).size).toBe(3);
       });
 
+      it('asks for a section instead of failing on a class-wide run', async () => {
+        const cls = await planned();
+        for (const route of ['preview', 'generate']) {
+          const res = await http()
+            .post(`/api/fees/challans/${route}`)
+            .set('Authorization', `Bearer ${cls.adminToken}`)
+            .send({
+              academicYearId: cls.academicYear.id,
+              classGradeId: cls.section.classGradeId,
+              generationType: 'INSTALLMENT',
+              installmentSeq: 1,
+            })
+            .expect(400);
+          expect(res.body.message).toMatch(/one section at a time/);
+        }
+      });
+
       it('links the plan and the row, so the duplicate rule has something to hold', async () => {
         const cls = await planned();
         await genInstallment(cls, 2).expect(201);

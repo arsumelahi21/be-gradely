@@ -1135,6 +1135,11 @@ export class ChallansService extends BaseSchoolScopedService {
     onlyStudentId?: string,
   ) {
     this.ensureAdmin(actor);
+    if (!dto.sectionId) {
+      throw new BadRequestException(
+        'Installment challans are generated one section at a time. Choose a section.',
+      );
+    }
     const schoolId = this.resolveSchoolId(actor, dto.schoolId);
     const seq = dto.installmentSeq!;
 
