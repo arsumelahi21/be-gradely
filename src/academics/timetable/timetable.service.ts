@@ -74,6 +74,9 @@ interface CandidateSlot {
 
 type Tx = Prisma.TransactionClient | PrismaService;
 
+// An archived grid no longer runs, so it books no teacher or room.
+const LIVE_GRID: Prisma.TimetableWhereInput = { status: { not: 'ARCHIVED' } };
+
 @Injectable()
 export class TimetableService extends BaseSchoolScopedService {
   constructor(
@@ -477,6 +480,7 @@ export class TimetableService extends BaseSchoolScopedService {
             academicYearId,
             teacherId: { in: [...candidateTeacherIds] },
             timetableId: { not: timetable.id },
+            timetable: LIVE_GRID,
           },
           select: {
             teacherId: true,
@@ -1372,30 +1376,13 @@ export class TimetableService extends BaseSchoolScopedService {
 
     // ROOM — effective-room overlap across sections in the same year.
     if (slot.effectiveRoom) {
-      const target = slot.effectiveRoom.trim().toLowerCase();
-      const sameTime = await tx.timetableEntry.findMany({
-        where: {
-          academicYearId: slot.academicYearId,
-          dayOfWeek: slot.dayOfWeek as any,
-          startMin: { lt: slot.endMin },
-          endMin: { gt: slot.startMin },
-          ...notSelf,
-        },
-        select: {
-          id: true,
-          room: true,
-          section: {
-            select: {
-              name: true,
-              room: true,
-              classGrade: { select: { name: true } },
-            },
-          },
-        },
-      });
-      const clash = sameTime.find((e) => {
-        const eff = (e.room ?? e.section.room ?? '').trim().toLowerCase();
-        return eff !== '' && eff === target;
+      const clash = await this.roomClashAt(tx, {
+        academicYearId: slot.academicYearId,
+        dayOfWeek: slot.dayOfWeek,
+        startMin: slot.startMin,
+        endMin: slot.endMin,
+        room: slot.effectiveRoom,
+        excludeEntryId: slot.excludeEntryId,
       });
       if (clash) {
         conflicts.push({
@@ -1429,6 +1416,7 @@ export class TimetableService extends BaseSchoolScopedService {
         dayOfWeek: p.dayOfWeek as any,
         startMin: { lt: p.endMin },
         endMin: { gt: p.startMin },
+        timetable: LIVE_GRID,
         ...(p.excludeEntryId ? { id: { not: p.excludeEntryId } } : {}),
       },
       select: {
@@ -1440,6 +1428,45 @@ export class TimetableService extends BaseSchoolScopedService {
           select: { name: true, classGrade: { select: { name: true } } },
         },
       },
+    });
+  }
+
+  private async roomClashAt(
+    tx: Tx,
+    p: {
+      academicYearId: string;
+      dayOfWeek: DayOfWeek;
+      startMin: number;
+      endMin: number;
+      room: string;
+      excludeEntryId?: string;
+    },
+  ) {
+    const target = p.room.trim().toLowerCase();
+    const sameTime = await tx.timetableEntry.findMany({
+      where: {
+        academicYearId: p.academicYearId,
+        dayOfWeek: p.dayOfWeek as any,
+        startMin: { lt: p.endMin },
+        endMin: { gt: p.startMin },
+        timetable: LIVE_GRID,
+        ...(p.excludeEntryId ? { id: { not: p.excludeEntryId } } : {}),
+      },
+      select: {
+        id: true,
+        room: true,
+        section: {
+          select: {
+            name: true,
+            room: true,
+            classGrade: { select: { name: true } },
+          },
+        },
+      },
+    });
+    return sameTime.find((e) => {
+      const eff = (e.room ?? e.section.room ?? '').trim().toLowerCase();
+      return eff !== '' && eff === target;
     });
   }
 
@@ -1586,41 +1613,21 @@ export class TimetableService extends BaseSchoolScopedService {
       }
       const effRoom = (e.room ?? e.section?.room ?? '').trim();
       if (effRoom) {
-        const roomClash = await this.prisma.timetableEntry.findFirst({
-          where: {
-            academicYearId: e.academicYearId,
-            dayOfWeek: e.dayOfWeek,
-            startMin: { lt: e.endMin },
-            endMin: { gt: e.startMin },
-            id: { not: e.id },
-          },
-          select: {
-            room: true,
-            section: {
-              select: {
-                room: true,
-                name: true,
-                classGrade: { select: { name: true } },
-              },
-            },
-          },
+        const roomClash = await this.roomClashAt(this.prisma, {
+          academicYearId: e.academicYearId,
+          dayOfWeek: e.dayOfWeek,
+          startMin: e.startMin,
+          endMin: e.endMin,
+          room: effRoom,
+          excludeEntryId: e.id,
         });
-        if (roomClash) {
-          const otherEff = (
-            roomClash.room ??
-            roomClash.section.room ??
-            ''
-          ).trim();
-          if (otherEff && otherEff.toLowerCase() === effRoom.toLowerCase()) {
-            const key = `${effRoom.toLowerCase()}|${e.dayOfWeek}|${e.startMin}`;
-            if (!seenRoom.has(key)) {
-              seenRoom.add(key);
-              blocking.push({
-                type: 'ROOM_CONFLICT',
-                message: `Room "${effRoom}" is double-booked`,
-              });
-            }
-          }
+        const key = `${effRoom.toLowerCase()}|${e.dayOfWeek}|${e.startMin}`;
+        if (roomClash && !seenRoom.has(key)) {
+          seenRoom.add(key);
+          blocking.push({
+            type: 'ROOM_CONFLICT',
+            message: `Room "${effRoom}" is double-booked`,
+          });
         }
       }
     }

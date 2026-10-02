@@ -968,6 +968,13 @@ describe('Timetable V2 (e2e)', () => {
   });
 
   describe('clashes across sections', () => {
+    async function addTeacher(schoolId: string) {
+      const user = await createTestUser({ role: Role.TEACHER, schoolId });
+      return prisma.teacherProfile.create({
+        data: { userId: user.id, schoolId, fullName: `T-${uniq()}` },
+      });
+    }
+
     const publish = (
       sectionId: string,
       token: string,
@@ -977,6 +984,90 @@ describe('Timetable V2 (e2e)', () => {
         .post(`/api/timetable/sections/${sectionId}/publish`)
         .set('Authorization', `Bearer ${token}`)
         .send(entries ? { entries } : {});
+
+    it('validation finds a room clash behind a non-clashing overlap', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const t2 = await addTeacher(cls.school.id);
+      const nine = await addSection(cls.school.id, cls.classGrade.id, t2.id);
+      const three = await addSection(cls.school.id, cls.classGrade.id, t2.id);
+      const slot = { dayStartMin: 600, dayEndMin: 690 };
+      const ninePeriods = await setup(nine.section.id, token, slot);
+      const threePeriods = await setup(three.section.id, token, slot);
+      const periods = await setup(cls.section.id, token, slot);
+
+      // Stored first, so a first-match lookup sees Room 9 and stops there.
+      await assign(nine.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: ninePeriods[0].id,
+        sectionSubjectId: nine.sectionSubject.id,
+        room: 'Room 9',
+      }).expect(201);
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: periods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+        room: 'Room 3',
+      }).expect(201);
+      // A clash the entry routes would refuse, as data from before the check.
+      const threeTt = await prisma.timetable.findFirstOrThrow({
+        where: { sectionId: three.section.id },
+      });
+      await prisma.timetableEntry.create({
+        data: {
+          timetableId: threeTt.id,
+          schoolId: cls.school.id,
+          sectionId: three.section.id,
+          academicYearId: threeTt.academicYearId,
+          dayOfWeek: 'MONDAY',
+          periodId: threePeriods[0].id,
+          startMin: threePeriods[0].startMin,
+          endMin: threePeriods[0].endMin,
+          sectionSubjectId: three.sectionSubject.id,
+          teacherId: t2.id,
+          room: 'Room 3',
+        },
+      });
+
+      const val = await request(server())
+        .get(`/api/timetable/sections/${cls.section.id}/validation`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(val.body.blocking).toEqual([
+        expect.objectContaining({ type: 'ROOM_CONFLICT' }),
+      ]);
+    });
+
+    it('an archived grid no longer books its teacher', async () => {
+      const cls = await seedClass({ studentCount: 1 });
+      const token = await adminFor(cls.school.id);
+      const other = await addSection(
+        cls.school.id,
+        cls.classGrade.id,
+        cls.teacherProfile.id,
+      );
+      const slot = { dayStartMin: 600, dayEndMin: 690 };
+      const aPeriods = await setup(cls.section.id, token, slot);
+      const bPeriods = await setup(other.section.id, token, slot);
+      await assign(other.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: bPeriods[0].id,
+        sectionSubjectId: other.sectionSubject.id,
+      }).expect(201);
+      await request(server())
+        .post(`/api/timetable/sections/${other.section.id}/archive`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      const editor = await request(server())
+        .get(`/api/timetable/sections/${cls.section.id}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(editor.body.teacherBusy[cls.teacherProfile.id] ?? []).toEqual([]);
+      await assign(cls.section.id, token, {
+        dayOfWeek: 'MONDAY',
+        periodId: aPeriods[0].id,
+        sectionSubjectId: cls.sectionSubject.id,
+      }).expect(201);
+    });
 
     it('the legacy publish refuses an archived grid', async () => {
       const cls = await seedClass({ studentCount: 1 });
