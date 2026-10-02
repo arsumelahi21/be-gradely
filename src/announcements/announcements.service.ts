@@ -334,6 +334,8 @@ export class AnnouncementsService extends BaseSchoolScopedService {
     const { url } = await this.s3.presignPutObject({
       key,
       contentType: dto.mimeType,
+      sizeBytes: dto.sizeBytes,
+      maxBytes: MAX_ATTACHMENT_BYTES,
     });
     return {
       s3Key: key,

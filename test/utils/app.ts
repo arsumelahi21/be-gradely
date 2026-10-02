@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { AppModule } from '../../src/app.module';
 import { S3PresignService } from '../../src/common/services/s3-presign.service';
 import { PrismaExceptionFilter } from '../../src/common/filters/prisma-exception.filter';
+import { assertUploadSize } from '../../src/common/upload/attachment-rules';
 
 const s3san = (s: string) => (s || '').replace(/[^a-zA-Z0-9._-]/g, '_');
 
@@ -32,7 +33,12 @@ class InMemoryS3 {
     if (!b) throw new Error(`NoSuchKey: ${key}`);
     return b;
   }
-  async presignPutObject(input: { key: string }) {
+  async presignPutObject(input: {
+    key: string;
+    sizeBytes?: number | null;
+    maxBytes: number;
+  }) {
+    assertUploadSize(input.sizeBytes, input.maxBytes);
     return {
       url: `https://s3.test/put/${input.key}`,
       bucket: 'test',

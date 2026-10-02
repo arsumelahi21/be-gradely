@@ -7,6 +7,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
+import { assertUploadSize } from '../upload/attachment-rules';
 
 const sanitize = (s: string) => s.replace(/[^a-zA-Z0-9._-]/g, '_');
 
@@ -87,11 +88,22 @@ export class S3PresignService {
     return Number.isFinite(value) && value > 0 ? value : 900;
   }
 
-  async presignPutObject(input: { key: string; contentType?: string }) {
+  /**
+   * The size is signed as Content-Length, so S3 refuses a body of any other
+   * size: the declared, checked size is the one that lands.
+   */
+  async presignPutObject(input: {
+    key: string;
+    contentType?: string;
+    sizeBytes?: number | null;
+    maxBytes: number;
+  }) {
+    assertUploadSize(input.sizeBytes, input.maxBytes);
     const cmd = new PutObjectCommand({
       Bucket: this.bucket(),
       Key: input.key,
       ContentType: input.contentType,
+      ContentLength: input.sizeBytes,
     });
 
     const url = await getSignedUrl(this.s3, cmd, {

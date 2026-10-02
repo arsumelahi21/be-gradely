@@ -90,6 +90,25 @@ describe('Assignments / re-grading (e2e)', () => {
     expect(res.body.id).toBe(assignment.id);
   });
 
+  it('refuses to presign an upload without a size, or over the cap, and writes nothing', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const assignment = await publishedAssignment(cls);
+    const token = await tokenFor(app, cls.students[0].user);
+    const ask = (sizeBytes?: number) =>
+      request(app.getHttpServer())
+        .post(`/api/assignments/${assignment.id}/submissions/request-upload`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ fileName: 'work.pdf', mimeType: 'application/pdf', sizeBytes });
+
+    await ask().expect(400);
+    await ask(26 * 1024 * 1024).expect(400);
+    expect(
+      await prisma.assignmentSubmission.count({
+        where: { assignmentId: assignment.id },
+      }),
+    ).toBe(0);
+  });
+
   it('refuses a re-upload once the submission is marked', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const assignment = await prisma.assignment.create({

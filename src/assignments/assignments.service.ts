@@ -9,7 +9,10 @@ import { Actor } from '../common/types/actor.type';
 import { Role } from '../common/types/role.type';
 import { resolvePagination } from '../common/dto/pagination-query.dto';
 import { compressImage } from '../common/upload/image-compress';
-import { assertPdfOnly } from '../common/upload/attachment-rules';
+import {
+  assertPdfOnly,
+  MAX_ASSIGNMENT_FILE_BYTES,
+} from '../common/upload/attachment-rules';
 import { TEACHER_PUBLIC } from '../common/utils/teacher-select';
 import { CreateAssignmentDto } from './dto/create-assignment.dto';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto';
@@ -642,6 +645,13 @@ export class AssignmentsService {
       safeName,
     );
 
+    // Before the upsert, so a refused size leaves the submission untouched.
+    const { url: uploadUrl } = await this.s3.presignPutObject({
+      key,
+      contentType: dto.mimeType,
+      sizeBytes: dto.sizeBytes,
+      maxBytes: MAX_ASSIGNMENT_FILE_BYTES,
+    });
     const submission = await (this.prisma as any).assignmentSubmission.upsert({
       where: {
         assignmentId_studentId: {
@@ -667,11 +677,6 @@ export class AssignmentsService {
         s3Key: key,
         ...(dto.mimeType ? { status: 'UPLOADING' } : {}),
       },
-    });
-
-    const { url: uploadUrl } = await this.s3.presignPutObject({
-      key,
-      contentType: dto.mimeType,
     });
 
     return { submissionId: submission.id, s3Key: key, uploadUrl };
@@ -707,6 +712,12 @@ export class AssignmentsService {
       safeName,
     );
 
+    const { url: uploadUrl } = await this.s3.presignPutObject({
+      key,
+      contentType: dto.mimeType,
+      sizeBytes: dto.sizeBytes,
+      maxBytes: MAX_ASSIGNMENT_FILE_BYTES,
+    });
     const attachment = await (this.prisma as any).assignmentAttachment.create({
       data: {
         assignmentId: assignment.id,
@@ -719,10 +730,6 @@ export class AssignmentsService {
       },
     });
 
-    const { url: uploadUrl } = await this.s3.presignPutObject({
-      key,
-      contentType: dto.mimeType,
-    });
     return {
       attachmentId: attachment.id,
       s3Key: key,
