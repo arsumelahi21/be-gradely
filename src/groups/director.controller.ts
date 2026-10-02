@@ -1,4 +1,12 @@
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Patch,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -15,8 +23,11 @@ import { DirectorPrincipalsService } from './director-principals.service';
 import { DirectorActivityService } from './director-activity.service';
 import { DirectorOverviewService } from './director-overview.service';
 import { InsightsQueryDto } from './dto/insights-query.dto';
+import { UpdateTargetsDto } from './dto/targets.dto';
+import { GroupsService } from './groups.service';
 
-// Read-only by design: a director has no write route here, ever.
+// Read-only over school data. The one write is the director's own targets (PATCH /targets),
+// which lives on their group row and never on a school's.
 @UseGuards(JwtAuthGuard, RolesGuard, DirectorScopeGuard)
 @Roles(Role.DIRECTOR)
 @Controller('director')
@@ -31,6 +42,7 @@ export class DirectorController {
     private principals: DirectorPrincipalsService,
     private activity: DirectorActivityService,
     private overview: DirectorOverviewService,
+    private groups: GroupsService,
   ) {}
 
   @Get('branches')
@@ -97,5 +109,16 @@ export class DirectorController {
   @Get('insights/overview')
   overviewInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
     return this.overview.insights(req.directorScope, query);
+  }
+
+  @Get('targets')
+  targets(@Req() req: any) {
+    return this.groups.directorTargets(req.directorScope);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Patch('targets')
+  updateTargets(@Body() dto: UpdateTargetsDto, @Req() req: any) {
+    return this.groups.updateTargets(req.directorScope, dto);
   }
 }

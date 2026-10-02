@@ -13,6 +13,7 @@ import {
 } from './director.service';
 import { DirectorQueriesService } from './director.queries';
 import { InsightsQueryDto } from './dto/insights-query.dto';
+import { Targets, branchTargets } from './targets';
 import {
   RangeWindow,
   Ratio,
@@ -54,10 +55,11 @@ export interface OverviewData {
   } | null;
   /** Sections with students that took no register for 3 / 5 working days. */
   registers: { silent3: number; silent5: number; of: number } | null;
+  /** Exams held `resultsDays`+ days ago without final results (late), and half that (lateSoon, includes late). */
   exams: {
     reviewWaitingDays: number | null;
-    overdue7: number;
-    overdue14: number;
+    late: number;
+    lateSoon: number;
   } | null;
   /** Students below 75% attendance (10+ marks), this 30 days and the 30 before. */
   belowFloor: { now: number; prev: number } | null;
@@ -65,6 +67,8 @@ export interface OverviewData {
   parents: Trend;
   teacherLeavers: number;
   principal: { active: number; daysSinceLogin: number | null };
+  /** This branch's targets after the network level and its own override. */
+  targets: Targets;
 }
 
 export interface OverviewGroup {
@@ -119,12 +123,16 @@ export class DirectorOverviewService {
     return this.director.insights<OverviewData, OverviewGroup>(
       scope,
       fixed,
-      (ctx) => this.branchOverview(ctx),
+      (ctx) =>
+        this.branchOverview(ctx, branchTargets(scope.targets, ctx.branch.id)),
       (rows) => this.rollUp(rows),
     );
   }
 
-  private async branchOverview(ctx: BranchContext): Promise<OverviewData> {
+  private async branchOverview(
+    ctx: BranchContext,
+    targets: Targets,
+  ): Promise<OverviewData> {
     const { branch, year, priorYear, currentYear, now } = ctx;
     const last30 = resolveWindow({}, now);
     const before30 = previousWindow(last30);
@@ -156,6 +164,7 @@ export class DirectorOverviewService {
       parents,
       teacherLeavers: leavers,
       principal,
+      targets,
       receiptsWaitingDays: receipts.oldestPendingAt
         ? daysSince(new Date(receipts.oldestPendingAt), now)
         : null,
@@ -195,7 +204,7 @@ export class DirectorOverviewService {
       this.passRate(branch.id, year),
       priorYear ? this.passRate(branch.id, priorYear) : null,
       this.registers(branch.id, year.id, now),
-      this.exams(branch.id, year.id, now),
+      this.exams(branch.id, year.id, now, targets.resultsDays),
       this.queries.attendanceRisk(branch.id, year.id, last30),
       this.queries.attendanceRisk(branch.id, year.id, before30),
     ]);
@@ -297,19 +306,28 @@ export class DirectorOverviewService {
     };
   }
 
-  private async exams(schoolId: string, ayId: string, now: Date) {
+  private async exams(
+    schoolId: string,
+    ayId: string,
+    now: Date,
+    resultsDays: number,
+  ) {
     const daysAgo = (n: number) => new Date(now.getTime() - n * DAY_MS);
-    const [backlog, overdue7, overdue14] = await Promise.all([
+    const [backlog, lateSoon, late] = await Promise.all([
       this.queries.examBacklog(schoolId),
-      this.queries.unfinalizedExams(schoolId, ayId, daysAgo(7)),
-      this.queries.unfinalizedExams(schoolId, ayId, daysAgo(14)),
+      this.queries.unfinalizedExams(
+        schoolId,
+        ayId,
+        daysAgo(Math.ceil(resultsDays / 2)),
+      ),
+      this.queries.unfinalizedExams(schoolId, ayId, daysAgo(resultsDays)),
     ]);
     return {
       reviewWaitingDays: backlog.oldestSubmittedAt
         ? daysSince(new Date(backlog.oldestSubmittedAt), now)
         : null,
-      overdue7,
-      overdue14,
+      late,
+      lateSoon,
     };
   }
 

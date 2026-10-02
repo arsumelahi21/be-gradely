@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService } from '../audit/audit.service';
 import { CacheService } from '../common/services/cache.service';
@@ -16,6 +17,9 @@ import {
   GroupNameDto,
   ListGroupsQueryDto,
 } from './dto/group.dto';
+import { UpdateTargetsDto } from './dto/targets.dto';
+import { DirectorScope } from './director.service';
+import { StoredTargets, TARGET_DEFAULTS, parseStoredTargets } from './targets';
 
 const DIRECTOR_SELECT = {
   id: true,
@@ -111,10 +115,11 @@ export class GroupsService {
           },
         },
         directors: { orderBy: { fullName: 'asc' }, select: DIRECTOR_SELECT },
+        targets: true,
       },
     });
     if (!group) throw new NotFoundException('Group not found');
-    return group;
+    return { ...group, targets: parseStoredTargets(group.targets) };
   }
 
   async rename(id: string, dto: GroupNameDto, actor: Actor) {
@@ -171,6 +176,8 @@ export class GroupsService {
         });
         if (count === 0)
           throw new NotFoundException('School is not in this group');
+        // Otherwise the override would come back if the school rejoins this group.
+        await this.editTargets(tx, id, (t) => delete t.branches[schoolId]);
         // Directors leave the branch's conversations; the principal keeps their copy.
         const removed = await tx.threadParticipant.deleteMany({
           where: {
@@ -190,6 +197,87 @@ export class GroupsService {
       metadata: { schoolId, threadParticipantsRemoved },
     });
     return { detached: true, threadParticipantsRemoved };
+  }
+
+  /** The director's own targets: the network level plus overrides for their current branches. */
+  directorTargets(scope: DirectorScope) {
+    return {
+      defaults: TARGET_DEFAULTS,
+      network: scope.targets.network,
+      branches: scope.branches.map((b) => ({
+        schoolId: b.id,
+        name: b.name,
+        targets: scope.targets.branches[b.id] ?? {},
+      })),
+    };
+  }
+
+  /**
+   * The director's only write: their own group's targets row. The group comes from the scope
+   * and a branch must be one of theirs, so no other group or any school row can be touched.
+   */
+  async updateTargets(scope: DirectorScope, dto: UpdateTargetsDto) {
+    const { branchId } = dto;
+    if (branchId && !scope.branches.some((b) => b.id === branchId))
+      throw new NotFoundException('Branch not found');
+    const values = Object.fromEntries(
+      Object.entries(dto.targets).filter(([, v]) => v !== undefined),
+    );
+    const stored = await this.prisma.$transaction(async (tx) => {
+      const edited = await this.editTargets(tx, scope.group.id, (t) => {
+        if (!branchId) t.network = values;
+        else if (Object.keys(values).length) t.branches[branchId] = values;
+        else delete t.branches[branchId];
+      });
+      // Re-checked under the group lock: a detach that ran after the guard loaded the scope
+      // has already dropped this override, and writing it back would revive it on rejoin.
+      if (
+        branchId &&
+        !(await tx.school.count({
+          where: { id: branchId, groupId: scope.group.id },
+        }))
+      )
+        throw new NotFoundException('Branch not found');
+      return edited;
+    });
+    // No schoolId: the targets are the director's, not the branch's, so they stay out of the principal's log.
+    void this.audit.record(scope.directorId, 'DIRECTOR_TARGETS_UPDATE', {
+      entityType: 'SchoolGroup',
+      entityId: scope.group.id,
+      metadata: { branchId: branchId ?? null, targets: values },
+    });
+    return this.directorTargets({ ...scope, targets: stored });
+  }
+
+  async resetTargets(id: string, actor: Actor) {
+    await this.assertGroup(id);
+    await this.prisma.schoolGroup.update({
+      where: { id },
+      data: { targets: Prisma.DbNull },
+    });
+    void this.audit.record(actor.userId, 'GROUP_TARGETS_RESET', {
+      entityType: 'SchoolGroup',
+      entityId: id,
+    });
+    return { reset: true };
+  }
+
+  /** Read-modify-write under a row lock, so two edits at once can't drop each other. */
+  private async editTargets(
+    tx: Prisma.TransactionClient,
+    groupId: string,
+    edit: (t: StoredTargets) => void,
+  ) {
+    const [row] = await tx.$queryRaw<{ targets: unknown }[]>`
+      SELECT "targets" FROM "SchoolGroup" WHERE "id" = ${groupId} FOR UPDATE`;
+    if (!row) throw new NotFoundException('Group not found');
+    const stored = parseStoredTargets(row.targets);
+    edit(stored);
+    await tx.schoolGroup.update({
+      where: { id: groupId },
+      data: { targets: stored as unknown as Prisma.InputJsonValue },
+    });
+    return stored;
   }
 
   async createDirector(id: string, dto: CreateDirectorDto, actor: Actor) {

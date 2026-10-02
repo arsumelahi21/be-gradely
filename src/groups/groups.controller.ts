@@ -66,6 +66,11 @@ export class GroupsController {
     return this.groups.detachSchool(id, schoolId, req.user);
   }
 
+  @Delete(':id/targets')
+  resetTargets(@Param('id') id: string, @Req() req: any) {
+    return this.groups.resetTargets(id, req.user);
+  }
+
   @Post(':id/directors')
   createDirector(
     @Param('id') id: string,

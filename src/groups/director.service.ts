@@ -11,6 +11,7 @@ import { Role } from '../common/types/role.type';
 import { Actor } from '../common/types/actor.type';
 import { pickCurrentAcademicYear } from '../common/academic-year';
 import { InsightsQueryDto } from './dto/insights-query.dto';
+import { StoredTargets, parseStoredTargets } from './targets';
 import {
   InsightsWindow,
   RangeWindow,
@@ -34,6 +35,7 @@ export interface DirectorScope {
   directorId: string;
   group: { id: string; name: string };
   branches: ScopeBranch[];
+  targets: StoredTargets;
 }
 
 export interface YearRef {
@@ -141,6 +143,7 @@ export class DirectorService {
           select: {
             id: true,
             name: true,
+            targets: true,
             schools: {
               orderBy: { name: 'asc' },
               select: {
@@ -159,8 +162,13 @@ export class DirectorService {
     });
     // The DB CHECK guarantees a director has a group; a missing one means "not a director".
     if (!director?.group) throw new UnauthorizedException();
-    const { schools, ...group } = director.group;
-    return { directorId: userId, group, branches: schools };
+    const { schools, targets, ...group } = director.group;
+    return {
+      directorId: userId,
+      group,
+      branches: schools,
+      targets: parseStoredTargets(targets),
+    };
   }
 
   async branches(scope: DirectorScope) {

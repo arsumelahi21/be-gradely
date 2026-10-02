@@ -238,7 +238,7 @@ describe('Director overview (e2e)', () => {
       pace: { now: { value: 0.5 }, prev: { den: 0, value: null } },
       overdue: 0,
       registers: { silent3: 0, silent5: 0, of: 1 },
-      exams: { reviewWaitingDays: null, overdue7: 1, overdue14: 0 },
+      exams: { reviewWaitingDays: null, late: 0, lateSoon: 1 },
       parents: { now: { num: 1, den: 1 }, prev: { num: 0, den: 1 } },
       teacherLeavers: 1,
       principal: { active: 1, daysSinceLogin: 20 },

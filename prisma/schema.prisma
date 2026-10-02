@@ -78,6 +78,8 @@ model School {
 model SchoolGroup {
   id        String   @id @default(uuid())
   name      String
+  /// The director's overview targets: { network, branches: { [schoolId]: … } }, see groups/targets.ts.
+  targets   Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   schools   School[]
@@ -362,7 +364,7 @@ model AcademicYear {
 }
 
 model ClassGrade {
-  id                String         @id @default(uuid())
+  id                String        @id @default(uuid())
   schoolId          String
   name              String
   code              String?
@@ -375,10 +377,10 @@ model ClassGrade {
   /// are listed: PG -3, Nursery -2, Prep -1, then 1..10 matching the grade
   /// number. NULL for classes created before levels existed — they sort last.
   level             Int?
-  isActive          Boolean        @default(true)
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  school            School         @relation(fields: [schoolId], references: [id])
+  isActive          Boolean       @default(true)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  school            School        @relation(fields: [schoolId], references: [id])
   sections          Section[]
   challans          Challan[]
   examinations      Examination[]
