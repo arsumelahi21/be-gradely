@@ -20,6 +20,10 @@ import type { StringValue } from 'ms';
 // not, and counting their successes locked out everyone behind the school's IP.
 const FAILED_LOGINS_PER_NETWORK_PER_MINUTE = 30;
 
+// Compared against when the email is unknown, so the response takes as long
+// as a wrong password and doesn't reveal which emails are registered.
+const DUMMY_HASH = bcrypt.hashSync('timing-only', 10);
+
 // bcrypt reads only the first 72 bytes, which every JWT for one user shares
 // (header + sub), so it hashes a digest of the whole token instead.
 export const refreshTokenDigest = (token: string) =>
@@ -115,12 +119,10 @@ export class AuthService {
       omit: { passwordHash: false },
       include: { school: { select: { isActive: true } } },
     });
+    const ok = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH);
     // Super admins have no school, so only an explicit `false` locks a user out.
-    if (!user?.isActive || user.school?.isActive === false)
+    if (!ok || !user?.isActive || user.school?.isActive === false)
       await this.rejectFailedLogin(ip);
-
-    const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) await this.rejectFailedLogin(ip);
 
     const accessToken = await this.signAccessToken({
       id: user.id,
