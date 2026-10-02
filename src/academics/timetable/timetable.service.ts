@@ -2222,7 +2222,7 @@ export class TimetableService extends BaseSchoolScopedService {
         schoolId: student.schoolId,
         academicYearId: timetable.academicYearId,
         sectionSubjectId: { in: [...taken] },
-        timetable: { status: 'PUBLISHED' },
+        timetable: this.inEffect(this.schoolToday(timetable.timezone)),
       },
       include: this.entryInclude(),
     });
@@ -2259,7 +2259,11 @@ export class TimetableService extends BaseSchoolScopedService {
     const timezone = await this.schoolTimezone(teacher.schoolId);
 
     const entries = await this.prisma.timetableEntry.findMany({
-      where: { teacherId, academicYearId, timetable: { status: 'PUBLISHED' } },
+      where: {
+        teacherId,
+        academicYearId,
+        timetable: this.inEffect(this.schoolToday(timezone)),
+      },
       include: this.entryInclude(),
     });
     // Days + periods vary per section; expose the union of periods the teacher appears in.
@@ -2293,7 +2297,13 @@ export class TimetableService extends BaseSchoolScopedService {
     );
     const isAdmin =
       actor.role === Role.SUPER_ADMIN || actor.role === Role.SCHOOL_ADMIN;
-    const visible = timetable && (isAdmin || timetable.status === 'PUBLISHED');
+    const today = this.schoolToday(timezone);
+    const published = timetable?.status === 'PUBLISHED';
+    const inWindow =
+      !!timetable &&
+      (!timetable.effectiveFrom || timetable.effectiveFrom <= today) &&
+      (!timetable.effectiveTo || timetable.effectiveTo >= today);
+    const visible = timetable && (isAdmin || (published && inWindow));
 
     const [entries, periods] = await Promise.all([
       visible
@@ -2319,10 +2329,38 @@ export class TimetableService extends BaseSchoolScopedService {
       },
       academicYearId,
       status: visible ? timetable.status : null,
+      // Published but hidden by its dates: tell the viewer when it applies.
+      notInEffect:
+        published && !visible
+          ? {
+              effectiveFrom:
+                timetable.effectiveFrom?.toISOString().slice(0, 10) ?? null,
+              effectiveTo:
+                timetable.effectiveTo?.toISOString().slice(0, 10) ?? null,
+            }
+          : null,
       timezone,
       workingDays: visible ? (timetable.workingDays as DayOfWeek[]) : [],
       periods,
       entries,
+    };
+  }
+
+  // Window dates are school-local days stored at UTC midnight.
+  private schoolToday(timezone: string): Date {
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(
+      new Date(),
+    );
+    return new Date(`${day}T00:00:00.000Z`);
+  }
+
+  private inEffect(today: Date): Prisma.TimetableWhereInput {
+    return {
+      status: 'PUBLISHED',
+      AND: [
+        { OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: today } }] },
+        { OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }] },
+      ],
     };
   }
 

@@ -1215,4 +1215,56 @@ describe('Timetable V2 (e2e)', () => {
       ).toBe(1);
     });
   });
+
+  it('students and teachers see a timetable only within its dates', async () => {
+    const cls = await seedClass({ studentCount: 1 });
+    const token = await adminFor(cls.school.id);
+    const periods = await setup(cls.section.id, token, {
+      dayStartMin: 600,
+      dayEndMin: 690,
+    });
+    await assign(cls.section.id, token, {
+      dayOfWeek: 'MONDAY',
+      periodId: periods[0].id,
+      sectionSubjectId: cls.sectionSubject.id,
+    }).expect(201);
+    await request(server())
+      .post(`/api/timetable/sections/${cls.section.id}/publish`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(201);
+    const setWindow = (effectiveFrom: string | null) =>
+      request(server())
+        .patch(`/api/timetable/sections/${cls.section.id}/window`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ effectiveFrom, effectiveTo: null })
+        .expect(200);
+    const viewers = [
+      await tokenFor(app, cls.students[0].user),
+      await tokenFor(app, cls.teacherUser),
+    ];
+    const mine = (viewer: string) =>
+      request(server())
+        .get('/api/timetable/me')
+        .set('Authorization', `Bearer ${viewer}`);
+
+    await setWindow('2099-01-01');
+    for (const viewer of viewers) {
+      expect((await mine(viewer)).body.entries).toHaveLength(0);
+    }
+    const student = await mine(viewers[0]);
+    expect(student.body.notInEffect).toEqual({
+      effectiveFrom: '2099-01-01',
+      effectiveTo: null,
+    });
+    // The admin's authoring view is unaffected.
+    const admin = await request(server())
+      .get(`/api/timetable/class/${cls.section.id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(admin.body.entries).toHaveLength(1);
+
+    await setWindow(null);
+    for (const viewer of viewers) {
+      expect((await mine(viewer)).body.entries).toHaveLength(1);
+    }
+  });
 });
