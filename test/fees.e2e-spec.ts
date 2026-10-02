@@ -3398,6 +3398,45 @@ describe('Fees — challan generation (e2e)', () => {
         expect(challan.items[0].label).toBe('Installment 1 of 3');
       });
 
+      it('numbers past the highest challan ever issued, even after one is deleted', async () => {
+        const cls = await planned(2);
+        await genInstallment(cls, 1).expect(201);
+        const [lowest] = await prisma.challan.findMany({
+          where: { schoolId: cls.school.id },
+          orderBy: { challanNo: 'asc' },
+        });
+        // A deleted challan leaves a gap that a row count would number into.
+        await prisma.challan.delete({ where: { id: lowest.id } });
+
+        const res = await genInstallment(cls, 2).expect(201);
+
+        expect(res.body.generated).toBe(2);
+        const numbers = (
+          await prisma.challan.findMany({
+            where: { schoolId: cls.school.id },
+            select: { challanNo: true },
+          })
+        ).map((c) => c.challanNo);
+        expect(new Set(numbers).size).toBe(3);
+      });
+
+      it('asks for a section instead of failing on a class-wide run', async () => {
+        const cls = await planned();
+        for (const route of ['preview', 'generate']) {
+          const res = await http()
+            .post(`/api/fees/challans/${route}`)
+            .set('Authorization', `Bearer ${cls.adminToken}`)
+            .send({
+              academicYearId: cls.academicYear.id,
+              classGradeId: cls.section.classGradeId,
+              generationType: 'INSTALLMENT',
+              installmentSeq: 1,
+            })
+            .expect(400);
+          expect(res.body.message).toMatch(/one section at a time/);
+        }
+      });
+
       it('links the plan and the row, so the duplicate rule has something to hold', async () => {
         const cls = await planned();
         await genInstallment(cls, 2).expect(201);
