@@ -435,7 +435,7 @@ export class AssignmentsService {
     await this.enforceAssignmentAccess(assignment, actor, opts);
 
     if (opts?.includeDownloadUrls && assignment.attachments) {
-      return this.enrichAttachmentsWithDownloadUrls([assignment])[0];
+      return (await this.enrichAttachmentsWithDownloadUrls([assignment]))[0];
     }
 
     return assignment;

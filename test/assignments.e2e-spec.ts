@@ -62,6 +62,34 @@ describe('Assignments / re-grading (e2e)', () => {
       .send(body);
   }
 
+  async function publishedAssignment(
+    cls: Awaited<ReturnType<typeof seedClass>>,
+  ) {
+    return prisma.assignment.create({
+      data: {
+        schoolId: cls.school.id,
+        academicYearId: cls.academicYear.id,
+        sectionSubjectId: cls.sectionSubject.id,
+        createdByTeacherId: cls.teacherProfile.id,
+        title: 'Worksheet',
+        maxScore: 100,
+        status: 'PUBLISHED',
+      },
+    });
+  }
+
+  it('returns the assignment when download URLs are requested', async () => {
+    const cls = await seedClass({ studentCount: 0 });
+    const assignment = await publishedAssignment(cls);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/assignments/${assignment.id}`)
+      .query({ includeDownloadUrls: 'true' })
+      .set('Authorization', `Bearer ${await tokenFor(app, cls.teacherUser)}`)
+      .expect(200);
+    expect(res.body.id).toBe(assignment.id);
+  });
+
   it('refuses a re-upload once the submission is marked', async () => {
     const cls = await seedClass({ studentCount: 1 });
     const assignment = await prisma.assignment.create({
