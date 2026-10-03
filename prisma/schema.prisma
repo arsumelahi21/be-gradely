@@ -66,6 +66,28 @@ model School {
   studentSubjects               StudentSubject[]
   logo                          SchoolLogo?
   subjectFees                   SubjectFee[]
+  groupId                       String?
+  group                         SchoolGroup?         @relation(fields: [groupId], references: [id], onDelete: Restrict)
+
+  @@index([groupId])
+}
+
+// A group of branches (each a normal School tenant) overseen by exactly one DIRECTOR; one
+// director may oversee several groups. The CHECK User_director_school_check (raw SQL,
+// invisible to Prisma) keeps every DIRECTOR's schoolId null.
+model SchoolGroup {
+  id         String   @id @default(uuid())
+  name       String
+  /// Restrict: a director who still oversees a group can't be deleted.
+  directorId String
+  director   User     @relation("GroupDirector", fields: [directorId], references: [id], onDelete: Restrict)
+  /// The director's overview targets: { network, branches: { [schoolId]: … } }, see groups/targets.ts.
+  targets    Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  schools    School[]
+
+  @@index([directorId])
 }
 
 // School branding logo — bytes isolated in their own table (like UserPhoto), so
@@ -99,6 +121,7 @@ model User {
   studentProfile        StudentProfile?
   teacherProfile        TeacherProfile?
   school                School?              @relation(fields: [schoolId], references: [id])
+  directedGroups        SchoolGroup[]        @relation("GroupDirector")
   socialLinks           SocialLink[]
   quizzesCreated        Quiz[]
   settings              UserSettings?
@@ -343,7 +366,7 @@ model AcademicYear {
 }
 
 model ClassGrade {
-  id                String         @id @default(uuid())
+  id                String        @id @default(uuid())
   schoolId          String
   name              String
   code              String?
@@ -356,10 +379,10 @@ model ClassGrade {
   /// are listed: PG -3, Nursery -2, Prep -1, then 1..10 matching the grade
   /// number. NULL for classes created before levels existed — they sort last.
   level             Int?
-  isActive          Boolean        @default(true)
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  school            School         @relation(fields: [schoolId], references: [id])
+  isActive          Boolean       @default(true)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  school            School        @relation(fields: [schoolId], references: [id])
   sections          Section[]
   challans          Challan[]
   examinations      Examination[]
@@ -956,6 +979,7 @@ enum Role {
   TEACHER
   PARENT
   STUDENT
+  DIRECTOR
 }
 
 enum Gender {

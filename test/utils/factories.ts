@@ -56,7 +56,10 @@ export async function createTestUser(input: CreateTestUserInput) {
     password === DEFAULT_PASSWORD
       ? DEFAULT_PASSWORD_HASH
       : await bcrypt.hash(password, 10);
-  const isAdmin = role === Role.SUPER_ADMIN || role === Role.SCHOOL_ADMIN;
+  const isAdmin =
+    role === Role.SUPER_ADMIN ||
+    role === Role.SCHOOL_ADMIN ||
+    role === Role.DIRECTOR;
 
   const user = await prisma.user.create({
     data: {

@@ -1,0 +1,138 @@
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from '../common/types/role.type';
+import { DirectorService } from './director.service';
+import { DirectorScopeGuard } from './director-scope.guard';
+import { DirectorFeesService } from './director-fees.service';
+import { DirectorStudentsService } from './director-students.service';
+import { DirectorAttendanceService } from './director-attendance.service';
+import { DirectorAcademicsService } from './director-academics.service';
+import { DirectorStaffingService } from './director-staffing.service';
+import { DirectorPrincipalsService } from './director-principals.service';
+import { DirectorActivityService } from './director-activity.service';
+import { DirectorOverviewService } from './director-overview.service';
+import { DirectorMapService } from './director-map.service';
+import { InsightsQueryDto } from './dto/insights-query.dto';
+import { UpdateTargetsDto } from './dto/targets.dto';
+import { GroupsService } from './groups.service';
+
+// Read-only over school data. The one write is the director's own targets (PATCH /targets),
+// which lives on their group row and never on a school's.
+@UseGuards(JwtAuthGuard, RolesGuard, DirectorScopeGuard)
+@Roles(Role.DIRECTOR)
+@Controller('director')
+export class DirectorController {
+  constructor(
+    private director: DirectorService,
+    private fees: DirectorFeesService,
+    private students: DirectorStudentsService,
+    private attendanceTab: DirectorAttendanceService,
+    private academics: DirectorAcademicsService,
+    private staffing: DirectorStaffingService,
+    private principals: DirectorPrincipalsService,
+    private activity: DirectorActivityService,
+    private overview: DirectorOverviewService,
+    private groups: GroupsService,
+    private map: DirectorMapService,
+  ) {}
+
+  @Get('branches')
+  branches(@Req() req: any) {
+    return this.director.branches(req.directorScope);
+  }
+
+  // Each insights call fans out over every branch, so it gets a tighter budget than the global 100/min.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/fees')
+  feesInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.fees.insights(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/fees/lists')
+  feesLists(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.fees.lists(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/students')
+  studentsInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.students.insights(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/attendance')
+  attendanceInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.attendanceTab.insights(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/attendance/lists')
+  attendanceLists(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.attendanceTab.lists(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/academics')
+  academicsInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.academics.insights(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/staffing')
+  staffingInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.staffing.insights(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('principals')
+  principalsList(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.principals.list(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/activity')
+  activityInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.activity.insights(req.directorScope, query);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('insights/overview')
+  overviewInsights(@Query() query: InsightsQueryDto, @Req() req: any) {
+    return this.overview.insights(req.directorScope, query);
+  }
+
+  // ParseUUIDPipe answers a malformed id with 400; any well-formed id outside the scope is a 404.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('map/:branchId')
+  mapBranch(
+    @Param('branchId', ParseUUIDPipe) branchId: string,
+    @Req() req: any,
+  ) {
+    return this.map.branch(req.directorScope, branchId);
+  }
+
+  @Get('targets')
+  targets(@Req() req: any) {
+    return this.groups.directorTargets(req.directorScope);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Patch('targets')
+  updateTargets(@Body() dto: UpdateTargetsDto, @Req() req: any) {
+    return this.groups.updateTargets(req.directorScope, dto);
+  }
+}

@@ -29,7 +29,7 @@ export class SchoolsService {
 
   /** Wipe both the schools list and the super-admin dashboard overview (which
    *  embeds that list + school count) after any school write. */
-  private async invalidateSchoolsCaches(): Promise<void> {
+  async invalidateSchoolsCaches(): Promise<void> {
     await Promise.all([
       // Variant-keyed list (page/pageSize/search) → one keyspace scan.
       this.cache.delByPrefix(SCHOOLS_LIST_PREFIX),

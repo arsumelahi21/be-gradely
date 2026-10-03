@@ -12,18 +12,9 @@ import {
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/types/role.type';
+import { ALL_ROLES, Roles } from '../common/decorators/roles.decorator';
 import { ListNotificationsQueryDto } from './dto/list-notifications-query.dto';
 import { MarkNotificationsReadDto } from './dto/mark-notifications-read.dto';
-
-const ALL_ROLES = [
-  Role.STUDENT,
-  Role.PARENT,
-  Role.TEACHER,
-  Role.SCHOOL_ADMIN,
-  Role.SUPER_ADMIN,
-] as const;
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('notifications')

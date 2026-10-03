@@ -28,6 +28,7 @@ import {
 import { UpsertConfigDto } from './dto/upsert-config.dto';
 import { SetupTimetableDto } from './dto/setup-timetable.dto';
 import { ReplacePeriodsDto } from './dto/replace-periods.dto';
+import { pickCurrentAcademicYear } from '../../common/academic-year';
 import { CreatePeriodSlotDto } from './dto/create-period-slot.dto';
 import { UpdatePeriodSlotDto } from './dto/update-period-slot.dto';
 import { CreateEntryDto } from './dto/create-entry.dto';
@@ -107,19 +108,11 @@ export class TimetableService extends BaseSchoolScopedService {
       }
       return ay.id;
     }
-    // Every year is created active and none is ever cleared, so "newest active"
-    // can be a session nobody sits in yet. Mirrors fe `defaultAcademicYear`:
-    // the one covering today, else the latest already begun, else the newest.
-    const now = new Date();
     const active = await this.prisma.academicYear.findMany({
       where: { schoolId, isActive: true },
-      orderBy: { startDate: 'desc' },
       select: { id: true, startDate: true, endDate: true },
     });
-    const year =
-      active.find((y) => y.startDate <= now && y.endDate >= now) ??
-      active.find((y) => y.startDate <= now) ??
-      active[0];
+    const year = pickCurrentAcademicYear(active, new Date());
     if (!year) {
       throw new BadRequestException('No active academic year for this school');
     }

@@ -13,10 +13,17 @@ const WITHIN_SCHOOL: ReadonlySet<Role> = new Set([
 
 const ALLOW: Record<Role, ReadonlySet<Role>> = {
   [Role.SUPER_ADMIN]: new Set([Role.SCHOOL_ADMIN]),
-  [Role.SCHOOL_ADMIN]: new Set([Role.SUPER_ADMIN, ...WITHIN_SCHOOL]),
+  [Role.SCHOOL_ADMIN]: new Set([
+    Role.SUPER_ADMIN,
+    Role.DIRECTOR,
+    ...WITHIN_SCHOOL,
+  ]),
   [Role.TEACHER]: WITHIN_SCHOOL,
   [Role.PARENT]: WITHIN_SCHOOL,
   [Role.STUDENT]: WITHIN_SCHOOL,
+  // Staff and parents of the director's own branches (checked in assertCanReach), never
+  // students. Teachers and parents only reply in a thread the director opened.
+  [Role.DIRECTOR]: new Set([Role.SCHOOL_ADMIN, Role.TEACHER, Role.PARENT]),
 };
 
 export function canMessage(senderRole: Role, recipientRole: Role): boolean {

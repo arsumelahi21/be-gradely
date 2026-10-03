@@ -7,6 +7,7 @@ const ALL: Role[] = [
   Role.TEACHER,
   Role.PARENT,
   Role.STUDENT,
+  Role.DIRECTOR,
 ];
 const WITHIN_SCHOOL: Role[] = [
   Role.SCHOOL_ADMIN,
@@ -45,6 +46,17 @@ describe('canMessage permission matrix (open within school)', () => {
     ]) {
       expect(canMessage(Role.SUPER_ADMIN, r)).toBe(false);
     }
+  });
+
+  it('lets a director reach staff and parents, and only a principal reach a director', () => {
+    for (const r of [Role.SCHOOL_ADMIN, Role.TEACHER, Role.PARENT])
+      expect(canMessage(Role.DIRECTOR, r)).toBe(true);
+    for (const r of [Role.STUDENT, Role.SUPER_ADMIN, Role.DIRECTOR])
+      expect(canMessage(Role.DIRECTOR, r)).toBe(false);
+    expect(canMessage(Role.SCHOOL_ADMIN, Role.DIRECTOR)).toBe(true);
+    // Teachers and parents reply in a thread the director opened; they never open one.
+    for (const r of [Role.TEACHER, Role.PARENT, Role.STUDENT, Role.SUPER_ADMIN])
+      expect(canMessage(r, Role.DIRECTOR)).toBe(false);
   });
 
   it('returns a boolean for every role pair (total function, no undefined)', () => {

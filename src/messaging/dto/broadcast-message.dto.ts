@@ -1,4 +1,5 @@
 import {
+  ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
   IsString,
@@ -13,6 +14,8 @@ import {
 export class BroadcastMessageDto {
   @IsArray()
   @ArrayNotEmpty()
+  // Each recipient is a separate thread and send; this bounds one request's work.
+  @ArrayMaxSize(100)
   @IsUUID(undefined, { each: true })
   recipientUserIds!: string[];
 
